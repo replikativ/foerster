@@ -53,3 +53,7 @@ zeitlauf
 node_modules/
 examples/public/js/
 out/
+
+# rendered tutorials
+_site/
+.clay-temp/

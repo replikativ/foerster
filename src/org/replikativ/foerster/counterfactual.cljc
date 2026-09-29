@@ -2,7 +2,7 @@
   "Counterfactual queries by abduction, action and prediction (Pearl).
 
   A program's sample and observe sites are structural equations
-  (`inference.mechanism`). Given evidence and interventions:
+  (`foerster.mechanism`). Given evidence and interventions:
 
   1. abduction — condition the program on the evidence (importance sampling
      by `gfi/generate`) and read each weighted factual trace's exogenous
@@ -63,7 +63,7 @@
   "Pairs of factual and counterfactual results of `model` (a zero-argument
   function returning a fresh model spin) given `:evidence` ({address value},
   fixed in the factual world) and `:interventions` ({selector transform}, as
-  for `inference.trace/policy`), from `:particles` importance-weighted
+  for `foerster.trace/policy`), from `:particles` importance-weighted
   factual worlds (default 1: enough when the evidence fixes every noise).
 
   Resolves a vector of {:factual r :counterfactual r' :weight log-w

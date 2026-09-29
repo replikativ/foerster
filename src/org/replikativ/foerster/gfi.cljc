@@ -2,7 +2,7 @@
   "Gen's generative function interface over savepoint traces.
 
   Each operation is `spindel.trace/run` or `replay` under a policy of
-  `inference.trace`; what this namespace adds is the weight each operation
+  `foerster.trace`; what this namespace adds is the weight each operation
   returns and the discard of `update`, with Gen's identities (Cusumano-Towner
   et al. 2019, q the model's internal proposal, here the prior):
 
@@ -58,7 +58,7 @@
          ((sp/close! session) (fn [_] (reject error)) (fn [_] (reject error))))))))
 
 (defn run-policy
-  "Run `model` under any `inference.trace/policy` in a root world and session
+  "Run `model` under any `foerster.trace/policy` in a root world and session
   of its own (options as for `simulate`). Resolves the trace."
   ([model policy] (run-policy model policy nil))
   ([model policy opts] (run model policy opts)))

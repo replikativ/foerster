@@ -1,5 +1,5 @@
 (ns org.replikativ.foerster.hmc
-  "Hamiltonian Monte Carlo on block sites (`inference.block`), within Gibbs.
+  "Hamiltonian Monte Carlo on block sites (`foerster.block`), within Gibbs.
 
   A block supplies the gradient of its log target; the move is spindel's. The
   momentum is drawn from the site's stream, leapfrog integrates with the
@@ -105,7 +105,7 @@
         (reject error)))))
 
 (defn within-gibbs
-  "A step for `inference.trace/mh-chain` (`:step`): an HMC move of every
+  "A step for `foerster.trace/mh-chain` (`:step`): an HMC move of every
   block site, then one single-site MH move of a latent that is not a block
   site, if there is one. `opts`: `:step-size`, `:steps`. The step counts as
   accepted when the block moves were."

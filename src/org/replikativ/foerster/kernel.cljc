@@ -240,7 +240,7 @@
   Markov-chain kernels (`single-site-mh-kernel`, `random-walk-mh-kernel`,
   `block-gibbs-kernel`, `hmc-kernel`) implement `kernel-id` only: they are
   descriptions that `inference/kernel-infer` runs as replay plus accept over
-  traces (`inference.trace`)."
+  traces (`foerster.trace`)."
 
   (kernel-id [this]
     "Unique identifier for this kernel type (e.g., :prior, :single-site-mh).")
@@ -320,7 +320,7 @@
   Metropolis-Hastings with a symmetric Gaussian proposal on one unobserved
   site per iteration; the program is replayed from that site with every other
   site held at its trace value and rescored, and the proposal is accepted on
-  the ratio of joint densities (see `inference.trace/mh-log-ratio`). A
+  the ratio of joint densities (see `foerster.trace/mh-log-ratio`). A
   discrete site gets a prior proposal instead of a step.
 
   Output options (all Markov-chain kernels): `:samples :final` (default)
@@ -341,9 +341,9 @@
 
 (defn hmc-kernel
   "Hamiltonian Monte Carlo on the block sites of a program
-  (`inference.block`), within Gibbs: every iteration moves each block site by
+  (`foerster.block`), within Gibbs: every iteration moves each block site by
   HMC (`:step-size`, `:steps` leapfrog steps) and one other latent site by
-  single-site MH (`inference.hmc/within-gibbs`). Output options as for every
+  single-site MH (`foerster.hmc/within-gibbs`). Output options as for every
   Markov-chain kernel."
   [num-iterations & [{:keys [step-size steps] :or {step-size 0.1 steps 10} :as opts}]]
   {:pre [(pos-int? num-iterations) (pos? step-size) (pos-int? steps)]}

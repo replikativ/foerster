@@ -49,7 +49,7 @@
     :involution (fn [choices u]) -> {:choices x' :aux u' :log-jacobian l}
                 where x' gives new values for some addresses of `choices`
 
-  `choices` is `inference.trace/choices` of the trace ({address value}).
+  `choices` is `foerster.trace/choices` of the trace ({address value}).
   Resolves {:trace t :accepted? b :log-ratio r}; the loser's worlds are
   given back."
   [trace {:keys [propose log-q involution]}]

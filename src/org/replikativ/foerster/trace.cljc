@@ -55,7 +55,7 @@
 (defn- intervention-pairs
   "`interventions` as [selector transform] pairs. A key that is not a
   selector is an address; a value that is not a transform map is `{:do v}`
-  (the form `inference.effects/intervene!` writes)."
+  (the form `foerster.effects/intervene!` writes)."
   [interventions]
   (for [[k v] interventions]
     [(if (fn? k) k (sel/id k))
@@ -186,7 +186,7 @@
                  that is not a selector (`spindel.select`) is an address; the
                  world's `[:inference :interventions]` (`intervene!`) apply too
     :noise       {address u}: the site takes its mechanism's value for u
-                 (`inference.mechanism`), observed sites included — a
+                 (`foerster.mechanism`), observed sites included — a
                  counterfactual world. Sites without noise are marked
                  `:unaligned?`
     :init?       start a sample site at its `:init` option. Only for the
@@ -421,7 +421,7 @@
   Returns a CPS operation resolving {:trace final :accepted k}. `:on-step`
   (fn [step-result]) sees every move. `:step` (fn [trace opts]) -> CPS
   resolving a step result replaces `mh-step` as the move (e.g.
-  `inference.hmc/within-gibbs`)."
+  `foerster.hmc/within-gibbs`)."
   ([trace n] (mh-chain trace n nil))
   ([trace n {:keys [on-step] move :step :or {move mh-step} :as opts}]
    (fn [resolve reject]
