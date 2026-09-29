@@ -11,9 +11,8 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.effects :as eff]
-            [org.replikativ.foerster.address :as addr]
+            [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.effects.savepoint :as sp]
-            [replikativ.logging :as log]
             [is.simm.partial-cps.async :as pcps-async]
             [org.replikativ.foerster.dist :as dist])
   ;; the spin macro knows sample/observe/factor only once this namespace has
@@ -66,37 +65,30 @@
 ;; =============================================================================
 
 (defn- forward-choose-fn
-  "A choose site outside inference: forward simulation. An observed site
-  takes its value and scores it into the world's weight; a latent site takes
-  its intervention (`intervene!`), the value a pre-populated trace holds for
-  it, or a draw from its distribution. Every site is recorded in the world's
-  trace."
+  "A choose site outside inference: forward simulation. A site is addressed
+  as under inference (`addressing/site-address+path!`) and takes its
+  intervention (`intervene!`); otherwise an observed site takes its value and
+  scores it into the world's weight, and a latent site a fresh draw from its
+  distribution."
   [_runtime args resolve _reject]
   (let [{:keys [source options source-loc]} args
         {:keys [id observe]} options
         ctx rtc/*execution-context*
-        address (or id (addr/make-address ctx source-loc))]
-    (if-let [intervention-value (get (rtp/get-state ctx [:inference :interventions]) address)]
-      ;; Pearl's do-operator: the value is fixed, nothing is scored or traced
-      (spin-core/resume resolve intervention-value)
-      (let [existing (get (rtp/get-state ctx [:inference :trace]) address)
-            existing-value (if (map? existing) (:value existing) existing)
-            value (cond
-                    ;; observe can be boolean false
-                    (some? observe) observe
-                    (some? existing-value) existing-value
-                    :else (dist/draw source))]
-        (log/trace :choose/forward-sampling {:address address :value value
-                                             :from-trace? (some? existing-value)})
-        (rtp/swap-state! ctx [:inference :trace]
-                         (fn [trace] (assoc (or trace {}) address
-                                            {:value value
-                                             :distribution source
-                                             :observed? (some? observe)})))
-        (when (some? observe)
-          (rtp/swap-state! ctx [:inference :log-weight]
-                           (fn [w] (+ (or w 0.0) (dist/logpdf source observe)))))
-        (spin-core/resume resolve value)))))
+        [address] (addressing/site-address+path! ctx "sp" :inference/choose source-loc id)
+        interventions (rtp/get-state ctx [:inference :interventions])]
+    (cond
+      ;; Pearl's do-operator: the value is fixed, nothing is scored
+      (contains? interventions address)
+      (spin-core/resume resolve (get interventions address))
+
+      ;; observe can be boolean false
+      (some? observe)
+      (do (rtp/swap-state! ctx [:inference :log-weight]
+                           (fn [w] (+ (or w 0.0) (dist/logpdf source observe))))
+          (spin-core/resume resolve observe))
+
+      :else
+      (spin-core/resume resolve (dist/draw source)))))
 
 (defn- choose-handler-fn
   "A choose site is a savepoint when its world handles `:inference/choose`: it
