@@ -123,6 +123,20 @@
   (let [sum-squares (reduce + (map #(* % %) weights))]
     (/ 1.0 sum-squares)))
 
+(defn weighted-quantiles
+  "A function of p in [0, 1]: the p-quantile of `values` weighted by the
+  normalized `weights`, the smallest value whose cumulative weight reaches p."
+  [values weights]
+  (let [pairs (sort-by first (map vector values weights))
+        sorted (mapv first pairs)
+        cumulative (vec (reductions + (map second pairs)))
+        last-index (dec (count sorted))]
+    (fn [p]
+      (loop [i 0]
+        (if (or (>= i last-index) (>= (nth cumulative i) p))
+          (nth sorted i)
+          (recur (inc i)))))))
+
 (defn systematic-resample
   "Systematic resampling algorithm from Anglican.
 
@@ -217,16 +231,15 @@
           mean (reduce + (map * weights values))
           variance (reduce + (map (fn [w v] (* w (Math/pow (- v mean) 2)))
                                   weights values))
-          sorted (vec (sort values))
-          n (count values)]
+          quantile (weighted-quantiles values weights)]
       {:mean mean
        :variance variance
        :std-dev (Math/sqrt variance)
        :samples values
        :weights weights
-       :quantiles {:p50 (nth sorted (quot n 2))
-                   :p025 (nth sorted (quot n 40))
-                   :p975 (nth sorted (* 39 (quot n 40)))}
+       :quantiles {:p025 (quantile 0.025)
+                   :p50 (quantile 0.5)
+                   :p975 (quantile 0.975)}
        :type :empirical})))
 
 (defn empirical

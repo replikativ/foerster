@@ -35,8 +35,8 @@ collects them).
 
 `query` needs a numeric function of the value; its `:samples` and
 `:weights` are the per-particle values and normalized weights, which any
-plotting or statistics library can use. (Its `:quantiles` do not yet respect
-the weights — compute quantiles from resampled draws instead.) `predict`
+plotting or statistics library can use; its `:quantiles` (`:p025`, `:p50`,
+`:p975`) are weighted too (`m/weighted-quantiles` for others). `predict`
 resamples by weight and passes each drawn particle to its function.
 
 ## Diagnostics
