@@ -370,3 +370,116 @@
 (defn discrete "An index i with probability weights[i] / Σ weights." [weights]
   (let [ws (mapv double weights)] (->Discrete ws (reduce + ws))))
 (defn dirichlet "Dirichlet(α) over the simplex." [alpha] (->Dirichlet (mapv double alpha)))
+
+;; =============================================================================
+;; More distributions
+;; =============================================================================
+
+(defrecord Categorical [values weights total]
+  Distribution
+  (-draw [_]
+    (let [target (* (u01) total)]
+      (loop [i 0 acc 0.0]
+        (let [acc (+ acc (nth weights i))]
+          (if (or (< target acc) (= i (dec (count weights))))
+            (nth values i)
+            (recur (inc i) acc))))))
+  (-logpdf [_ x]
+    (if-let [i (first (keep-indexed (fn [i v] (when (= v x) i)) values))]
+      (Math/log (/ (nth weights i) total))
+      ##-Inf)))
+
+(defrecord StudentT [nu mu sigma]
+  Distribution
+  (-draw [_]
+    (let [chi2 (* 2.0 (standard-gamma (* 0.5 nu)))]
+      (+ mu (* sigma (/ (standard-normal) (Math/sqrt (/ chi2 nu)))))))
+  (-logpdf [_ x]
+    (let [t (/ (- x mu) sigma)]
+      (- (lgamma (* 0.5 (+ nu 1.0)))
+         (lgamma (* 0.5 nu))
+         (* 0.5 (Math/log (* nu Math/PI)))
+         (Math/log sigma)
+         (* 0.5 (+ nu 1.0) (Math/log (+ 1.0 (/ (* t t) nu)))))))
+  Moments
+  (-mean [_] (if (> nu 1.0) mu ##NaN))
+  (-variance [_] (cond (> nu 2.0) (/ (* sigma sigma nu) (- nu 2.0))
+                       (> nu 1.0) ##Inf
+                       :else ##NaN)))
+
+(defrecord ChiSquared [k]
+  Distribution
+  (-draw [_] (* 2.0 (standard-gamma (* 0.5 k))))
+  (-logpdf [_ x]
+    (if (<= x 0.0)
+      ##-Inf
+      (- (* (- (* 0.5 k) 1.0) (Math/log x)) (* 0.5 x)
+         (lgamma (* 0.5 k)) (* 0.5 k (Math/log 2.0)))))
+  Univariate
+  (-cdf [_ x] (regularized-gamma-p (* 0.5 k) (* 0.5 x)))
+  (-quantile [_ _]
+    (throw (ex-info "ChiSquared has no quantile yet" {:type ::unsupported})))
+  Moments
+  (-mean [_] k)
+  (-variance [_] (* 2.0 k)))
+
+(defn- cholesky
+  "The lower-triangular L with L Lᵀ = `a` (a symmetric positive-definite
+  matrix as vectors of rows)."
+  [a]
+  (let [n (count a)]
+    (reduce
+     (fn [l [i j]]
+       (let [s (reduce + 0.0 (map #(* (get-in l [i %]) (get-in l [j %])) (range j)))
+             v (if (= i j)
+                 (let [d (- (get-in a [i i]) s)]
+                   (when-not (pos? d)
+                     (throw (ex-info "The covariance is not positive definite"
+                                     {:type ::not-positive-definite})))
+                   (Math/sqrt d))
+                 (/ (- (get-in a [i j]) s) (get-in l [j j])))]
+         (assoc-in l [i j] v)))
+     (vec (repeat n (vec (repeat n 0.0))))
+     (for [i (range n) j (range (inc i))] [i j]))))
+
+(defrecord MultivariateNormal [mean cov chol]
+  Distribution
+  (-draw [_]
+    (let [z (vec (repeatedly (count mean) standard-normal))]
+      (mapv (fn [m row] (+ m (reduce + (map * row z)))) mean chol)))
+  (-logpdf [_ x]
+    ;; solve L y = x − μ by forward substitution: log p = −½(d log 2π + 2 Σ log Lᵢᵢ + |y|²)
+    (let [n (count mean)
+          r (mapv - x mean)
+          y (reduce (fn [y i]
+                      (conj y (/ (- (nth r i) (reduce + 0.0 (map #(* (get-in chol [i %]) (nth y %)) (range i))))
+                                 (get-in chol [i i]))))
+                    [] (range n))]
+      (* -0.5 (+ (* n log-2pi)
+                 (* 2.0 (reduce + (map #(Math/log (get-in chol [% %])) (range n))))
+                 (reduce + (map #(* % %) y))))))
+  Moments
+  (-mean [_] mean)
+  (-variance [_] (mapv #(get-in cov [% %]) (range (count mean)))))
+
+(defn categorical
+  "A value with probability ∝ its weight: `outcomes` a map {value weight}
+  or a sequence of [value weight] pairs."
+  [outcomes]
+  (let [pairs (vec (seq outcomes))
+        ws (mapv (comp double second) pairs)]
+    (->Categorical (mapv first pairs) ws (reduce + ws))))
+
+(defn student-t
+  "Student's t with ν degrees of freedom, location μ and scale σ."
+  ([nu] (student-t nu 0.0 1.0))
+  ([nu mu sigma] (->StudentT (double nu) (double mu) (double sigma))))
+
+(defn chi-squared "χ² with k degrees of freedom." [k] (->ChiSquared (double k)))
+
+(defn mvn
+  "Multivariate normal with `mean` (a vector) and covariance `cov` (vectors of
+  rows, symmetric positive definite)."
+  [mean cov]
+  (let [cov (mapv #(mapv double %) cov)]
+    (->MultivariateNormal (mapv double mean) cov (cholesky cov))))
