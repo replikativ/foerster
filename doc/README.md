@@ -23,6 +23,9 @@ Each runs as it renders, in CI on every pull request.
 | Guide | |
 |---|---|
 | [Language](language.md) | sites and their options, addresses, selectors, the rules of the spin macro |
+| [Algorithms](algorithms.md) | every inference entry point and its options |
+| [Posteriors](posteriors.md) | reading a measure: particles, traces, summaries, ESS, evidence |
+| [Extending](extending.md) | your own distributions, policies, proposals, MH moves and kernels |
 | [Worlds](worlds.md) | canonical worlds, their lifecycle, failure and recovery, resources |
 | [Distributions and Reproducibility](distributions.md) | `foerster.dist`, writing a distribution, seeds and streams |
 | [Design](design.md) | inference as handlers of spindel savepoints; how each algorithm works |

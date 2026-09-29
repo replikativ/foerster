@@ -35,15 +35,22 @@ Options of `sample` and `observe`:
 | `:init v` | the first state of a Markov chain starts the site at `v` (a block that cannot be drawn from needs it) |
 | `:stream true` | the site's value arrives from outside, pushed by `smc/stream` |
 
-`sample` also works outside inference: a spin run without an inference
-handler simulates forward, drawing every latent from its distribution.
+To draw from the prior, run a model under `gfi/simulate` (see the
+[programmable inference notebook](https://replikativ.github.io/foerster/foerster.programmable.html))
+or importance sampling. A model run with no inference at all — deref'd in a
+bare world — also simulates forward, but that mode is only a convenience for
+quick checks: it is not yet a faithful sampler (it reuses values an earlier
+run recorded in the same world, and addresses sites differently; see below).
 
 Distributions are in [`foerster.dist`](distributions.md).
 
 ## Addresses
 
 Every site has an **address**, the name under which its value is recorded in
-the trace, constrained (`gfi/generate`), intervened on or proposed.
+the trace, constrained (`gfi/generate`), intervened on or proposed. The rules
+below hold under inference (every algorithm, `gfi`, `counterfactual`); in a
+bare forward run unnamed sites get hash-chain addresses and `with-scope` is
+ignored.
 
 - A site with `:id` is addressed by it. A vector id is a hierarchical name:
   `:id [:step 3 :x]`.
@@ -56,8 +63,15 @@ the trace, constrained (`gfi/generate`), intervened on or proposed.
   inside it: in a loop, `(with-scope [:step i] (sample d :id :x))` addresses
   `[:step 0 :x]`, `[:step 1 :x]`, … — Gen's `:step => i => :x`.
 
+An `:id` must be unique within a run: a site reached twice under one name
+is an error ("Duplicate site address"). In a loop, use a vector id that
+includes the loop index, `:id [:y i]`, or `with-scope`.
+
 Name the sites you will refer to — to constrain, intervene on or read from a
-trace; structural addresses are enough for the rest.
+trace. Naming matters for reproducibility too: an unnamed site's address
+includes the identity of its spin, and a spin created again in the same world
+gets a new one, so its random stream changes (see
+[reproducibility](distributions.md#reproducibility)).
 
 ## Selectors
 

@@ -14,6 +14,9 @@
 
 (def guides
   [["language" "Language" "sites, addresses, and the rules of the spin macro"]
+   ["algorithms" "Algorithms" "every inference entry point and its options"]
+   ["posteriors" "Posteriors" "reading a measure: summaries, diagnostics, evidence"]
+   ["extending" "Extending" "policies, proposals, MH moves and kernels"]
    ["worlds" "Worlds" "canonical worlds, their lifecycle, failure and recovery"]
    ["distributions" "Distributions and Reproducibility" "foerster.dist, seeds and streams"]
    ["design" "Design" "inference as handlers of spindel savepoints"]

@@ -10,7 +10,7 @@
 (ns foerster.getting-started
   (:require [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.dist :as dist]
-            [org.replikativ.foerster.effects :refer [sample observe]]
+            [org.replikativ.foerster.effects :refer [sample observe factor]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.core :as sp]
@@ -21,8 +21,11 @@
 
 ;; ## A world to run in
 ;;
-;; Spins run in an *execution context*, a spindel world. At the REPL one is
-;; enough; `sp/with-context` binds it for the code inside.
+;; Spins run in an *execution context*, a spindel world. Creating a spin
+;; needs one bound, and so does running one: at the REPL one world is
+;; enough, and `sp/with-context` binds it for the code inside. (Inference
+;; makes its own worlds for the particles; this one is only where the model
+;; is created and the result delivered.)
 
 (def world (sp/create-execution-context))
 
@@ -56,8 +59,16 @@
 
 ;; ## Inference
 ;;
-;; `smc-infer` runs Sequential Monte Carlo with 2000 particles. It returns a
-;; spin; outside a spin (at the REPL) we deref it.
+;; An inference algorithm runs the program many times — each run is a
+;; **particle** — and gives each run a **weight**, how well it explains the
+;; data (the product of the densities of its observations). The weighted
+;; runs together approximate the posterior: a *weighted sample*.
+;; `smc-infer` runs Sequential Monte Carlo with 2000 particles; between
+;; observations it *resamples*, duplicating the particles that explain the
+;; data well and dropping the others.
+;;
+;; `smc-infer` returns a spin. At the REPL we deref it (blocking until it is
+;; done); inside another spin we would `await` it.
 
 (def posterior
   (sp/with-context world
@@ -66,11 +77,20 @@
 ;; The result is an *empirical measure*: weighted samples of the program's
 ;; value. `query` summarizes it:
 
-(select-keys (infer/query posterior identity) [:mean :std-dev :quantiles])
+(select-keys (infer/query posterior identity) [:mean :std-dev])
 
-;; `query` also returns the samples and their weights (`:samples`,
+;; `query` also returns the particles' values and weights (`:samples`,
 ;; `:weights`). The posterior of `p` is Beta(7, 2): mean 7/9 ≈ 0.778,
-;; standard deviation ≈ 0.131, median ≈ 0.80.
+;; standard deviation ≈ 0.131.
+;;
+;; The measure itself is a vector of `[particle log-weight]` pairs.
+;; `m/get-value` reads a particle's program value, `m/get-trace` its trace —
+;; every site's value at its address:
+
+(let [[particle log-weight] (first (m/get-particles posterior))]
+  {:value (m/get-value particle)
+   :log-weight log-weight
+   :p-site (get (m/get-trace particle) :p)})
 
 ;; ## Looking at the posterior
 ;;
@@ -113,6 +133,28 @@
     @(infer/smc-infer (normal-mean) 2000)))
 
 (select-keys (infer/query mu-posterior identity) [:mean :std-dev])
+
+;; ## More than one quantity
+;;
+;; A program's value can be anything; return a map to ask about several
+;; latents, and `query` a field with a keyword. `factor` adds to the weight
+;; directly — here a soft preference for small `sigma`:
+
+(defn location-and-scale []
+  (spin
+   (let [mu (sample (dist/normal 0.0 10.0) :id :mu)
+         sigma (sample (dist/gamma 2.0 1.0) :id :sigma)]
+     (factor (- sigma))
+     (loop [[y & more] measurements]
+       (when y
+         (observe (dist/normal mu sigma) y)
+         (recur more)))
+     {:mu mu :sigma sigma})))
+
+(def both (sp/with-context world @(infer/smc-infer (location-and-scale) 2000)))
+
+{:mu (:mean (infer/query both :mu))
+ :sigma (:mean (infer/query both :sigma))}
 
 ;; ## Where to go next
 ;;

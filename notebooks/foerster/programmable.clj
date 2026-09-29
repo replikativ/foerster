@@ -100,6 +100,10 @@
    :variance (/ (reduce + (map #(let [d (- % mu)] (* d d)) xs)) n)
    :exact-mean 2/3 :exact-variance 2/3})
 
+;; The estimates carry Monte Carlo error: the chain's 3000 retained states
+;; are strongly correlated (each move changes one of two coupled sites), so
+;; the variance in particular is only roughly 2/3; longer chains get closer.
+
 ;; ## Involutive MCMC
 ;;
 ;; Some moves are not "redraw these sites": a jump that scales a value, swaps

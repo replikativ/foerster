@@ -92,9 +92,10 @@
      #(deliver p %) #(deliver p %))
     (deref p 60000 :timeout)))
 
-;; `counterfactual` takes a function that makes the model — it runs it once
-;; per world — and returns a CPS operation resolving factual/counterfactual
-;; pairs, one per particle, with weights:
+;; `counterfactual` takes a function that makes the model — it calls it once
+;; per particle, and runs that model in both the factual and the
+;; counterfactual world — and returns a CPS operation resolving
+;; factual/counterfactual pairs, one per particle, with weights:
 
 (select-keys (first pairs) [:factual :counterfactual :weight])
 

@@ -46,19 +46,28 @@ run a program under a policy.
 
 ## The algorithms as handlers
 
-- **Importance sampling** is the default resume, with weights written at
-  sites.
-- **SMC** (`foerster.smc`) forks the first site into N particle worlds, runs
-  each until it parks at an observation, and when all have arrived resamples:
-  the chosen ancestors' parked savepoints are forked (or copied, in canonical
-  worlds) into the next generation, the others abandoned. No coordinator and
-  no barrier thread: the barrier is the arrival of the last particle.
-  **Streaming** SMC parks particles at `:stream` sites until a value is
-  pushed.
+- **SMC** (`foerster.smc`) forks the first site into N particle worlds (in
+  canonical worlds: copies the root at a start site, so every particle runs
+  the whole model), runs each until it parks at an observation, and when all
+  have arrived resamples if the effective sample size is below
+  `:resample-threshold`·N: the chosen ancestors' parked savepoints are
+  forked (or copied, in canonical worlds) into the next generation, the
+  others abandoned. No coordinator and no barrier thread: the barrier is the
+  arrival of the last particle. **Streaming** SMC parks particles at
+  `:stream` sites until a value is pushed.
+- **Importance sampling** is the same with `:resample-threshold` 0: particles
+  still park at each observation, but the population is never resampled.
+- **A `PInferenceKernel`** (`kernel-infer`) runs as SMC whose latent sites
+  take the value the kernel's `step` gives, its `:log-weight-delta` added to
+  the weight; the prior kernel draws from the prior.
 - **Conditional SMC** keeps one particle on a retained trajectory: particle
   Gibbs, and with **ancestor sampling** (PGAS) the retained particle redraws
   its past, each candidate's future scored by forking its parked savepoint
   under a scoring handler.
+- **PIMH** proposes a whole SMC sweep and accepts it on the ratio of evidence
+  estimates; **IPMCMC** runs several SMC and conditional-SMC nodes and
+  exchanges which of them are conditional by Gibbs updates on their
+  evidence.
 - **Metropolis–Hastings** is `replay` plus an accept step (`trace/mh-step`,
   `mh-chain`). A move selects a set of target sites (one for single-site
   MH, a block for block Gibbs), replays from the earliest, proposes at the
@@ -72,14 +81,20 @@ run a program under a policy.
   where `q(new | old)` is what the move drew afresh, `q(old | new)` what the
   reverse move would have to draw of the old trace, and `s` the probability
   of selecting the targets, which changes when the move changed how many
-  sites there are. A kept value that fell out of its site's support is drawn
+  sites there are. Single-site MH proposes from the prior; **random-walk
+  MH** perturbs continuous sites with a normal step and is symmetric;
+  **block Gibbs** selects blocks of sites by a selector and moves each with
+  its own kernel. A kept value that fell out of its site's support is drawn
   again; a move whose reverse would keep the new value (overlapping
   supports) is refused. Limits: the reverse move is scored under the prior,
   so a custom proposal must be the prior or symmetric, and a block's
   membership must not depend on the move.
 - **HMC-within-Gibbs** moves block sites along the gradient of the block's
-  density and accepts on the **full** trace's log joint, so an incomplete
-  block density costs mixing, not correctness.
+  density — plus one other latent site by single-site MH per iteration — and
+  accepts on the **full** trace's log joint, so an incomplete block density
+  costs mixing, not correctness. Blocks are for MCMC: under the particle
+  methods a block site is drawn from its `:sample` capability and weighted as
+  a draw from the prior, so its density does not weigh the particle.
 - **Involutive MCMC** (`foerster.involutive`): an auxiliary draw and an
   involution on (choices, aux) with its log Jacobian.
 - **BBVI** learns a mean-field q by stochastic gradient ascent on the ELBO

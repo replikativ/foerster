@@ -36,11 +36,13 @@ is a handler that decides, scores, forks, copies or abandons those savepoints:
 
 ```clojure
 (require '[org.replikativ.foerster.core :as infer]
+         '[org.replikativ.foerster.dist :as dist]
          '[org.replikativ.foerster.effects :refer [sample observe]]
-         '[org.replikativ.foerster.measure :as m]
-         '[org.replikativ.spindel.spin.cps :refer [spin]]
-         '[org.replikativ.spindel.effects.await :refer [await]]
-         '[org.replikativ.foerster.dist :as dist])
+         '[org.replikativ.spindel.core :as sp]
+         '[org.replikativ.spindel.spin.cps :refer [spin]])
+
+;; programs run in a spindel world (an execution context)
+(def world (sp/create-execution-context))
 
 (defn model []
   (spin
@@ -48,10 +50,14 @@ is a handler that decides, scores, forks, copies or abandons those savepoints:
      (observe (dist/normal mu 1.0) 1.0 :id :y)
      mu)))
 
-(spin
- (let [posterior (await (infer/smc-infer (model) 1000))]
-   (infer/query posterior identity)))   ; mean ≈ 0.5
+;; inference returns a spin; at the REPL, deref it
+(def posterior (sp/with-context world @(infer/smc-infer (model) 1000)))
+
+(:mean (infer/query posterior identity))   ; ≈ 0.5, the posterior is N(0.5, 0.707²)
 ```
+
+Inside another spin, `await` it instead of dereferencing
+(`org.replikativ.spindel.effects.await`).
 
 ## Documentation
 
@@ -65,17 +71,19 @@ is a handler that decides, scores, forks, copies or abandons those savepoints:
 
 ## Worlds
 
-Pure models run in fresh worlds (`:world-policy :fresh`, the default). A model
-that reads or changes the systems of the world it runs in (databases, repos,
-a business book) runs in **canonical forks** of the caller's world
-(`:world-policy :fork`):
+Pure models run in fresh worlds (`:world-policy :fresh`, the default). The
+particle methods (importance sampling, SMC, particle MCMC, BBVI) also run in
+**canonical forks** of the caller's world (`:world-policy :fork`), for models
+that read or change the systems of the world they run in (databases,
+repositories, a business book); Markov chains run in fresh worlds only:
 
 - every particle is a frozen copy of the caller's world and runs the whole
   model, so nothing a particle writes reaches the caller;
-- systems that must not be duplicated (live handles, unsettleable linear
-  state) are refused before the model runs;
-- with a resource authority, particles split the inference's budget instead of
-  multiplying it;
+- on the JVM particles are *copies* of worlds: systems that must not be
+  duplicated (live handles, unsettleable linear state) are refused before the
+  model runs, and with a resource authority particles split the inference's
+  budget instead of multiplying it (in ClojureScript particles are forks,
+  without these checks);
 - however inference ends, every world is discarded before the result is
   delivered, and the posterior keeps each particle's world descriptor.
 
@@ -84,15 +92,15 @@ See [the worlds guide](doc/worlds.md).
 ## Numerical blocks
 
 A block is a group of latents sampled at one site, with a log density and its
-gradient. HMC moves blocks jointly. [spindel-raster] compiles block densities
+gradient. HMC moves blocks jointly. [foerster-raster] compiles block densities
 with raster (JVM, WASM, GPU) and reverse-mode AD.
 
 ## Platforms
 
 The sources are `.cljc`, and inference runs on the JVM and in JavaScript.
 Distributions (`foerster.dist`) are portable Clojure, named and
-parameterized like raster's (and Distributions.jl), and a seed draws the same
-numbers on both platforms. Copying worlds for canonical particles is
+parameterized like raster's, and the random generator draws the same
+numbers for a seed on both platforms. Copying worlds for canonical particles is
 JVM-only; in ClojureScript canonical particles are forks.
 
 ## History
@@ -132,4 +140,4 @@ foerster grew inside spindel and was split out with its history.
 
 Copyright © 2026 Christian Weilbach. Apache License 2.0.
 
-[spindel-raster]: https://github.com/replikativ/spindel-raster
+[foerster-raster]: https://github.com/replikativ/foerster-raster

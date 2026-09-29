@@ -1,6 +1,9 @@
 {:cljdoc.doc/tree
  [["Readme" {:file "README.md"}]
   ["Language" {:file "doc/language.md"}]
+  ["Algorithms" {:file "doc/algorithms.md"}]
+  ["Posteriors" {:file "doc/posteriors.md"}]
+  ["Extending" {:file "doc/extending.md"}]
   ["Worlds" {:file "doc/worlds.md"}]
   ["Distributions and Reproducibility" {:file "doc/distributions.md"}]
   ["Design" {:file "doc/design.md"}]

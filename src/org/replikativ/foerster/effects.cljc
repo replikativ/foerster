@@ -5,7 +5,7 @@
   - choose: Unified effect for both sampling and observation
 
   A choose site is a savepoint when its world handles `:inference/choose`
-  (inference: `inference.smc`, `inference.trace`); otherwise it is forward
+  (inference: `foerster.smc`, `foerster.trace`); otherwise it is forward
   simulation."
   (:require [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.engine.protocols :as rtp]
@@ -39,11 +39,8 @@
     ;; With explicit ID
     (choose (normal mu sigma) :id :my-param :observe observed)
 
-    ;; With initial value
-    (choose (normal 0 1) :init 0.5)
-
-    ;; Counterfactual query
-    (choose (normal 0 1) :where (> x 0))"
+    ;; With initial value (the first state of a Markov chain)
+    (choose (normal 0 1) :init 0.5)"
   [& _]
   (throw (ex-info "choose called outside of spin context (should be CPS-transformed)" {})))
 
@@ -103,7 +100,7 @@
 
 (defn- choose-handler-fn
   "A choose site is a savepoint when its world handles `:inference/choose`: it
-  is published, and a trace policy decides and scores it (`inference.trace`).
+  is published, and a trace policy decides and scores it (`foerster.trace`).
   Otherwise it is forward simulation."
   [runtime args resolve reject]
   (let [ctx rtc/*execution-context*]

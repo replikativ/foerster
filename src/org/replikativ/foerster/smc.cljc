@@ -3,7 +3,7 @@
 
   The program runs once in a session. The first savepoint it reaches is
   forked into N worlds, one per particle; every sample site is decided by
-  the scoring policy of `inference.trace` and recorded in its world's trace;
+  the scoring policy of `foerster.trace` and recorded in its world's trace;
   every observe is scored and then PARKED — its savepoint left pending. When
   every particle is parked or has returned, the population is resampled
   (when its ESS is below the threshold, folding the log mean weight into the
@@ -366,7 +366,7 @@
 
 (defn smc
   "Run `model` (a spin) with `n` particles. Options: `:resample-threshold`
-  (ESS fraction, default 0.5), `:policy` (an `inference.trace/policy`,
+  (ESS fraction, default 0.5), `:policy` (an `foerster.trace/policy`,
   default the prior with no options), `:executor` for the root world,
   `:root` a world to run in instead of a fresh one, `:copy? true` to make
   particles by copying worlds (`effects.savepoint/copy`: a world holding a

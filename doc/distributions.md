@@ -5,9 +5,10 @@
 `org.replikativ.foerster.dist` has the distributions models sample from and
 observe under. They are portable Clojure — the same on the JVM and in
 JavaScript — and named and parameterized like
-[raster](https://github.com/replikativ/raster)'s (and
-[Distributions.jl](https://juliastats.org/Distributions.jl/)), so a model's
-site distributions and a compiled block's densities mean the same thing.
+[raster](https://github.com/replikativ/raster)'s, so a model's site
+distributions and a compiled block's densities mean the same thing. (Close to
+[Distributions.jl](https://juliastats.org/Distributions.jl/) too, except that
+the exponential takes a rate and `discrete` counts from 0.)
 
 | Constructor | Support | Parameters |
 |---|---|---|
@@ -36,10 +37,23 @@ Every distribution supports
 (dist/logpdf d x)    ; log density — log mass for a discrete law; ##-Inf outside the support
 ```
 
-and where they are defined `(dist/cdf d x)`, `(dist/quantile d p)`,
-`(dist/mean d)` and `(dist/variance d)` (the normal, uniform and
-exponential have all four; the gamma, Poisson, χ² and discrete laws have a
-CDF). A count may be passed as `3` or `3.0` alike.
+and some of
+
+```clojure
+(dist/cdf d x) (dist/quantile d p) (dist/mean d) (dist/variance d)
+```
+
+| Distribution | `cdf` | `quantile` | `mean`, `variance` |
+|---|---|---|---|
+| normal, uniform, exponential, Poisson | ✓ | ✓ | ✓ |
+| gamma, χ² | ✓ | — (throws) | ✓ |
+| discrete | ✓ | ✓ | — |
+| beta, Bernoulli, Dirichlet, Student-t | — | — | ✓ |
+| mvn | — | — | ✓ (`variance`: the diagonal) |
+| flip, categorical | — | — | — |
+
+An operation a distribution does not have throws. A count may be passed as
+`3` or `3.0` alike.
 
 The special functions behind them — `lgamma` (Lanczos), the normal CDF
 (through the incomplete gamma function, precise far into the tail),
@@ -55,16 +69,21 @@ A distribution is anything implementing the `dist/Distribution` protocol:
   dist/Distribution
   (-draw [_]
     (let [u (- (random/uniform01) 0.5)]
-      (- mu (* b (Math/signum u) (Math/log (- 1.0 (* 2.0 (Math/abs u))))))))
+      (- mu (* b (if (neg? u) -1.0 1.0) (Math/log (- 1.0 (* 2.0 (Math/abs u))))))))
   (-logpdf [_ x]
     (- (/ (- (Math/abs (- x mu))) b) (Math/log (* 2.0 b)))))
 ```
 
 Draw from `random/uniform01` (or another distribution's `draw`), never from
 `rand`, so that seeded runs stay reproducible. `dist/Univariate` adds `-cdf`
-and `-quantile`, `dist/Moments` `-mean` and `-variance`. For counterfactuals
-a distribution can also be read as a mechanism (`foerster.mechanism`), and
-for BBVI it can provide gradients (`foerster.gradient`).
+and `-quantile`, `dist/Moments` `-mean` and `-variance`.
+
+For counterfactuals a distribution must also be readable as a *mechanism*
+(`foerster.mechanism/PMechanism`: `noise`, `push`, `abduct`): the normal,
+uniform, exponential, flip, Bernoulli and discrete are. For BBVI, a site's
+distribution needs gradients (`foerster.gradient/PDistGradient`): the
+normal, gamma, beta, flip, exponential, Dirichlet, discrete and uniform have
+them.
 
 ## Reproducibility
 
@@ -90,6 +109,25 @@ scheduled, and a proposal draws from a fresh stream. Draws outside any world
 — the seeds of an inference's sessions, SMC's resampling at a barrier — come
 from the process generator in program order.
 
-What breaks reproducibility: randomness from `rand` or `Math/random`,
-effects whose results vary (a language model's answer), and iteration over
-unordered collections that feeds sites.
+Streams are keyed by **address**. A named site (`:id`) is addressed by its
+name, so a seeded run draws the same numbers wherever and however often the
+model is created. An unnamed site's address includes the identity of its
+spin, and a spin created again in the same world gets a new identity: run
+such a model twice in one world with the same seed and it draws differently.
+Name the sites of a model you want to reproduce, or create it in a fresh
+world (`sp/create-execution-context`) for each run.
+
+What else breaks reproducibility: randomness from `rand` or `Math/random`,
+effects whose results vary (a language model's answer), iteration over
+unordered collections that feeds sites, and a few moves that still draw from
+the process generator rather than a world's stream (the accept steps of `gfi/mh`,
+`involutive/step` and PIMH, and a mechanism's noise in counterfactuals):
+under a multi-threaded executor their draws depend on scheduling.
+
+## Known limitations
+
+- `logpdf` is `##-Inf` outside a distribution's support, except at the
+  boundary of the beta (`NaN` at 0 or 1 when a shape is 1) and off the
+  Dirichlet's simplex (not checked).
+- Parameters are not validated: a negative standard deviation gives
+  meaningless values rather than an error.

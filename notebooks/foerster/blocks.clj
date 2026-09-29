@@ -79,8 +79,9 @@
 
 ;; ## HMC
 ;;
-;; `hmc-kernel` runs HMC-within-Gibbs: it moves block sites by HMC and any
-;; other latent site by Metropolis–Hastings. Two chains, 1500 moves each,
+;; `hmc-kernel` runs HMC-within-Gibbs: every iteration moves each block site
+;; by HMC and one other latent site, if there is one, by
+;; Metropolis–Hastings. Two chains, 1500 moves each,
 ;; leapfrog steps of 0.1:
 
 (random/set-seed! 1)
@@ -131,9 +132,12 @@
 ;; HMC's proposal follows the block's density, but foerster accepts or
 ;; rejects it on the **full** log joint of the program's trace. A block whose
 ;; density leaves out a factor — observed elsewhere in the model — still
-;; samples the right posterior; it just mixes worse, and each step records
-;; it. So a block's density is a statement about efficiency, not about
-;; correctness.
+;; samples the right posterior; it just mixes worse (a step that noticed
+;; reports `:incomplete-target?`, visible to `trace/mh-chain`'s `:on-step`).
+;; So a block's density is a statement about efficiency, not about
+;; correctness. Blocks are for MCMC: the particle methods draw a block site
+;; from its `:sample` capability as a prior draw, so its density does not
+;; weigh the particle.
 
 ;; ## Compiled blocks
 ;;

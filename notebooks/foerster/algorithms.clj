@@ -64,31 +64,48 @@
    "random-walk MH" #(infer/kernel-infer (gaussian) (k/random-walk-mh-kernel 2500 {:step-size 0.5 :samples :all :burn 500}) 4)
    "BBVI" #(infer/bbvi-infer (gaussian) 200 40)))
 
+(def seeds [1 2 3 4])
+
+(defn summarize
+  "Over `seeds`: the average and range of `(err measure)`, and the time."
+  [make err]
+  (let [runs (mapv #(run % make) seeds)
+        errs (mapv (comp err :measure) runs)]
+    {:error (/ (reduce + errs) (count errs))
+     :range [(apply min errs) (apply max errs)]
+     :ms (long (/ (reduce + (map :ms runs)) (count runs)))}))
+
+;; One run of a Monte Carlo method is one draw of a random estimate, so each
+;; algorithm runs with four seeds. The error is the distance of the
+;; posterior mean from the truth, 7.25:
+
 (def static-results
   (vec (for [[name make] static-runs]
-         (let [{:keys [measure ms]} (run 1 make)
-               [mu sd] (mean-sd measure identity)]
-           {:algorithm name :mean mu :sd sd :ms ms}))))
+         (assoc (summarize make (fn [measure] (Math/abs (- (first (mean-sd measure identity)) 7.25))))
+                :algorithm name))))
 
-(kind/table static-results)
+(kind/table {:column-names ["algorithm" "error" "range over seeds" "ms"]
+             :row-vectors (mapv (juxt :algorithm :error :range :ms) static-results)})
 
-;; The truth is 7.25 ± 0.913. This model is harder than it looks: its prior
-;; N(1, 2.24²) puts about one percent of its mass where the data point, so
-;; of the thousands of prior draws that importance sampling and SMC start
-;; from, only a few dozen matter. The **effective sample size** says so —
-;; it is computed from the weights, (Σw)² / Σw²:
+;; This model is harder than it looks: its prior N(1, 2.24²) puts about one
+;; percent of its mass where the data point, so of the thousands of prior
+;; draws that importance sampling and SMC start from, only a few dozen
+;; matter. The **effective sample size** says so — it is computed from the
+;; weights, (Σw)² / Σw²:
 
 (m/effective-sample-size (:measure (run 1 #(infer/importance-sampling (gaussian) 4000))))
 
-;; A few dozen effective samples out of 4000: estimates from one run move by
-;; a few tenths between seeds. SMC resamples, which copies the heavy
-;; particles instead of creating new values, so it does no better here (and
-;; its effective sample size, computed after resampling, no longer shows the
-;; problem). Particle MCMC runs short SMC sweeps, each worth about one
-;; effective particle on this model, and so mixes slowly. The random-walk
-;; chains, which move from wherever they are instead of re-proposing from
-;; the prior, and BBVI, which fits its proposal to the posterior, do best.
-;; Single-site MH proposes from the prior too, and is accepted rarely.
+;; With a few dozen effective samples out of 4000, an estimate moves by
+;; tenths between seeds. SMC resamples, which copies the heavy particles
+;; instead of creating new values, so on a model with one static parameter
+;; it cannot do better than importance sampling (and its effective sample
+;; size, computed after resampling, no longer shows the problem). Particle
+;; MCMC runs short SMC sweeps — each worth about one effective particle
+;; here — and moves between them by an accept step, so it mixes slowly.
+;; Markov chains that move from where they are, like the random walk, do
+;; not depend on the prior covering the posterior; single-site MH proposes
+;; from the prior, and is accepted rarely. BBVI fits a proposal to the
+;; posterior and samples from that.
 
 ;; ## A sequential model
 ;;
@@ -141,10 +158,10 @@
 
 (def sequential-results
   (vec (for [[name make] sequential-runs]
-         (let [{:keys [measure ms]} (run 2 make)]
-           {:algorithm name :rms-error (rms-error measure) :ms ms}))))
+         (assoc (summarize make rms-error) :algorithm name))))
 
-(kind/table sequential-results)
+(kind/table {:column-names ["algorithm" "error" "range over seeds" "ms"]
+             :row-vectors (mapv (juxt :algorithm :error :range :ms) sequential-results)})
 
 ;; Importance sampling proposes whole trajectories from the prior and weighs
 ;; them once, at the end. With sixteen observations the weight concentrates
@@ -153,12 +170,13 @@
 (m/effective-sample-size (:measure (run 2 #(infer/importance-sampling (hmm) 4000))))
 
 ;; SMC resamples after every observation, so the particles that explain the
-;; data so far are the ones extended: with a quarter of importance sampling's
-;; particles it is about 2.5 times as accurate, in less time. Particle Gibbs
-;; and PGAS iterate conditional SMC sweeps and pool them; here they match
-;; SMC at several times its cost. They pay off where one SMC sweep
-;; degenerates — long sequences, static parameters shared by all time
-;; steps — and where their MCMC guarantees matter.
+;; data so far are the ones extended: with a quarter of importance
+;; sampling's particles it is more than twice as accurate, in less time. Particle Gibbs and
+;; PGAS iterate conditional SMC sweeps and pool them. On this short sequence
+;; one SMC sweep of 1000 particles is hard to beat for the time; particle
+;; MCMC pays off where one sweep degenerates — long sequences, static
+;; parameters shared by all time steps — and where its MCMC guarantees
+;; matter (more sweeps converge to the exact posterior).
 
 ;; ## Which one to use
 ;;

@@ -2,10 +2,10 @@
   "Compositional probabilistic inference algorithms.
 
   Every method runs a probabilistic program as a savepoint handler: SMC
-  (`inference.smc`) for the particle methods — smc-infer,
+  (`foerster.smc`) for the particle methods — smc-infer,
   importance-sampling, pimh-infer, pgibbs-infer, pgas-infer, ipmcmc-infer,
   bbvi-infer and kernel-infer with a PInferenceKernel — and replay plus
-  accept over traces (`inference.trace`) for the Markov-chain kernels.
+  accept over traces (`foerster.trace`) for the Markov-chain kernels.
 
   Pure inference (`:world-policy :fresh`, the default) runs in fresh worlds;
   `:world-policy :fork` in canonical forks of the caller's world (see
@@ -188,7 +188,7 @@
 (declare particles)
 
 (defn- kernel-policy
-  "An `inference.trace` policy that asks `kernel` (a PInferenceKernel) for
+  "An `foerster.trace` policy that asks `kernel` (a PInferenceKernel) for
   every latent site's value; the value's `:log-weight-delta` (default 0) is
   what it adds to the particle's weight."
   [kernel]
@@ -392,51 +392,34 @@
     :fork (in-canonical-worlds model-task n opts)))
 
 (defn smc-infer
-  "Run SMC inference on probabilistic program.
+  "Sequential Monte Carlo: `num-particles` particles run `model-task` (a
+  spin); at every observation the population is resampled when its
+  effective sample size falls below `:resample-threshold`·N. Runs on
+  savepoints (`foerster.smc/smc`); the measure holds `Sample`s, and its
+  `m/log-marginal` estimates the evidence.
 
-  Sequential Monte Carlo with resampling at observe barriers. Pure inference
-  (`:world-policy :fresh`, the default) runs `inference.smc/smc`, whose
-  particles are `Sample`s; `:world-policy :fork` delegates to kernel-infer
-  with PriorKernel and :barrier-policy :every-observe.
+  Options:
+    :resample-threshold  ESS fraction below which to resample (default 0.5)
+    :world-policy        :fresh (default): fresh worlds; :fork: canonical
+                         forks of the caller's world (doc/worlds.md)
+    :world-opts          fork options for :fork (:systems, :rights, :snapshots)
+    :authority, :grant   a world.scope/PResourceAuthority and the budget the
+                         inference draws from the caller's wallet (:fork)
+    :executor            the executor the worlds run on (default: spindel's)
+    :policy              a `foerster.trace/policy` deciding the sites
+                         (constraints, interventions, proposals)
 
-  Args:
-  - model-task: Spin (from model function) - Probabilistic program to infer
-  - num-particles: Number of particles for SMC
-  - opts: Optional map with:
-    - :resample-threshold - ESS threshold (default 0.5)
-    - :executor - Shared executor for all particles (default: 2-thread pool)
+  Returns a spin resolving the EmpiricalMeasure.
 
-  Returns: Spin<EmpiricalMeasure>
-
-  Example:
-    (spin
-      (let [model (coin-flip-model)
-            measure (await (smc-infer model 100 {:executor shared-exec}))]
-        (query measure identity)))"
+    (sp/with-context world @(smc-infer (model) 1000))   ; at the REPL
+    (spin (query (await (smc-infer (model) 1000)) identity))"
   [model-task num-particles & [opts]]
   (particles model-task num-particles opts))
 
 (defn importance-sampling
-  "Run importance sampling inference on probabilistic program.
-
-  Simple importance sampling without resampling. Pure inference
-  (`:world-policy :fresh`, the default) runs `inference.smc/smc` with
-  resampling off; `:world-policy :fork` delegates to kernel-infer with
-  PriorKernel and :barrier-policy :none.
-
-  Args:
-  - model-task: Spin (from model function) - Probabilistic program
-  - num-samples: Number of samples
-  - opts: Optional map with:
-    - :executor - Shared executor for all samples (default: 2-thread pool)
-
-  Returns: Spin<EmpiricalMeasure>
-
-  Example:
-    (spin
-      (let [model (gaussian-model)  ; Returns spin
-            measure (await (importance-sampling model 1000 {:executor shared-exec}))]
-        (query measure identity)))"
+  "Importance sampling: `num-samples` runs of `model-task`, each weighted by
+  its observations, never resampled (savepoint SMC with
+  `:resample-threshold` 0). Options and result as for `smc-infer`."
   [model-task num-samples & [opts]]
   ;; savepoint SMC that never resamples: ESS never falls below 0
   (particles model-task num-samples (assoc opts :resample-threshold 0.0)))
@@ -446,13 +429,13 @@
 ;; =============================================================================
 
 (defn query
-  "Extract statistics from posterior measure.
+  "Weighted statistics of a numeric function of the program's value over
+  `measure`: `query-fn` is `identity` (the value itself), a keyword (a field
+  of a map value) or a function of the value.
 
-  measure: Posterior measure from inference
-  query-fn: (fn [value] -> extracted-value) to extract from program results
-           OR :identity to get the program result directly
-
-  Returns: Map with :mean, :variance, :std-dev, :quantiles"
+  Returns {:mean :variance :std-dev :quantiles :samples :weights :type};
+  `:samples` and `:weights` are the particles' values and normalized
+  weights."
   [measure query-fn]
   (let [extract-fn (cond
                      ;; identity means "get the main result"
@@ -464,13 +447,9 @@
     (m/measure-stats measure extract-fn)))
 
 (defn predict
-  "Generate predictive samples from posterior.
-
-  measure: Posterior measure
-  pred-fn: (fn [context] -> predicted-value)
-  num-samples: Number of predictions
-
-  Returns: Vector of predicted values"
+  "`num-samples` draws from `measure`, resampled by weight, each passed to
+  `pred-fn` — which gets the particle (a `Sample`, or a context), so
+  `m/get-value` reads its program value and `m/get-trace` its trace."
   [measure pred-fn num-samples]
   (let [samples (m/sample-measure measure num-samples)]
     (mapv (fn [[ctx _]] (pred-fn ctx)) samples)))
@@ -764,7 +743,7 @@
 (defn- variational-draw
   "The proposal of a savepoint BBVI iteration: a latent site whose q (the
   site's prior, the first time its address is seen) has a gradient draws from
-  q; `inference.trace/policy` then weights it by p/q."
+  q; `foerster.trace/policy` then weights it by p/q."
   [q-dists]
   (fn [sp _old-entry]
     (let [address (:savepoint/address sp)

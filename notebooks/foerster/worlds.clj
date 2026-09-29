@@ -64,7 +64,8 @@
     @(infer/smc-infer (hypothesis) 500 {:world-policy :fork})))
 
 ;; Each particle saw the known fact and its own hypothesis, nothing from any
-;; other particle:
+;; other particle (these are counts of particles, before weighting — so
+;; roughly the prior, 0.3 : 0.7):
 
 (frequencies (map (comp :notes m/get-value) (m/get-contexts posterior)))
 
@@ -74,7 +75,7 @@
 
 ;; The posterior of the cause, P(rain | wet grass) = 0.27 / (0.27 + 0.28):
 
-(infer/query posterior #(if (= :rain (:cause %)) 1.0 0.0))
+(:mean (infer/query posterior #(if (= :rain (:cause %)) 1.0 0.0)))
 
 ;; The posterior keeps no world, only each particle's *descriptor*: a
 ;; portable record of the fork it ran in, discarded before the result was
@@ -158,7 +159,7 @@
 
 ;; and afterwards everything is back in the caller's wallet:
 
-@ledger
+(deref ledger)
 
 ;; ## What cannot be copied
 ;;
@@ -175,9 +176,14 @@
                  {:grade :affine})
   :registered)
 
+(defn any-model []
+  (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+          (observe (dist/normal x 1.0) 0.5)
+          x)))
+
 (try
   (sp/with-context with-a-live-handle
-    @(infer/smc-infer (hypothesis) 10 {:world-policy :fork}))
+    @(infer/smc-infer (any-model) 10 {:world-policy :fork}))
   (catch Exception e
     {:error (ex-message e)
      :cause (some-> e ex-cause ex-data :type)}))
