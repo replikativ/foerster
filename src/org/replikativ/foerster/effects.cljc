@@ -117,23 +117,8 @@
   (eff/async-effect choose-handler-fn))
 
 ;; =============================================================================
-;; Deterministic Tracking and Interventions
+;; Interventions
 ;; =============================================================================
-
-(defn track-deterministic!
-  "Track deterministic intermediate value for amortized inference.
-
-  This stores values that depend on random choices but are themselves
-  deterministic computations. Useful for neural network proposals, etc.
-
-  Example:
-    (let [z (choose (normal 0 1))]
-      (track-deterministic! :embedding (embed z))
-      (choose (normal (embed z) 1) :observe y))"
-  [address value]
-  (rtp/swap-state! rtc/*execution-context* [:inference :deterministic]
-                   (fn [det] (assoc (or det {}) address value)))
-  value)
 
 (defn intervene!
   "Set intervention value (Pearl's do-operator).

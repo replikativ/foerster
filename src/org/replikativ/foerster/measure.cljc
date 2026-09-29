@@ -33,35 +33,27 @@
 (defprotocol PMeasure
   "Protocol for probability measures over execution traces.
 
-  A measure represents a distribution over execution contexts (traces).
-  Different measure types enable different inference strategies:
-  - EmpiricalMeasure: Weighted particle set (for SMC)
-  - DiracMeasure: Single execution context (for forward sampling)
-  - (Future) Parametric measures for variational inference"
+  A measure represents a distribution over execution contexts (traces);
+  inference resolves an EmpiricalMeasure, a weighted particle set."
 
   (measure-type [this]
-    "Returns the type of measure: :empirical, :dirac, etc.")
+    "Returns the type of measure: :empirical.")
 
   (sample-measure [this n]
     "Sample n execution contexts from this measure.
 
-    Returns vector of [context log-weight] pairs.
-    For DiracMeasure: returns n copies with uniform weight.
-    For EmpiricalMeasure: samples from particles according to weights.")
+    Returns vector of [context log-weight] pairs, drawn according to the
+    weights.")
 
   (log-marginal [this]
-    "Estimate of log p(observations).
-
-    For EmpiricalMeasure: log-sum-exp of particle weights.
-    For DiracMeasure: the single context's log-weight.")
+    "Estimate of log p(observations): the log mean particle weight plus the
+    normalizer of earlier resampling steps.")
 
   (effective-sample-size [this]
     "Effective sample size (ESS) for particle degeneracy detection.
 
     ESS = (sum w_i)^2 / sum(w_i^2) where w_i are normalized weights.
-    Low ESS indicates degeneracy -> trigger resampling.
-
-    For DiracMeasure: returns 1.0 (perfect, no degeneracy).")
+    Low ESS indicates degeneracy -> trigger resampling.")
 
   (measure-stats [this query-fn]
     "Compute statistics over the measure using query-fn.
@@ -161,40 +153,6 @@
             (recur i (inc j) indices)))))))
 
 ;; =============================================================================
-;; DiracMeasure - Single Execution Context
-;; =============================================================================
-
-(defrecord DiracMeasure [context]
-  PMeasure
-
-  (measure-type [_]
-    :dirac)
-
-  (sample-measure [_ n]
-    (let [log-weight (get-in context [:inference :log-weight] 0.0)]
-      (vec (repeat n [context log-weight]))))
-
-  (log-marginal [_]
-    (get-in context [:inference :log-weight] 0.0))
-
-  (effective-sample-size [_]
-    1.0)
-
-  (measure-stats [_ query-fn]
-    (let [value (query-fn context)]
-      {:mean value
-       :variance 0.0
-       :samples [value]
-       :type :dirac})))
-
-(defn dirac
-  "Create a Dirac measure from a single execution context.
-
-  Used for forward sampling and as initial measure."
-  [context]
-  (->DiracMeasure context))
-
-;; =============================================================================
 ;; EmpiricalMeasure - Weighted Particle Set
 ;; =============================================================================
 
@@ -258,56 +216,17 @@
 (defn get-contexts
   "Extract execution contexts from measure."
   [measure]
-  (case (measure-type measure)
-    :dirac [(:context measure)]
-    :empirical (mapv first (:particles measure))))
+  (mapv first (:particles measure)))
 
 (defn get-log-weights
   "Extract log-weights from measure."
   [measure]
-  (case (measure-type measure)
-    :dirac [(get-in (:context measure) [:inference :log-weight] 0.0)]
-    :empirical (mapv second (:particles measure))))
+  (mapv second (:particles measure)))
 
 (defn get-particles
-  "Extract raw particles (context, log-weight pairs) from measure.
-
-  For DiracMeasure: returns single-element vector
-  For EmpiricalMeasure: returns the particles vector"
+  "The particles of `measure`: a vector of [context log-weight] pairs."
   [measure]
-  (case (measure-type measure)
-    :dirac [(let [ctx (:context measure)]
-              [ctx (get-in ctx [:inference :log-weight] 0.0)])]
-    :empirical (:particles measure)))
-
-(defn update-particles
-  "Update particles in empirical measure.
-
-  f: (fn [[context log-weight]] -> [new-context new-log-weight])"
-  [measure f]
-  {:pre [(= :empirical (measure-type measure))]}
-  (let [new-particles (mapv f (:particles measure))]
-    (empirical new-particles)))
-
-(defn resample-if-needed
-  "Resample particles if ESS drops below threshold.
-
-  threshold: fraction of particle count (e.g., 0.5)
-  Returns new measure (resampled if needed)."
-  [measure threshold]
-  (if (not= :empirical (measure-type measure))
-    measure
-    (let [n (count (:particles measure))
-          ess (effective-sample-size measure)
-          resample? (< ess (* threshold n))]
-      (if resample?
-        (do
-          (log/debug :measure/resample {:ess ess :threshold (* threshold n) :n n})
-          (let [resampled (sample-measure measure n)
-                ;; Reset weights to uniform after resampling
-                new-particles (mapv (fn [[ctx _]] [ctx 0.0]) resampled)]
-            (empirical new-particles)))
-        measure))))
+  (:particles measure))
 
 ;; =============================================================================
 ;; Context Value Extraction
@@ -362,10 +281,4 @@
      (.write w (str ":n " (count (:particles m))))
      (.write w (str ", :ess " (format "%.2f" (double (effective-sample-size m)))))
      (.write w (str ", :log-marginal " (format "%.4f" (double (log-marginal m)))))
-     (.write w "}")))
-
-#?(:clj
-   (defmethod print-method DiracMeasure [m ^java.io.Writer w]
-     (.write w "#DiracMeasure{")
-     (.write w (str ":log-weight " (format "%.4f" (double (log-marginal m)))))
      (.write w "}")))
