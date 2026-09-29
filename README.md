@@ -1,5 +1,9 @@
 # foerster
 
+[![Clojars Project](https://img.shields.io/clojars/v/org.replikativ/foerster.svg)](https://clojars.org/org.replikativ/foerster)
+[![CircleCI](https://circleci.com/gh/replikativ/foerster.svg?style=shield)](https://circleci.com/gh/replikativ/foerster)
+[![Slack](https://img.shields.io/badge/slack-join_chat-brightgreen.svg)](https://clojurians.slack.com/archives/CB7GJAN0L)
+
 > A "bit" of information is definable as a difference that makes a
 > difference. — Gregory Bateson, *Steps to an Ecology of Mind*
 
@@ -90,6 +94,26 @@ Metropolis's name for it. The Metropolis algorithm followed in 1953.
 > to select by chance, by means of a "random number" with suitable
 > probability, the fate or kind of event, to follow it in a line, so to speak,
 > instead of considering all branches. — Stanisław Ulam
+
+## Lineage
+
+foerster stands on earlier probabilistic programming systems:
+
+- [Anglican](https://github.com/probprog/anglican), probabilistic
+  programming in Clojure: a model is a program whose `sample` and
+  `observe` are checkpoints, and inference is a continuation-passing
+  interpreter over them (SMC, PIMH, PGibbs, PGAS, IPMCMC, LMH, BBVI).
+  foerster's sites are those checkpoints as spindel savepoints, and its
+  benchmarks reuse Anglican's ground truths.
+- [Daphne](https://github.com/plai-group/daphne), a probabilistic
+  programming compiler in Clojure, following
+  [An Introduction to Probabilistic Programming](https://arxiv.org/abs/1809.10756):
+  first-order programs compiled to graphical models, and those to amortized
+  inference networks.
+- [Gen](https://www.gen.dev/) ([Gen.jl](https://github.com/probcomp/Gen.jl)),
+  programmable inference through the generative function interface —
+  `simulate`, `generate`, `assess`, `update`, `regenerate` over traces — which
+  foerster implements (`foerster.gfi`), and involutive MCMC.
 
 foerster grew inside spindel and was split out with its history.
 
