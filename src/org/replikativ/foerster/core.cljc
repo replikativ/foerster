@@ -140,7 +140,7 @@
                                                 [(m/sample-particle (:trace/result t)
                                                                     (itrace/legacy-trace t))
                                                  0.0]))))))
-               {final :trace accepted :accepted}
+               {final :trace moves :moves accepted :accepted}
                (await (itrace/mh-chain initial iterations step-opts))
                world (:trace/world final)]
            (rtp/swap-state! world [:inference]
@@ -149,6 +149,7 @@
                                      :result (:trace/result final)
                                      :trace (itrace/legacy-trace final)
                                      :mcmc {:completed-iterations iterations
+                                            :moves moves
                                             :acceptance-count accepted})))
            (if (= :all (:samples kernel))
              @samples
@@ -821,10 +822,12 @@
 (defn bbvi-infer
   "Black Box Variational Inference (Ranganath et al., AISTATS 2014).
 
-   Learns a mean-field q(z) = Π_addr q_addr, initialized to the priors, by
-   stochastic ascent on the ELBO with the score-function estimator and
-   control variates. Each iteration runs `num-particles` programs that
-   sample latents from q and weight by p(x, y)/q(x).
+   Learns a mean-field q(z) = Π_addr q_addr by stochastic ascent on the ELBO
+   with the score-function estimator and control variates: `num-iterations`
+   updates, each from `num-particles` programs that sample latents from q
+   and weight by p(x, y)/q(x). Each site's q starts as the prior it has when
+   first reached and from then on moves by gradient only: mean-field, it
+   does not follow a prior that depends on other latents.
 
    Args:
      model-task, num-particles, num-iterations
@@ -835,9 +838,9 @@
            false: plain steps
            :executor
 
-   Returns: Spin<EmpiricalMeasure> — the last iteration's importance-weighted
-   samples from q; the learned q is under `:variational-dists`
-   (see `get-variational-dists`)."
+   Returns: Spin<EmpiricalMeasure> — `num-particles` importance-weighted
+   samples from the final q (with 0 iterations: from the priors); the learned
+   q is under `:variational-dists` (see `get-variational-dists`)."
   [model-task num-particles num-iterations & [opts]]
   (spin
    (let [base-lr (or (:base-lr opts) 1.0)
@@ -851,7 +854,7 @@
                                        (assoc opts
                                               :resample-threshold 0.0
                                               :policy (itrace/policy {:draw (variational-draw q-dists)}))))]
-         (if (>= (inc iteration) num-iterations)
+         (if (>= iteration num-iterations)
            (assoc measure :variational-dists @q-dists)
            (let [ps (m/get-particles measure)
                  grads (mapv (fn [[c _]] (q-gradients (merge @q-dists qs) (m/get-trace c)))

@@ -34,7 +34,7 @@
                {:ctx c :value (measure/get-value c) :log-weight lw
                 :mh (assoc mh :acceptance-rate
                            (/ (double (:acceptance-count mh 0))
-                              (max 1 (:completed-iterations mh 0))))})))
+                              (max 1 (:moves mh 0))))})))
          (finally (ctx/stop-context! root)))))
 
 (def visited (atom []))

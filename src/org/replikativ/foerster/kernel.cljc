@@ -34,7 +34,7 @@
     is {:source distribution :options site-options :address address},
     `trace` the particle's trace so far.
 
-    Returns {:action :assign, :value v} and optionally `:log-weight-delta`,
+    Returns {:value v} and optionally `:log-weight-delta`,
     what the value adds to the particle's weight (default 0: a draw from the
     site's distribution)."))
 
@@ -54,7 +54,7 @@
                   (some? observe) observe
                   (some? init) init
                   :else (dist/draw source))]
-      {:action :assign, :value value})))
+      {:value value})))
 
 (defn prior-kernel
   "Create a PriorKernel for simple importance sampling."

@@ -341,6 +341,11 @@
           kl (kl-normal (w-mean-sd identity (weighted-values meas)) gaussian-truth)]
       (is (< (Math/abs (- (:mu q) 7.25)) 0.3) (str "q " q))
       (is (< kl 0.1) (str "weighted samples KL " kl))))
+  (testing "with no updates, importance sampling from the priors"
+    (let [meas (run-infer 20 #(infer/bbvi-infer (conjugate-model) 50 0 {:executor serial-executor}))]
+      (is (= 50 (count (m/get-particles meas))))
+      (is (every? #(instance? org.replikativ.foerster.dist.Normal %)
+                  (vals (infer/get-variational-dists meas))))))
   (testing "its weighted samples estimate the evidence"
     (let [meas (run-infer 19 #(infer/bbvi-infer (conjugate-model) 200 40 {:executor serial-executor}))]
       (is (< (Math/abs (- (m/log-marginal meas) conjugate-log-evidence)) 0.2)

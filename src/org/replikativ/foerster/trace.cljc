@@ -160,9 +160,14 @@
           :else
           (let [init (when init? (:init (:options (:savepoint/payload sp))))
                 v (if (some? init) init (dist/draw dist))
-                lp (dist/logpdf dist v)]
+                lp (dist/logpdf dist v)
+                ;; a draw from something other than the site's law (a
+                ;; block's :sample) is weighed by the difference
+                lq (if (some? init) lp (or (dist/-draw-logpdf dist v) lp))]
+            (when (not= lp lq)
+              (add-weight! world (- lp lq)))
             {:value v
-             :note (cond-> {:dist dist :log-prob lp :log-proposal lp}
+             :note (cond-> {:dist dist :log-prob lp :log-proposal lq}
                      ;; The old value was there and could not be kept. The
                      ;; reverse move must be able to do the same; see
                      ;; `mh-log-ratio`.
@@ -286,7 +291,8 @@
 
   q(new | old) is the density of everything `new` drew afresh; q(old | new) is
   the density of everything of `old` that `new` did not keep, which the
-  reverse move would have to draw (from the prior, hence its :log-prob). A
+  reverse move would have to draw (from the prior, hence its :log-prob, or a
+  block's :sample density). A
   symmetric move cancels on both sides. s is the probability of selecting the
   targets, `log-selection`; it differs between the traces when the move
   changed how many sites there are to select from.
@@ -318,7 +324,9 @@
                         (remove #(same? % (get new-by-address (:address %))))
                         (remove #(:kept? (:note (get new-by-address (:address %)))))
                         (remove #(:symmetric? (:note (get new-by-address (:address %)))))
-                        (map (comp :log-prob :note)))
+                        ;; the reverse move draws as the prior proposal does
+                        (map (fn [{:keys [note value]}]
+                               (or (dist/-draw-logpdf (:dist note) value) (:log-prob note)))))
                   + 0.0 old-entries)
         irreversible? (some (fn [entry]
                               (and (:redrawn? (:note entry))
@@ -344,15 +352,15 @@
   [sp _old-entry]
   (let [dist (:dist (:savepoint/payload sp))
         v (dist/draw dist)]
-    {:value v :log-proposal (dist/logpdf dist v)}))
+    {:value v :log-proposal (dist/draw-logpdf dist v)}))
 
 (defn random-walk-proposal
   "A symmetric Gaussian step of `step-size` around a real-valued target's
-  old value. A discrete target (a boolean, an integer count) has no such
-  step; it gets a prior proposal."
+  old value. A target whose law is not continuous (a boolean, an integer
+  count, a vector) has no such step; it gets a prior proposal."
   [step-size]
   (fn [sp old-entry]
-    (if (double? (:value old-entry))
+    (if (dist/continuous? (:dist (:savepoint/payload sp)))
       {:value (+ (:value old-entry) (* step-size (dist/draw (dist/normal 0.0 1.0))))
        :symmetric? true}
       (prior-proposal sp old-entry))))
@@ -418,22 +426,26 @@
 
 (defn mh-chain
   "`n` Metropolis-Hastings moves from `trace`; `opts` as for `mh-step`.
-  Returns a CPS operation resolving {:trace final :accepted k}. `:on-step`
-  (fn [step-result]) sees every move. `:step` (fn [trace opts]) -> CPS
-  resolving a step result replaces `mh-step` as the move (e.g.
-  `foerster.hmc/within-gibbs`)."
+  Returns a CPS operation resolving {:trace final :moves m :accepted k}: of
+  the m moves made, k were accepted. `:on-step` (fn [step-result]) sees every
+  step. `:step` (fn [trace opts]) -> CPS resolving a step result replaces
+  `mh-step` (e.g. `foerster.hmc/within-gibbs`); a step that makes several
+  moves reports `:moves` and `:accepted-moves`, otherwise it is one move,
+  accepted when `:accepted?`."
   ([trace n] (mh-chain trace n nil))
   ([trace n {:keys [on-step] move :step :or {move mh-step} :as opts}]
    (fn [resolve reject]
-     (letfn [(step [current i accepted]
+     (letfn [(step [current i moves accepted]
                (if (= i n)
-                 (resolve {:trace current :accepted accepted})
+                 (resolve {:trace current :moves moves :accepted accepted})
                  ((move current (assoc opts :iteration i))
                   (fn [{:keys [accepted?] next-trace :trace :as result}]
                     (when on-step (on-step result))
-                    (step next-trace (inc i) (if accepted? (inc accepted) accepted)))
+                    (step next-trace (inc i)
+                          (+ moves (:moves result 1))
+                          (+ accepted (:accepted-moves result (if accepted? 1 0)))))
                   reject)))]
-       (step trace 0 0)))))
+       (step trace 0 0 0)))))
 
 (defn legacy-trace
   "`trace` in the legacy shape of a particle's trace (`[:inference :trace]`):

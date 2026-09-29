@@ -3,7 +3,7 @@
   pure-Clojure reference blocks (the oracles of the spindel ↔ raster block
   contract)."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.foerster.benchmark-test :refer [run-infer weighted-values]]
+            [org.replikativ.foerster.benchmark-test :refer [run-infer weighted-values w-mean-sd]]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.hmc :as hmc]
             [org.replikativ.foerster.core :as infer]
@@ -188,6 +188,62 @@
                   sd (Math/sqrt (/ (reduce + (map #(let [r (- % mean)] (* r r)) xs)) (count xs)))]
               (is (< (Math/abs (- mean m)) 0.05) (str "mean " mean " vs " m))
               (is (< (Math/abs (- sd s)) 0.05) (str "sd " sd " vs " s))))))
+      (finally
+        (await-cps (sp/close! session))
+        (ctx/stop-context! root)))))
+
+;; --- blocks under the particle methods ----------------------------------------
+
+(defn- sampled-gaussian-block
+  "The Gaussian block with `:sample` from its prior N(0, s0²) and, unless
+  `density?` is false, that prior's density as `:sample-log-density`."
+  [d density?]
+  (let [b (gaussian-block d true)
+        prior (fn [{:keys [s0]}] (dist/normal 0.0 s0))]
+    (block/block (:description b)
+                 (cond-> (assoc (:capabilities b)
+                                :sample (fn [inputs] (vec (repeatedly d #(dist/draw (prior inputs))))))
+                   density?
+                   (assoc :sample-log-density
+                          (fn [^doubles mu inputs]
+                            (reduce + (map #(dist/logpdf (prior inputs) %) mu))))))))
+
+(deftest particle-methods-weigh-block-draws-by-their-target
+  (let [b (sampled-gaussian-block 1 true)
+        model (fn [] (spin (first (sample (block/block-dist b gauss-inputs) :id :mu))))
+        [[mean _]] (gauss-posterior gauss-inputs 1)]
+    (doseq [[label make] [["importance sampling" #(infer/importance-sampling (model) 4000)]
+                          ["SMC" #(infer/smc-infer (model) 4000)]]]
+      (testing label
+        (let [m (first (w-mean-sd identity (weighted-values (run-infer 3 make))))]
+          (is (< (Math/abs (- m mean)) 0.05) (str label ": " m " vs " mean))))))
+  (testing "a block without :sample-log-density is refused, not mis-weighted"
+    (let [b (sampled-gaussian-block 1 false)
+          model (fn [] (spin (first (sample (block/block-dist b gauss-inputs) :id :mu))))
+          outcome (try (run-infer 3 #(infer/importance-sampling (model) 10))
+                       (catch Throwable e e))]
+      (is (instance? Throwable outcome))
+      (is (some #(= ::block/no-sample-density (:type (ex-data %)))
+                (take-while some? (iterate ex-cause outcome)))))))
+
+(deftest within-gibbs-counts-every-move
+  ;; a block and one free latent: two moves a step, the free one (a prior
+  ;; proposal with nothing observed) always accepted
+  (let [b (gaussian-block 1 true)
+        root (ctx/create-execution-context)
+        session (sp/open! root {:seed 12 :fork-opts {:systems :none}})
+        await-cps (fn [op] (let [p (promise)]
+                             (op #(deliver p [:ok %]) #(deliver p [:err %]))
+                             (let [[k v] (deref p 60000 [:err (ex-info "timeout" {})])]
+                               (if (= k :ok) v (throw v)))))]
+    (try
+      (let [model (binding [ec/*execution-context* root]
+                    (spin [(sample (block/block-dist b gauss-inputs) :id :mu :init [0.0])
+                           (sample (dist/normal 0.0 1.0) :id :z)]))
+            t0 (await-cps (trace/run session model (itrace/policy {:init? true}) {:anchor? itrace/anchor?}))
+            {:keys [moves accepted]} (await-cps (itrace/mh-chain t0 20 {:step (hmc/within-gibbs {:step-size 0.1 :steps 8})}))]
+        (is (= 40 moves))
+        (is (< 20 accepted 41) (str accepted " of " moves)))
       (finally
         (await-cps (sp/close! session))
         (ctx/stop-context! root)))))

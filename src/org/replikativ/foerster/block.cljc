@@ -20,7 +20,11 @@
   The target includes every factor the latents touch: their priors and the
   observations that depend on them, which must then not be observed again as
   sites of their own. A block without `:sample` cannot be drawn from; start
-  it at an `:init`.
+  it at an `:init`. `:sample` need not draw from the target (it cannot know
+  its normalizer); a block drawn from under importance sampling or SMC, or
+  proposed from by single-site MH, also needs `:sample-log-density`, the log
+  density of what `:sample` draws, which weighs the draw:
+  log target(θ) − log sample-density(θ).
 
   Draft 0 supports unconstrained real latents only; transforms of constrained
   ones (`:constrain`, `:unconstrain` with their Jacobians) come with raster's
@@ -78,7 +82,15 @@
   (-logpdf [_ theta]
     (if (= (dimension block) (count theta))
       ((capability block :log-density) (theta-array theta) inputs)
-      ##-Inf)))
+      ##-Inf))
+  dist/DrawDensity
+  (-draw-logpdf [_ theta]
+    (if-let [density (capability block :sample-log-density)]
+      (if (= (dimension block) (count theta))
+        (double (density (theta-array theta) inputs))
+        ##-Inf)
+      (throw (ex-info "A block drawn from needs :sample-log-density to weigh its draws"
+                      {:type ::no-sample-density :block (:block/id (:description block))})))))
 
 (defn block-dist
   "Block `b` at `inputs`, as the distribution of its site."
