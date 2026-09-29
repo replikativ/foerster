@@ -876,8 +876,8 @@
    q is under `:variational-dists` (see `get-variational-dists`)."
   [model-task num-particles num-iterations & [opts]]
   (check-options! opts (-> particle-options
-                         (disj :policy :resample-threshold)
-                         (into #{:base-lr :robbins-monro :adagrad})))
+                           (disj :policy :resample-threshold)
+                           (into #{:base-lr :robbins-monro :adagrad})))
   (spin
    (let [base-lr (or (:base-lr opts) 1.0)
          robbins-monro (or (:robbins-monro opts) 0.0)
