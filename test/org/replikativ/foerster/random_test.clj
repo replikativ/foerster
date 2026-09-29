@@ -5,6 +5,12 @@
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :refer [run-infer weighted-values]]
             [org.replikativ.foerster.core :as infer]
+            [org.replikativ.foerster.counterfactual :as cf]
+            [org.replikativ.foerster.gfi :as gfi]
+            [org.replikativ.foerster.involutive :as inv]
+            [org.replikativ.foerster.random :as random]
+            [org.replikativ.spindel.engine.context :as context]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.foerster.kernel :as k]
             [org.replikativ.foerster.smc :as smc]
             [org.replikativ.foerster.effects :refer [sample observe]]
@@ -41,3 +47,64 @@
         [a b c] (runs 3 21 make)]
     (is (= a b c))
     (is (not= a (first (runs 1 22 make))))))
+
+(deftest parallel-pimh-is-reproducible
+  (let [make (fn [exec] (smc/pimh (model) 20 10 {:executor exec}))
+        [a b] (runs 2 31 make)]
+    (is (= a b))))
+
+;; Moves draw from their worlds' streams, not from the process generator:
+;; other draws interleaved between the moves (another computation's, on
+;; another thread) do not change them.
+
+(defn- await-cps [operation]
+  (let [result (promise)]
+    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    (let [[tag v] (deref result 20000 [:error (ex-info "timed out" {})])]
+      (if (= :ok tag) v (throw v)))))
+
+(defn- named-model []
+  (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+          (observe (dist/normal x 1.0) 2.0 :id :y)
+          x)))
+
+(defn- moves
+  "The values of :x along `n` moves `(step t)` from a simulated trace under
+  `seed`; with `interleave?` a process draw precedes every move."
+  [seed n step interleave?]
+  (random/set-seed! seed)
+  (let [root (context/create-execution-context)
+        model (binding [ec/*execution-context* root] (named-model))]
+    (loop [t (await-cps (gfi/simulate model)) i 0 xs []]
+      (if (= i n)
+        (do (await-cps (gfi/close! t)) xs)
+        (do (when interleave? (random/uniform01))
+            (let [{t' :trace} (await-cps (step t))]
+              (recur t' (inc i) (conj xs (get-in t' [:trace/entries :x :value])))))))))
+
+(deftest moves-draw-from-world-streams
+  (testing "gfi/mh"
+    (let [step #(gfi/mh % #{:x})]
+      (is (= (moves 5 40 step false) (moves 5 40 step true)))))
+  (testing "involutive/step"
+    (let [q (dist/normal 0.0 0.8)
+          move {:propose (fn [_] (let [u (dist/draw q)] {:aux u :log-q (dist/logpdf q u)}))
+                :log-q (fn [_ u] (dist/logpdf q u))
+                :involution (fn [{x :x} u] {:choices {:x (+ x u)} :aux (- u) :log-jacobian 0.0})}
+          step #(inv/step % move)
+          xs (moves 6 40 step false)]
+      (is (= xs (moves 6 40 step true)))
+      (is (< 5 (count (distinct xs))) "repeated moves from one state propose anew"))))
+
+(deftest abduction-draws-from-the-factual-world
+  (let [noise (fn [interleave?]
+                (random/set-seed! 9)
+                (let [root (context/create-execution-context)
+                      model (binding [ec/*execution-context* root]
+                              (spin (sample (dist/flip 0.3) :id :c)))
+                      t (await-cps (gfi/simulate model))]
+                  (when interleave? (random/uniform01))
+                  (let [[n] (cf/noise-of t)]
+                    (await-cps (gfi/close! t))
+                    n)))]
+    (is (= (noise false) (noise true)))))

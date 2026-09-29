@@ -19,7 +19,8 @@
   interventional, not counterfactual."
   (:require [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.foerster.trace :as itrace]
-            [org.replikativ.foerster.mechanism :as mech]))
+            [org.replikativ.foerster.mechanism :as mech]
+            [org.replikativ.foerster.random :as random]))
 
 (defn noise-of
   "{address u} of the sample and observe sites of `trace` whose law is a
@@ -28,7 +29,10 @@
   (reduce (fn [[noise unsupported] {:keys [address value note site]}]
             (if (= itrace/choose-site site)
               (if (and (:dist note) (mech/mechanism? (:dist note)))
-                [(assoc noise address (mech/abduct (:dist note) value)) unsupported]
+                [(assoc noise address
+                        (random/in-world-stream (:trace/world trace) [::abduct address]
+                                                #(mech/abduct (:dist note) value)))
+                 unsupported]
                 [noise (conj unsupported address)])
               [noise unsupported]))
           [{} []]

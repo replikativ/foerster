@@ -19,7 +19,9 @@
   sites through the involution itself (reversible jump) are future work."
   (:require [org.replikativ.spindel.trace :as trace]
             [org.replikativ.foerster.trace :as itrace]
-            [org.replikativ.foerster.measure :as m]))
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.random :as random]
+            [org.replikativ.spindel.engine.protocols :as rtp]))
 
 (defn- entry-map [t]
   (into {} (map (juxt :address identity)) (itrace/entries t)))
@@ -56,7 +58,10 @@
   (fn [resolve reject]
     (try
       (let [x (itrace/choices trace)
-            {u :aux lq-fwd :log-q} (propose x)
+            world (:trace/world trace)
+            ;; every move from this state draws its own auxiliary variable
+            move (rtp/swap-state! world [:inference ::moves] (fnil inc 0))
+            {u :aux lq-fwd :log-q} (random/in-world-stream world [::aux move] #(propose x))
             {x' :choices u' :aux lj :log-jacobian} (involution x u)
             changed (into {} (filter (fn [[a v]] (not= v (get x a)))) x')
             from (trace/earliest trace (keys changed))]
@@ -78,7 +83,10 @@
                                 (- (log-q (itrace/choices t') u') lq-fwd)
                                 (or lj 0.0)))
                      accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
-                                  (or (>= ratio 0.0) (< (Math/log (m/uniform01)) ratio)))]
+                                  (or (>= ratio 0.0)
+                                      (< (Math/log (random/in-world-stream (:trace/world t') ::accept
+                                                                           m/uniform01))
+                                         ratio)))]
                  (if accept? (trace/release! trace t') (trace/release! t' trace))
                  (resolve {:trace (if accept? t' trace) :accepted? accept? :log-ratio ratio}))
                (catch #?(:clj Throwable :cljs :default) e (reject e))))

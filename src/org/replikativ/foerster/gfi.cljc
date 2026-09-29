@@ -195,7 +195,10 @@
         (fn [{t' :trace w :weight}]
           (let [accept? (and (not (identical? t' trace))
                              (not (#?(:clj Double/isNaN :cljs js/isNaN) w))
-                             (or (>= w 0.0) (< (Math/log (m/uniform01)) w)))]
+                             (or (>= w 0.0)
+                                 (< (Math/log (random/in-world-stream (:trace/world t') ::accept
+                                                                      m/uniform01))
+                                    w)))]
             (cond
               (identical? t' trace) nil
               accept? (trace/release! trace t')
