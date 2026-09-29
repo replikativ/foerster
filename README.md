@@ -2,6 +2,7 @@
 
 [![Clojars Project](https://img.shields.io/clojars/v/org.replikativ/foerster.svg)](https://clojars.org/org.replikativ/foerster)
 [![CircleCI](https://circleci.com/gh/replikativ/foerster.svg?style=shield)](https://circleci.com/gh/replikativ/foerster)
+[![cljdoc](https://cljdoc.org/badge/org.replikativ/foerster)](https://cljdoc.org/d/org.replikativ/foerster)
 [![Slack](https://img.shields.io/badge/slack-join_chat-brightgreen.svg)](https://clojurians.slack.com/archives/CB7GJAN0L)
 
 > A "bit" of information is definable as a difference that makes a
@@ -52,6 +53,16 @@ is a handler that decides, scores, forks, copies or abandons those savepoints:
    (infer/query posterior identity)))   ; mean ≈ 0.5
 ```
 
+## Documentation
+
+- **Tutorials** — runnable notebooks, rendered at
+  [replikativ.github.io/foerster](https://replikativ.github.io/foerster/):
+  getting started, choosing an algorithm, models in worlds, blocks and HMC,
+  streaming SMC, programmable inference, interventions and counterfactuals.
+- **Guides** — [doc/](doc/README.md): the language, worlds, distributions
+  and reproducibility, the design, the literature.
+- **API reference** — [cljdoc](https://cljdoc.org/d/org.replikativ/foerster).
+
 ## Worlds
 
 Pure models run in fresh worlds (`:world-policy :fresh`, the default). A model
@@ -68,7 +79,7 @@ a business book) runs in **canonical forks** of the caller's world
 - however inference ends, every world is discarded before the result is
   delivered, and the posterior keeps each particle's world descriptor.
 
-See [docs/worlds.md](docs/worlds.md).
+See [the worlds guide](doc/worlds.md).
 
 ## Numerical blocks
 
