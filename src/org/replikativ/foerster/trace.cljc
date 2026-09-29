@@ -356,11 +356,11 @@
 
 (defn random-walk-proposal
   "A symmetric Gaussian step of `step-size` around a real-valued target's
-  old value. A discrete target (a boolean, an integer count) has no such
-  step; it gets a prior proposal."
+  old value. A target whose law is not continuous (a boolean, an integer
+  count, a vector) has no such step; it gets a prior proposal."
   [step-size]
   (fn [sp old-entry]
-    (if (double? (:value old-entry))
+    (if (dist/continuous? (:dist (:savepoint/payload sp)))
       {:value (+ (:value old-entry) (* step-size (dist/draw (dist/normal 0.0 1.0))))
        :symmetric? true}
       (prior-proposal sp old-entry))))
@@ -426,22 +426,26 @@
 
 (defn mh-chain
   "`n` Metropolis-Hastings moves from `trace`; `opts` as for `mh-step`.
-  Returns a CPS operation resolving {:trace final :accepted k}. `:on-step`
-  (fn [step-result]) sees every move. `:step` (fn [trace opts]) -> CPS
-  resolving a step result replaces `mh-step` as the move (e.g.
-  `foerster.hmc/within-gibbs`)."
+  Returns a CPS operation resolving {:trace final :moves m :accepted k}: of
+  the m moves made, k were accepted. `:on-step` (fn [step-result]) sees every
+  step. `:step` (fn [trace opts]) -> CPS resolving a step result replaces
+  `mh-step` (e.g. `foerster.hmc/within-gibbs`); a step that makes several
+  moves reports `:moves` and `:accepted-moves`, otherwise it is one move,
+  accepted when `:accepted?`."
   ([trace n] (mh-chain trace n nil))
   ([trace n {:keys [on-step] move :step :or {move mh-step} :as opts}]
    (fn [resolve reject]
-     (letfn [(step [current i accepted]
+     (letfn [(step [current i moves accepted]
                (if (= i n)
-                 (resolve {:trace current :accepted accepted})
+                 (resolve {:trace current :moves moves :accepted accepted})
                  ((move current (assoc opts :iteration i))
                   (fn [{:keys [accepted?] next-trace :trace :as result}]
                     (when on-step (on-step result))
-                    (step next-trace (inc i) (if accepted? (inc accepted) accepted)))
+                    (step next-trace (inc i)
+                          (+ moves (:moves result 1))
+                          (+ accepted (:accepted-moves result (if accepted? 1 0)))))
                   reject)))]
-       (step trace 0 0)))))
+       (step trace 0 0 0)))))
 
 (defn legacy-trace
   "`trace` in the legacy shape of a particle's trace (`[:inference :trace]`):

@@ -574,3 +574,27 @@
           :mvn {:mean mean :cov cov})
   (let [cov (mapv #(mapv double %) cov)]
     (->MultivariateNormal (mapv double mean) cov (cholesky cov))))
+
+;; =============================================================================
+;; Support
+;; =============================================================================
+
+(defprotocol Continuous
+  (-continuous? [d] "Whether `d` is a law on (an interval of) the reals."))
+
+(extend-protocol Continuous
+  #?(:clj Object :cljs default)
+  (-continuous? [_] false)
+  Normal (-continuous? [_] true)
+  Uniform (-continuous? [_] true)
+  Exponential (-continuous? [_] true)
+  Gamma (-continuous? [_] true)
+  Beta (-continuous? [_] true)
+  StudentT (-continuous? [_] true)
+  ChiSquared (-continuous? [_] true))
+
+(defn continuous?
+  "Whether `d` is a law on (an interval of) the reals: a scalar site a
+  random walk can move."
+  [d]
+  (-continuous? d))

@@ -225,3 +225,25 @@
       (is (instance? Throwable outcome))
       (is (some #(= ::block/no-sample-density (:type (ex-data %)))
                 (take-while some? (iterate ex-cause outcome)))))))
+
+(deftest within-gibbs-counts-every-move
+  ;; a block and one free latent: two moves a step, the free one (a prior
+  ;; proposal with nothing observed) always accepted
+  (let [b (gaussian-block 1 true)
+        root (ctx/create-execution-context)
+        session (sp/open! root {:seed 12 :fork-opts {:systems :none}})
+        await-cps (fn [op] (let [p (promise)]
+                             (op #(deliver p [:ok %]) #(deliver p [:err %]))
+                             (let [[k v] (deref p 60000 [:err (ex-info "timeout" {})])]
+                               (if (= k :ok) v (throw v)))))]
+    (try
+      (let [model (binding [ec/*execution-context* root]
+                    (spin [(sample (block/block-dist b gauss-inputs) :id :mu :init [0.0])
+                           (sample (dist/normal 0.0 1.0) :id :z)]))
+            t0 (await-cps (trace/run session model (itrace/policy {:init? true}) {:anchor? itrace/anchor?}))
+            {:keys [moves accepted]} (await-cps (itrace/mh-chain t0 20 {:step (hmc/within-gibbs {:step-size 0.1 :steps 8})}))]
+        (is (= 40 moves))
+        (is (< 20 accepted 41) (str accepted " of " moves)))
+      (finally
+        (await-cps (sp/close! session))
+        (ctx/stop-context! root)))))

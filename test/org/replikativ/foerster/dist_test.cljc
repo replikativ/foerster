@@ -103,3 +103,8 @@
            (try (make) nil
                 (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
                   (:type (ex-data e))))))))
+
+(deftest continuity-is-the-law's
+  (is (every? d/continuous? [(d/normal 0 1) (d/gamma 2 1) (d/beta 2 2) (d/uniform 0 1)]))
+  (is (not-any? d/continuous? [(d/poisson 3) (d/discrete [1 1]) (d/flip 0.5)
+                               (d/bernoulli 0.5) (d/dirichlet [1 1])])))

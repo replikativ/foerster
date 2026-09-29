@@ -107,28 +107,31 @@
 (defn within-gibbs
   "A step for `foerster.trace/mh-chain` (`:step`): an HMC move of every
   block site, then one single-site MH move of a latent that is not a block
-  site, if there is one. `opts`: `:step-size`, `:steps`. The step counts as
-  accepted when the block moves were."
+  site, if there is one. `opts`: `:step-size`, `:steps`. Resolves the step
+  with `:moves` (how many moves it made) and `:accepted-moves`; the step as a
+  whole is `:accepted?` when any of them was."
   [{:keys [step-size steps] :as opts}]
   (fn [trace {:keys [iteration] :as chain-opts}]
     (fn [resolve reject]
       (let [blocks (filterv #(block-site? trace %) (itrace/latent-addresses trace))]
         (letfn [(others [t] (vec (remove #(block-site? t %) (itrace/latent-addresses t))))
-                (go [t [address & more] accepted? incomplete?]
+                (go [t [address & more] moves accepted incomplete?]
                     (if address
                       ((hmc-step t (merge chain-opts opts {:address address :iteration iteration
                                                            :step-size step-size :steps steps}))
-                       (fn [r] (go (:trace r) more (or accepted? (:accepted? r))
+                       (fn [r] (go (:trace r) more (inc moves) (if (:accepted? r) (inc accepted) accepted)
                                    (or incomplete? (:incomplete-target? r))))
                        reject)
-                      (let [done #(resolve {:trace % :accepted? accepted?
-                                            :incomplete-target? incomplete?})]
+                      (let [done (fn [t moves accepted]
+                                   (resolve {:trace t :accepted? (pos? accepted)
+                                             :moves moves :accepted-moves accepted
+                                             :incomplete-target? incomplete?}))]
                         (if (seq (others t))
                           ((itrace/mh-step t (assoc chain-opts
                                                     :select (fn [t' _]
                                                               {:targets #{(m/pick-uniformly (others t'))}
                                                                :log-selection #(- (Math/log (double (count (others %)))))})))
-                           (fn [r] (done (:trace r)))
+                           (fn [r] (done (:trace r) (inc moves) (if (:accepted? r) (inc accepted) accepted)))
                            reject)
-                          (done t)))))]
-          (go trace blocks false false))))))
+                          (done t moves accepted)))))]
+          (go trace blocks 0 0 false))))))
