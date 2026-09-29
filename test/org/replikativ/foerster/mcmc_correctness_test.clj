@@ -27,7 +27,7 @@
             [org.replikativ.spindel.effects.await :as aw]
             [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.engine.context :as ctx]
-            [anglican.runtime :as ar]))
+            [org.replikativ.foerster.dist :as dist]))
 
 (defn- await-cps [operation timeout-ms]
   (let [result (promise)]
@@ -41,7 +41,7 @@
   "The results of `steps` states of one seeded chain of `model-fn`, after
   `burn-in`."
   [model-fn step-opts steps burn-in seed]
-  (.setSeed ^org.apache.commons.math3.random.RandomGenerator ar/RNG (long seed))
+  (random/set-seed! (long seed))
   (let [root (ctx/create-execution-context)
         session (sp/open! root {:seed (random/fresh-seed) :fork-opts {:systems :none} :retain-released? false})
         seen (atom [])]
@@ -76,10 +76,10 @@
 ;;   w ~ N(0,1), -2 | w ~ N(w,1)  =>  w | y ~ N(-1, 1/2)
 (defn- interleaved-model []
   (spin
-   (let [x (sample (ar/normal 0.0 1.0))]
-     (observe (ar/normal x 1.0) 2.0)
-     (let [w (sample (ar/normal 0.0 1.0))]
-       (observe (ar/normal w 1.0) -2.0)
+   (let [x (sample (dist/normal 0.0 1.0))]
+     (observe (dist/normal x 1.0) 2.0)
+     (let [w (sample (dist/normal 0.0 1.0))]
+       (observe (dist/normal w 1.0) -2.0)
        [x w]))))
 
 (deftest an-observe-upstream-of-the-moved-site-stays-in-the-ratio
@@ -97,9 +97,9 @@
 ;;   y | x ~ N(x,2)  =>  x | y ~ N(1, 2/3);   z | y ~ N(2, 2/3)
 (defn- chain-model []
   (spin
-   (let [x (sample (ar/normal 0.0 1.0))
-         z (sample (ar/normal x 1.0))]
-     (observe (ar/normal z 1.0) 3.0)
+   (let [x (sample (dist/normal 0.0 1.0))
+         z (sample (dist/normal x 1.0))]
+     (observe (dist/normal z 1.0) 3.0)
      [x z])))
 
 (deftest a-kept-downstream-sample-is-rescored
@@ -119,11 +119,11 @@
 ;;   P(b | y) = 0.3989 / (0.3989 + 0.2197) = 0.645
 (defn- branching-model []
   (spin
-   (let [b (sample (ar/flip 0.5))]
+   (let [b (sample (dist/flip 0.5))]
      (if b
-       (observe (ar/normal 1.0 1.0) 1.0)
-       (let [u (sample (ar/normal 0.0 1.0))]
-         (observe (ar/normal u 1.0) 1.0)))
+       (observe (dist/normal 1.0 1.0) 1.0)
+       (let [u (sample (dist/normal 0.0 1.0))]
+         (observe (dist/normal u 1.0) 1.0)))
      b)))
 
 (deftest a-move-across-branches-uses-the-trans-dimensional-ratio
@@ -141,9 +141,9 @@
 ;; it), so it must be refused.
 (defn- overlapping-model []
   (spin
-   (let [s (sample (ar/flip 0.5))
-         x (sample (if s (ar/uniform-continuous 0.0 3.0) (ar/uniform-continuous 2.0 5.0)))]
-     (observe (ar/normal x 1.0) 1.0)
+   (let [s (sample (dist/flip 0.5))
+         x (sample (if s (dist/uniform 0.0 3.0) (dist/uniform 2.0 5.0)))]
+     (observe (dist/normal x 1.0) 1.0)
      s)))
 
 (deftest a-redraw-the-reverse-move-would-keep-is-refused
@@ -156,7 +156,7 @@
   (doseq [[label kernel] [["single-site" (k/single-site-mh-kernel 120)]
                           ["random-walk" (k/random-walk-mh-kernel 120 {:step-size 0.8})]]]
     (testing label
-      (.setSeed ^org.apache.commons.math3.random.RandomGenerator ar/RNG 5)
+      (random/set-seed! 5)
       (let [root (ctx/create-execution-context)]
         (try
           (binding [rtc/*execution-context* root]

@@ -22,7 +22,7 @@
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [anglican.runtime :as ar]
+            [org.replikativ.foerster.dist :as dist]
             [replikativ.logging :as log]))
 
 (def start-site
@@ -110,7 +110,7 @@
             (let [address (:savepoint/address sp)]
               (when (contains? retained address)
                 (let [v (get retained address)]
-                  {:value v :log-proposal (ar/observe* (:dist (:savepoint/payload sp)) v)}))))}))
+                  {:value v :log-proposal (dist/logpdf (:dist (:savepoint/payload sp)) v)}))))}))
 
 (defn- stream-site?
   "A sample site whose value arrives from outside (`(sample d :stream true)`),

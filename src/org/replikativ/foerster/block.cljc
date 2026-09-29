@@ -25,7 +25,7 @@
   Draft 0 supports unconstrained real latents only; transforms of constrained
   ones (`:constrain`, `:unconstrain` with their Jacobians) come with raster's
   bijectors."
-  (:require [anglican.runtime :as ar]))
+  (:require [org.replikativ.foerster.dist :as dist]))
 
 (def ^:private required-capabilities #{:log-density :value+grad})
 
@@ -69,13 +69,13 @@
 (defn- theta-array ^doubles [theta] (double-array theta))
 
 (defrecord BlockDist [block inputs]
-  ar/distribution
-  (sample* [_]
+  dist/Distribution
+  (-draw [_]
     (if-let [sample (capability block :sample)]
       (vec (sample inputs))
       (throw (ex-info "A block that cannot be sampled starts from an :init"
                       {:type ::no-sample :block (:block/id (:description block))}))))
-  (observe* [_ theta]
+  (-logpdf [_ theta]
     (if (= (dimension block) (count theta))
       ((capability block :log-density) (theta-array theta) inputs)
       ##-Inf)))

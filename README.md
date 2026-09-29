@@ -35,12 +35,12 @@ is a handler that decides, scores, forks, copies or abandons those savepoints:
          '[org.replikativ.foerster.measure :as m]
          '[org.replikativ.spindel.spin.cps :refer [spin]]
          '[org.replikativ.spindel.effects.await :refer [await]]
-         '[anglican.runtime :as ar])
+         '[org.replikativ.foerster.dist :as dist])
 
 (defn model []
   (spin
-   (let [mu (sample (ar/normal 0.0 1.0) :id :mu)]
-     (observe (ar/normal mu 1.0) 1.0 :id :y)
+   (let [mu (sample (dist/normal 0.0 1.0) :id :mu)]
+     (observe (dist/normal mu 1.0) 1.0 :id :y)
      mu)))
 
 (spin
@@ -74,10 +74,11 @@ with raster (JVM, WASM, GPU) and reverse-mode AD.
 
 ## Platforms
 
-The sources are `.cljc`. Inference runs on the JVM. In ClojureScript the
-namespaces compile and load, but anglican's distributions need a JavaScript
-library that is not provided. foerster's own portable distributions are
-planned to replace them.
+The sources are `.cljc`, and inference runs on the JVM and in JavaScript.
+Distributions (`foerster.dist`) are portable Clojure, named and
+parameterized like raster's (and Distributions.jl), and a seed draws the same
+numbers on both platforms. Copying worlds for canonical particles is
+JVM-only; in ClojureScript canonical particles are forks.
 
 ## History
 

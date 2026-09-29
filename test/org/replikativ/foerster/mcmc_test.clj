@@ -16,13 +16,14 @@
             [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.protocols :as rtp]
-            [anglican.runtime :as ar]))
+            [org.replikativ.foerster.dist :as dist]
+            [org.replikativ.foerster.random :as random]))
 
 (defn- run-chain
   "One seeded single-particle random-walk MH run. Returns the final particle
    context plus the run's value and log-weight."
   [model-fn iterations step-size seed]
-  (.setSeed ^org.apache.commons.math3.random.RandomGenerator ar/RNG (long seed))
+  (random/set-seed! (long seed))
   (let [root (ctx/create-execution-context)]
     (try (binding [rtc/*execution-context* root]
            (let [meas @(spin (aw/await (infer/kernel-infer (model-fn)
@@ -40,13 +41,13 @@
 
 (defn- three-site-model []
   (spin
-   (let [a (sample (ar/uniform-continuous -5.0 5.0))
-         b (sample (ar/uniform-continuous -5.0 5.0))
-         c (sample (ar/uniform-continuous -5.0 5.0))]
+   (let [a (sample (dist/uniform -5.0 5.0))
+         b (sample (dist/uniform -5.0 5.0))
+         c (sample (dist/uniform -5.0 5.0))]
      (swap! visited conj [a b c])
-     (observe (ar/normal a 0.5) 1.0)
-     (observe (ar/normal b 0.5) 2.0)
-     (observe (ar/normal c 0.5) 3.0)
+     (observe (dist/normal a 0.5) 1.0)
+     (observe (dist/normal b 0.5) 2.0)
+     (observe (dist/normal c 0.5) 3.0)
      [a b c])))
 
 (deftest replay-keeps-the-trace-the-size-of-the-model
@@ -74,8 +75,8 @@
 (defn- conjugate-model []
   ;; prior N(0,1), one observation y = 2 with σ = 1 → posterior N(1, 1/2)
   (spin
-   (let [mu (sample (ar/normal 0.0 1.0))]
-     (observe (ar/normal mu 1.0) 2.0)
+   (let [mu (sample (dist/normal 0.0 1.0))]
+     (observe (dist/normal mu 1.0) 2.0)
      mu)))
 
 (deftest a-chain-lands-on-the-analytic-posterior
@@ -93,8 +94,8 @@
   ;; prior U(0,1); the likelihood pulls toward 0.95, so an unguarded random
   ;; walk would drift past 1.0
   (spin
-   (let [p (sample (ar/uniform-continuous 0.0 1.0))]
-     (observe (ar/normal p 0.1) 0.95)
+   (let [p (sample (dist/uniform 0.0 1.0))]
+     (observe (dist/normal p 0.1) 0.95)
      p)))
 
 (deftest a-proposal-outside-the-prior-is-rejected
@@ -108,7 +109,7 @@
   ;; acceptance (the prior cancels against the proposal). 60 seeded chains
   ;; of 80 steps on the conjugate model.
   (let [run1 (fn [seed]
-               (.setSeed ^org.apache.commons.math3.random.RandomGenerator ar/RNG (long seed))
+               (random/set-seed! (long seed))
                (let [root (ctx/create-execution-context)]
                  (try (binding [rtc/*execution-context* root]
                         (let [meas @(spin (aw/await (infer/kernel-infer (conjugate-model)

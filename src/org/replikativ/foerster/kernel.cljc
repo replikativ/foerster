@@ -19,7 +19,7 @@
                        a choice of kernel, not a choice of engine."
   (:require [org.replikativ.foerster.measure :as m]
             [replikativ.logging :as log]
-            [anglican.runtime :as ar]))
+            [org.replikativ.foerster.dist :as dist]))
 
 ;; =============================================================================
 ;; PKernel Protocol
@@ -269,7 +269,7 @@
           value (cond
                   (some? observe) observe
                   (some? init) init
-                  :else (ar/sample* source))]
+                  :else (dist/draw source))]
       {:action :assign, :value value})))
 
 (defn prior-kernel
@@ -308,7 +308,7 @@
 
 (defn- random-walk-propose
   [current-value step-size]
-  (+ current-value (* step-size (ar/sample* (ar/normal 0 1)))))
+  (+ current-value (* step-size (dist/draw (dist/normal 0 1)))))
 
 (defrecord RandomWalkMHKernel [num-iterations step-size]
   PInferenceKernel
@@ -390,7 +390,7 @@
           (map (fn [addr]
                  (let [entry (get trace addr)
                        dist (:distribution entry)]
-                   [addr (ar/sample* dist)]))
+                   [addr (dist/draw dist)]))
                block-addresses))))
 
 (defn prior-block-kernel [] (->PriorBlockKernel))

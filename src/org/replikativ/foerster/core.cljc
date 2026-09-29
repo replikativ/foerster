@@ -34,7 +34,7 @@
             [org.replikativ.spindel.spin.combinators :as comb]
             [org.replikativ.spindel.effects.await :refer [await await-finalization]]
             [replikativ.logging :as log]
-            [anglican.runtime :as ar]
+            [org.replikativ.foerster.dist :as dist]
             [clojure.set :as set]))
 
 ;; =============================================================================
@@ -201,7 +201,7 @@
                           {:source dist :options options :address (:savepoint/address sp)}
                           (itrace/legacy-trace (rtp/get-state world [:savepoint/trace])))]
               {:value value
-               :log-proposal (- (ar/observe* dist value) (or log-weight-delta 0.0))}))}))
+               :log-proposal (- (dist/logpdf dist value) (or log-weight-delta 0.0))}))}))
 
 (defn kernel-infer
   "Run inference with a kernel.
@@ -771,8 +771,8 @@
           prior (:dist (:savepoint/payload sp))
           q (get (swap! q-dists #(if (contains? % address) % (assoc % address prior))) address)]
       (when (grad/has-gradient? q)
-        (let [v (ar/sample* q)]
-          {:value v :log-proposal (ar/observe* q v)})))))
+        (let [v (dist/draw q)]
+          {:value v :log-proposal (dist/logpdf q v)})))))
 
 (defn- q-gradients
   "{address ∇log q(value)} of the latent sites of a Sample's trace that

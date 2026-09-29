@@ -7,9 +7,9 @@
 
   Gradients are w.r.t. unconstrained parameters for numerical stability:
   - Normal: (mean, log-std)
-  - Gamma/Beta: (log-shape, log-rate) / (log-alpha, log-beta)
+  - Gamma: (log-shape, log-scale); Beta: (log-alpha, log-beta)
   - Flip: logit(p)"
-  (:require [anglican.runtime :as ar]))
+  (:require [org.replikativ.foerster.dist :as dist]))
 
 ;; =============================================================================
 ;; Math Helpers
@@ -63,11 +63,11 @@
 ;; =============================================================================
 
 ;; Parameterized by (mean, log-std) for unconstrained optimization
-(extend-type anglican.runtime.normal-distribution
+(extend-type org.replikativ.foerster.dist.Normal
   PDistGradient
   (grad-log [dist]
-    (let [mu (:mean dist)
-          sigma (:sd dist)]
+    (let [mu (:mu dist)
+          sigma (:sigma dist)]
       (fn [x]
         ;; d/d(mu) log N(x|mu,sigma) = (x - mu) / sigma^2
         ;; d/d(log-sigma) log N(x|mu,sigma) = -1 + (x-mu)^2 / sigma^2
@@ -76,42 +76,38 @@
 
   (grad-step [dist grad lr]
     (let [lr (if (number? lr) [lr lr] lr)
-          mu (:mean dist)
-          log-sigma (Math/log (:sd dist))
+          mu (:mu dist)
+          log-sigma (Math/log (:sigma dist))
           new-mu (+ mu (* (first lr) (first grad)))
           new-log-sigma (+ log-sigma (* (second lr) (second grad)))
           new-sigma (Math/exp new-log-sigma)]
       (if (positive-finite? new-sigma)
-        (ar/normal new-mu new-sigma)
+        (dist/normal new-mu new-sigma)
         dist))))  ; Return unchanged if update invalid
 
 ;; =============================================================================
 ;; Gamma Distribution
 ;; =============================================================================
 
-;; Parameterized by (log-shape, log-rate) for positivity constraints
-(extend-type anglican.runtime.gamma-distribution
+;; Parameterized by (log-shape, log-scale) for positivity constraints
+(extend-type org.replikativ.foerster.dist.Gamma
   PDistGradient
   (grad-log [dist]
-    (let [alpha (:shape dist)
-          beta (:rate dist)]
+    (let [alpha (:alpha dist)
+          theta (:beta dist)]
       (fn [x]
-        ;; Transform to log-space gradients
-        ;; d/d(log-alpha) = alpha * (log(beta) + log(x) - digamma(alpha))
-        ;; d/d(log-beta) = beta * (alpha/beta - x)
-        [(* alpha (+ (Math/log beta) (Math/log x) (- (digamma alpha))))
-         (* beta (- (/ alpha beta) x))])))
+        ;; log p = (α-1) log x - x/θ - log Γ(α) - α log θ
+        ;; d/d(log α) = α (log x - ψ(α) - log θ)
+        ;; d/d(log θ) = x/θ - α
+        [(* alpha (- (Math/log x) (digamma alpha) (Math/log theta)))
+         (- (/ x theta) alpha)])))
 
   (grad-step [dist grad lr]
     (let [lr (if (number? lr) [lr lr] lr)
-          log-alpha (Math/log (:shape dist))
-          log-beta (Math/log (:rate dist))
-          new-log-alpha (+ log-alpha (* (first lr) (first grad)))
-          new-log-beta (+ log-beta (* (second lr) (second grad)))
-          new-alpha (Math/exp new-log-alpha)
-          new-beta (Math/exp new-log-beta)]
-      (if (and (positive-finite? new-alpha) (positive-finite? new-beta))
-        (ar/gamma new-alpha new-beta)
+          new-alpha (Math/exp (+ (Math/log (:alpha dist)) (* (first lr) (first grad))))
+          new-theta (Math/exp (+ (Math/log (:beta dist)) (* (second lr) (second grad))))]
+      (if (and (positive-finite? new-alpha) (positive-finite? new-theta))
+        (dist/gamma new-alpha new-theta)
         dist))))
 
 ;; =============================================================================
@@ -119,7 +115,7 @@
 ;; =============================================================================
 
 ;; Parameterized by (log-alpha, log-beta)
-(extend-type anglican.runtime.beta-distribution
+(extend-type org.replikativ.foerster.dist.Beta
   PDistGradient
   (grad-log [dist]
     (let [a (:alpha dist)
@@ -139,7 +135,7 @@
           new-a (Math/exp new-log-a)
           new-b (Math/exp new-log-b)]
       (if (and (positive-finite? new-a) (positive-finite? new-b))
-        (ar/beta new-a new-b)
+        (dist/beta new-a new-b)
         dist))))
 
 ;; =============================================================================
@@ -147,7 +143,7 @@
 ;; =============================================================================
 
 ;; Parameterized by logit(p) for unconstrained optimization
-(extend-type anglican.runtime.flip-distribution
+(extend-type org.replikativ.foerster.dist.Flip
   PDistGradient
   (grad-log [dist]
     (let [p (:p dist)
@@ -163,7 +159,7 @@
           new-z (+ z (* lr (first grad)))
           new-p (sigmoid new-z)]
       (if (and (> new-p 0.0) (< new-p 1.0))
-        (ar/flip new-p)
+        (dist/flip new-p)
         dist))))
 
 ;; =============================================================================
@@ -171,21 +167,21 @@
 ;; =============================================================================
 
 ;; Parameterized by log-rate
-(extend-type anglican.runtime.exponential-distribution
+(extend-type org.replikativ.foerster.dist.Exponential
   PDistGradient
   (grad-log [dist]
-    (let [beta (:rate dist)]
+    (let [beta (:lambda dist)]
       (fn [x]
         ;; d/d(log-beta) = beta * (1/beta - x)
         [(* beta (- (/ 1.0 beta) x))])))
 
   (grad-step [dist grad lr]
     (let [lr (if (number? lr) (first (if (sequential? lr) lr [lr])) lr)
-          log-beta (Math/log (:rate dist))
+          log-beta (Math/log (:lambda dist))
           new-log-beta (+ log-beta (* lr (first grad)))
           new-beta (Math/exp new-log-beta)]
       (if (positive-finite? new-beta)
-        (ar/exponential new-beta)
+        (dist/exponential new-beta)
         dist))))
 
 ;; =============================================================================
@@ -193,7 +189,7 @@
 ;; =============================================================================
 
 ;; Parameterized by log-alpha vector
-(extend-type anglican.runtime.dirichlet-distribution
+(extend-type org.replikativ.foerster.dist.Dirichlet
   PDistGradient
   (grad-log [dist]
     (let [alpha (:alpha dist)
@@ -213,7 +209,7 @@
           new-log-alpha (mapv (fn [la g l] (+ la (* l g))) log-alpha grad lr)
           new-alpha (mapv #(Math/exp %) new-log-alpha)]
       (if (every? positive-finite? new-alpha)
-        (ar/dirichlet new-alpha)
+        (dist/dirichlet new-alpha)
         dist))))
 
 ;; =============================================================================
@@ -221,7 +217,7 @@
 ;; =============================================================================
 
 ;; Parameterized by log-weights (softmax)
-(extend-type anglican.runtime.discrete-distribution
+(extend-type org.replikativ.foerster.dist.Discrete
   PDistGradient
   (grad-log [dist]
     (let [w (vec (:weights dist))
@@ -239,14 +235,14 @@
           new-log-w (mapv (fn [lw g l] (+ lw (* l g))) log-w grad lr)
           new-w (mapv #(Math/exp %) new-log-w)]
       (if (every? positive-finite? new-w)
-        (ar/discrete new-w)
+        (dist/discrete new-w)
         dist))))
 
 ;; =============================================================================
 ;; Uniform Distribution (non-differentiable - return zero gradients)
 ;; =============================================================================
 
-(extend-type anglican.runtime.uniform-continuous-distribution
+(extend-type org.replikativ.foerster.dist.Uniform
   PDistGradient
   (grad-log [_dist]
     ;; Uniform has constant density - gradient is zero

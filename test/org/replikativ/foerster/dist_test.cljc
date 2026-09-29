@@ -1,0 +1,63 @@
+(ns org.replikativ.foerster.dist-test
+  "Distributions agree with reference values (Apache Commons Math), sample
+  their laws, and a seed draws the same numbers on the JVM and in JavaScript."
+  (:require #?(:clj [clojure.test :refer [deftest is testing]]
+               :cljs [cljs.test :refer-macros [deftest is testing]])
+            [org.replikativ.foerster.dist :as d]
+            [org.replikativ.foerster.random :as random]))
+
+(defn- close? [a b] (< (Math/abs (- a b)) (* 1e-12 (max 1.0 (Math/abs b)))))
+
+(deftest densities-agree-with-reference-values
+  (is (close? (d/logpdf (d/normal 1.0 2.0) -0.7) -1.9733357137646181))
+  (is (close? (d/cdf (d/normal 1.0 2.0) -0.7) 0.19766254312269238))
+  (is (close? (d/quantile (d/normal 1.0 2.0) 0.975) 4.919927969080108))
+  (is (close? (d/logpdf (d/gamma 2.5 3.0) 4.2) -2.278586804209209))
+  (is (close? (d/cdf (d/gamma 2.5 3.0) 4.2) 0.2692135134112415))
+  (is (close? (d/logpdf (d/beta 2.0 5.0) 0.3) 0.7705248015812898))
+  (is (close? (d/logpdf (d/poisson 12.0) 9) -2.4376676319894672))
+  (is (close? (d/cdf (d/poisson 12.0) 9) 0.24239216167051233))
+  (is (close? (d/logpdf (d/exponential 0.7) 1.3) -1.2666749439387324))
+  (testing "a whole number is a count whatever its type"
+    (is (= (d/logpdf (d/poisson 12.0) 9) (d/logpdf (d/poisson 12.0) 9.0))))
+  (testing "outside the support"
+    (is (= ##-Inf (d/logpdf (d/gamma 2.0 1.0) -1.0)))
+    (is (= ##-Inf (d/logpdf (d/poisson 3.0) 1.5)))
+    (is (= ##-Inf (d/logpdf (d/discrete [1 2 3]) 3)))))
+
+(deftest the-normal-cdf-keeps-its-precision-in-the-tail
+  ;; Φ(-8) = 6.22096057427178e-16
+  (is (< (Math/abs (- (/ (d/normal-cdf -8.0) 6.22096057427178e-16) 1.0)) 1e-13))
+  (is (close? (d/normal-quantile 1e-10) -6.361340902404056)))
+
+(deftest the-generator-is-xoshiro128**
+  ;; the reference output of state (1 2 3 4)
+  (is (= [11520 0 5927040 70819200 2031721883 1637235492]
+         (loop [s [1 2 3 4] n 6 out []]
+           (if (zero? n)
+             out
+             (let [[o s'] (@#'random/step s)] (recur s' (dec n) (conj out o))))))))
+
+(deftest a-seed-draws-the-same-numbers-on-every-platform
+  (random/set-seed! 7)
+  (is (= 279963896 (random/next-u32! (random/current))))
+  (is (= 0.24152057094740398 (random/uniform01)))
+  (is (close? (d/draw (d/normal 0 1)) 1.9775113839366343))
+  (is (close? (d/draw (d/gamma 2.5 3.0)) 1.0685424805002073))
+  (is (= 12 (d/draw (d/poisson 12.0)))))
+
+(defn- moments [xs]
+  (let [n (count xs) m (/ (reduce + xs) n)]
+    [m (/ (reduce + (map #(let [r (- % m)] (* r r)) xs)) n)]))
+
+(deftest draws-follow-their-laws
+  (random/set-seed! 42)
+  (let [n 20000]
+    (doseq [dist [(d/normal 1.5 2.0) (d/uniform -1.0 3.0) (d/exponential 0.7)
+                  (d/gamma 0.4 2.0) (d/gamma 3.3 1.5) (d/beta 2.0 5.0)
+                  (d/poisson 3.2) (d/poisson 57.0) (d/bernoulli 0.3)]]
+      (let [[m v] (moments (vec (repeatedly n #(d/draw dist))))]
+        (is (< (Math/abs (/ (- m (d/mean dist)) (Math/sqrt (/ (d/variance dist) n)))) 4.0)
+            (str dist " mean"))
+        (is (< (Math/abs (/ (- v (d/variance dist)) (d/variance dist))) 0.06)
+            (str dist " variance"))))))

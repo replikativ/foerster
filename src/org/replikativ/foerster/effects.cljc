@@ -15,7 +15,10 @@
             [org.replikativ.spindel.effects.savepoint :as sp]
             [replikativ.logging :as log]
             [is.simm.partial-cps.async :as pcps-async]
-            [anglican.runtime :as ar]))
+            [org.replikativ.foerster.dist :as dist])
+  ;; the spin macro knows sample/observe/factor only once this namespace has
+  ;; registered them on the JVM, where ClojureScript's macros expand
+  #?(:cljs (:require-macros [org.replikativ.foerster.effects])))
 
 ;; =============================================================================
 ;; Public API Shims
@@ -85,7 +88,7 @@
                     ;; observe can be boolean false
                     (some? observe) observe
                     (some? existing-value) existing-value
-                    :else (ar/sample* source))]
+                    :else (dist/draw source))]
         (log/trace :choose/forward-sampling {:address address :value value
                                              :from-trace? (some? existing-value)})
         (rtp/swap-state! ctx [:inference :trace]
@@ -95,7 +98,7 @@
                                              :observed? (some? observe)})))
         (when (some? observe)
           (rtp/swap-state! ctx [:inference :log-weight]
-                           (fn [w] (+ (or w 0.0) (ar/observe* source observe)))))
+                           (fn [w] (+ (or w 0.0) (dist/logpdf source observe)))))
         (spin-core/resume resolve value)))))
 
 (defn- choose-handler-fn
@@ -229,24 +232,24 @@
   (eff/register-effect-by-symbol!
    'org.replikativ.foerster.effects/choose
    choose-handler  ; PEffectHandler instance
-   'org.replikativ.foerster.effects/choose-adapter)
+   choose-adapter)
 
   ;; Register sample (convenience wrapper) - same as choose
   (eff/register-effect-by-symbol!
    'org.replikativ.foerster.effects/sample
    choose-handler
-   'org.replikativ.foerster.effects/sample-adapter)
+   sample-adapter)
 
   (eff/register-effect-by-symbol!
    'org.replikativ.foerster.effects/factor
    factor-handler
-   'org.replikativ.foerster.effects/factor-adapter)
+   factor-adapter)
 
   ;; Register observe (different syntax: observe dist value)
   (eff/register-effect-by-symbol!
    'org.replikativ.foerster.effects/observe
    choose-handler
-   'org.replikativ.foerster.effects/observe-adapter))
+   observe-adapter))
 
 ;; Auto-register on namespace load
 (register-probabilistic-effects!)

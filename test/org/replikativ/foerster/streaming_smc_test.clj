@@ -11,7 +11,8 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [anglican.runtime :as ar]))
+            [org.replikativ.foerster.dist :as dist]
+            [org.replikativ.foerster.random :as random]))
 
 (defn- await-cps [operation]
   (let [result (promise)]
@@ -26,11 +27,11 @@
 (defn- random-walk [root]
   (binding [ec/*execution-context* root]
     (spin
-     (loop [t 0 x (sample (ar/normal 0.0 1.0) :id [:x 0])]
-       (sample (ar/normal x 1.0) :id [:y t] :stream true)
+     (loop [t 0 x (sample (dist/normal 0.0 1.0) :id [:x 0])]
+       (sample (dist/normal x 1.0) :id [:y t] :stream true)
        (if (= t (dec (count ys)))
          x
-         (recur (inc t) (sample (ar/normal x 1.0) :id [:x (inc t)])))))))
+         (recur (inc t) (sample (dist/normal x 1.0) :id [:x (inc t)])))))))
 
 (defn- kalman
   "[mean var log-likelihood] of the filtering distribution after each y."
@@ -42,7 +43,7 @@
             k (/ prior-var s)
             mean (+ prior-mean (* k (- y prior-mean)))
             var (* (- 1.0 k) prior-var)
-            ll (+ ll (ar/observe* (ar/normal prior-mean (Math/sqrt s)) y))]
+            ll (+ ll (dist/logpdf (dist/normal prior-mean (Math/sqrt s)) y))]
         (recur more mean (+ var 1.0) ll (conj acc [mean var ll]))))))
 
 (defn- moments [measure t]
@@ -53,7 +54,7 @@
     [mean (reduce + (map (fn [w x] (* w (let [d (- x mean)] (* d d)))) ws xs))]))
 
 (deftest online-smc-tracks-the-kalman-filter
-  (.setSeed ^org.apache.commons.math3.random.RandomGenerator ar/RNG 5)
+  (random/set-seed! 5)
   (let [root (context/create-execution-context)
         truth (kalman ys)
         first-step (await-cps (smc/stream (random-walk root) 3000
