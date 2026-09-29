@@ -33,7 +33,13 @@
 (defn draw "A sample of `d`." [d] (-draw d))
 (defn logpdf "The log density (log mass) of `d` at `x`." [d x] (-logpdf d x))
 (defn cdf [d x] (-cdf d x))
-(defn quantile [d p] (-quantile d p))
+(defn quantile
+  "The p-quantile of `d`, p in [0, 1]."
+  [d p]
+  (when-not (and (number? p) (<= 0.0 p 1.0))
+    (throw (ex-info "A quantile's probability must lie in [0, 1]"
+                    {:type ::invalid-probability :p p})))
+  (-quantile d p))
 (defn mean [d] (-mean d))
 (defn variance [d] (-variance d))
 
@@ -220,6 +226,11 @@
 
 (defn- in? [lo x hi] (and (<= lo x) (<= x hi)))
 
+(defn- xlogy
+  "a·log x, 0 when a is 0 (so a flat factor x⁰ stays 1 at x = 0)."
+  [a x]
+  (if (zero? a) 0.0 (* a (Math/log x))))
+
 (defn- whole?
   "A whole number, whatever its type: 3 and 3.0 alike, on both platforms."
   [x]
@@ -283,7 +294,7 @@
       (/ x (+ x y))))
   (-logpdf [_ x]
     (if (in? 0.0 x 1.0)
-      (- (+ (* (- alpha 1.0) (Math/log x)) (* (- beta 1.0) (Math/log (- 1.0 x))))
+      (- (+ (xlogy (- alpha 1.0) x) (xlogy (- beta 1.0) (- 1.0 x)))
          (lbeta alpha beta))
       ##-Inf))
   Moments
@@ -303,8 +314,10 @@
       0.0
       (- 1.0 (regularized-gamma-p (+ (Math/floor x) 1.0) lambda))))
   (-quantile [d p]
-    (loop [k 0]
-      (if (>= (-cdf d k) p) k (recur (inc k)))))
+    (if (>= p 1.0)
+      ##Inf
+      (loop [k 0]
+        (if (>= (-cdf d k) p) k (recur (inc k))))))
   Moments
   (-mean [_] lambda)
   (-variance [_] lambda))
@@ -313,7 +326,10 @@
   Distribution
   (-draw [_] (if (< (u01) p) 1 0))
   (-logpdf [_ x]
-    (cond (== x 1) (Math/log p) (== x 0) (Math/log (- 1.0 p)) :else ##-Inf))
+    (cond (not (number? x)) ##-Inf
+          (== x 1) (Math/log p)
+          (== x 0) (Math/log (- 1.0 p))
+          :else ##-Inf))
   Moments
   (-mean [_] p)
   (-variance [_] (* p (- 1.0 p))))
@@ -349,8 +365,10 @@
           total (reduce + gs)]
       (mapv #(/ % total) gs)))
   (-logpdf [_ x]
-    (if (and (= (count x) (count alpha)) (every? #(in? 0.0 % 1.0) x))
-      (- (reduce + (map (fn [a v] (* (- a 1.0) (Math/log v))) alpha x))
+    (if (and (= (count x) (count alpha))
+             (every? #(in? 0.0 % 1.0) x)
+             (< (Math/abs (- 1.0 (reduce + x))) 1e-9))
+      (- (reduce + (map (fn [a v] (xlogy (- a 1.0) v)) alpha x))
          (- (reduce + (map lgamma alpha)) (lgamma (reduce + alpha))))
       ##-Inf))
   Moments
@@ -359,17 +377,63 @@
     (let [t (reduce + alpha)]
       (mapv #(/ (* % (- t %)) (* t t (+ t 1.0))) alpha))))
 
-(defn normal "Normal(μ, σ), σ the standard deviation." [mu sigma] (->Normal (double mu) (double sigma)))
-(defn uniform "Uniform on [a, b]." [a b] (->Uniform (double a) (double b)))
-(defn exponential "Exponential with rate λ." [lambda] (->Exponential (double lambda)))
-(defn gamma "Gamma with shape α and SCALE β (mean αβ)." [alpha beta] (->Gamma (double alpha) (double beta)))
-(defn beta "Beta(α, β)." [alpha beta] (->Beta (double alpha) (double beta)))
-(defn poisson "Poisson with mean λ." [lambda] (->Poisson (double lambda)))
-(defn bernoulli "1 with probability p, else 0." [p] (->Bernoulli (double p)))
-(defn flip "true with probability p." [p] (->Flip (double p)))
-(defn discrete "An index i with probability weights[i] / Σ weights." [weights]
+(defn- finite? [x]
+  (and (number? x) #?(:clj (Double/isFinite (double x)) :cljs (js/isFinite x))))
+
+(defn- positive? [x] (and (finite? x) (pos? x)))
+
+(defn- check!
+  "Throw unless `ok?`: a distribution's parameters outside their domain would
+  give meaningless draws and densities rather than an error."
+  [ok? distribution parameters]
+  (when-not ok?
+    (throw (ex-info (str "Invalid parameters for " (name distribution))
+                    {:type ::invalid-parameters
+                     :distribution distribution
+                     :parameters parameters}))))
+
+(defn- weights? [ws]
+  (and (seq ws) (every? #(and (finite? %) (>= % 0.0)) ws) (pos? (reduce + ws))))
+
+(defn normal "Normal(μ, σ), σ > 0 the standard deviation." [mu sigma]
+  (check! (and (finite? mu) (positive? sigma)) :normal {:mu mu :sigma sigma})
+  (->Normal (double mu) (double sigma)))
+
+(defn uniform "Uniform on [a, b], a < b." [a b]
+  (check! (and (finite? a) (finite? b) (< a b)) :uniform {:a a :b b})
+  (->Uniform (double a) (double b)))
+
+(defn exponential "Exponential with rate λ > 0." [lambda]
+  (check! (positive? lambda) :exponential {:lambda lambda})
+  (->Exponential (double lambda)))
+
+(defn gamma "Gamma with shape α > 0 and SCALE β > 0 (mean αβ)." [alpha beta]
+  (check! (and (positive? alpha) (positive? beta)) :gamma {:alpha alpha :beta beta})
+  (->Gamma (double alpha) (double beta)))
+
+(defn beta "Beta(α, β), α, β > 0." [alpha beta]
+  (check! (and (positive? alpha) (positive? beta)) :beta {:alpha alpha :beta beta})
+  (->Beta (double alpha) (double beta)))
+
+(defn poisson "Poisson with mean λ > 0." [lambda]
+  (check! (positive? lambda) :poisson {:lambda lambda})
+  (->Poisson (double lambda)))
+
+(defn bernoulli "1 with probability p, else 0." [p]
+  (check! (and (finite? p) (<= 0.0 p 1.0)) :bernoulli {:p p})
+  (->Bernoulli (double p)))
+
+(defn flip "true with probability p." [p]
+  (check! (and (finite? p) (<= 0.0 p 1.0)) :flip {:p p})
+  (->Flip (double p)))
+
+(defn discrete "An index i with probability weights[i] / Σ weights; weights ≥ 0." [weights]
+  (check! (weights? weights) :discrete {:weights weights})
   (let [ws (mapv double weights)] (->Discrete ws (reduce + ws))))
-(defn dirichlet "Dirichlet(α) over the simplex." [alpha] (->Dirichlet (mapv double alpha)))
+
+(defn dirichlet "Dirichlet(α) over the simplex, every αᵢ > 0." [alpha]
+  (check! (and (seq alpha) (every? positive? alpha)) :dirichlet {:alpha alpha})
+  (->Dirichlet (mapv double alpha)))
 
 ;; =============================================================================
 ;; More distributions
@@ -467,19 +531,32 @@
   or a sequence of [value weight] pairs."
   [outcomes]
   (let [pairs (vec (seq outcomes))
-        ws (mapv (comp double second) pairs)]
-    (->Categorical (mapv first pairs) ws (reduce + ws))))
+        _ (check! (weights? (map second pairs)) :categorical {:outcomes outcomes})
+        ;; an outcome listed twice carries both weights
+        values (vec (distinct (map first pairs)))
+        by-value (reduce (fn [m [v w]] (update m v (fnil + 0.0) (double w))) {} pairs)
+        ws (mapv by-value values)]
+    (->Categorical values ws (reduce + ws))))
 
 (defn student-t
   "Student's t with ν degrees of freedom, location μ and scale σ."
   ([nu] (student-t nu 0.0 1.0))
-  ([nu mu sigma] (->StudentT (double nu) (double mu) (double sigma))))
+  ([nu mu sigma]
+   (check! (and (positive? nu) (finite? mu) (positive? sigma)) :student-t
+           {:nu nu :mu mu :sigma sigma})
+   (->StudentT (double nu) (double mu) (double sigma))))
 
-(defn chi-squared "χ² with k degrees of freedom." [k] (->ChiSquared (double k)))
+(defn chi-squared "χ² with k > 0 degrees of freedom." [k]
+  (check! (positive? k) :chi-squared {:k k})
+  (->ChiSquared (double k)))
 
 (defn mvn
   "Multivariate normal with `mean` (a vector) and covariance `cov` (vectors of
   rows, symmetric positive definite)."
   [mean cov]
+  (check! (and (seq mean) (every? finite? mean)
+               (= (count mean) (count cov))
+               (every? #(= (count mean) (count %)) cov))
+          :mvn {:mean mean :cov cov})
   (let [cov (mapv #(mapv double %) cov)]
     (->MultivariateNormal (mapv double mean) cov (cholesky cov))))

@@ -117,17 +117,17 @@ such a model twice in one world with the same seed and it draws differently.
 Name the sites of a model you want to reproduce, or create it in a fresh
 world (`sp/create-execution-context`) for each run.
 
-What else breaks reproducibility: randomness from `rand` or `Math/random`,
-effects whose results vary (a language model's answer), iteration over
-unordered collections that feeds sites, and a few moves that still draw from
-the process generator rather than a world's stream (the accept steps of `gfi/mh`,
-`involutive/step` and PIMH, and a mechanism's noise in counterfactuals):
-under a multi-threaded executor their draws depend on scheduling.
+The moves draw from streams too: the accept steps of MH, `gfi/mh`,
+`involutive/step` (and its auxiliary draw) from the worlds they decide, PIMH's
+from a stream per iteration, and a counterfactual's abducted noise from the
+factual world's. What breaks reproducibility: randomness from `rand` or
+`Math/random`, effects whose results vary (a language model's answer), and
+iteration over unordered collections that feeds sites.
 
-## Known limitations
+## Validation
 
-- `logpdf` is `##-Inf` outside a distribution's support, except at the
-  boundary of the beta (`NaN` at 0 or 1 when a shape is 1) and off the
-  Dirichlet's simplex (not checked).
-- Parameters are not validated: a negative standard deviation gives
-  meaningless values rather than an error.
+A constructor refuses parameters outside their domain (a negative standard
+deviation, a probability above 1, weights that are all zero) with
+`::dist/invalid-parameters`; `quantile` refuses a probability outside
+[0, 1]. `logpdf` is `##-Inf` outside the support, which for the Dirichlet is
+the simplex. A categorical outcome listed twice carries both weights.

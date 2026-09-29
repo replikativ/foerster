@@ -37,10 +37,10 @@ Options of `sample` and `observe`:
 
 To draw from the prior, run a model under `gfi/simulate` (see the
 [programmable inference notebook](https://replikativ.github.io/foerster/foerster.programmable.html))
-or importance sampling. A model run with no inference at all — deref'd in a
-bare world — also simulates forward, but that mode is only a convenience for
-quick checks: it is not yet a faithful sampler (it reuses values an earlier
-run recorded in the same world, and addresses sites differently; see below).
+or importance sampling, which also record the trace. A model run with no
+inference at all — deref'd in a bare world — simulates forward too: every
+site draws afresh, observations add to the world's `[:inference :log-weight]`,
+and nothing is recorded.
 
 Distributions are in [`foerster.dist`](distributions.md).
 
@@ -48,9 +48,8 @@ Distributions are in [`foerster.dist`](distributions.md).
 
 Every site has an **address**, the name under which its value is recorded in
 the trace, constrained (`gfi/generate`), intervened on or proposed. The rules
-below hold under inference (every algorithm, `gfi`, `counterfactual`); in a
-bare forward run unnamed sites get hash-chain addresses and `with-scope` is
-ignored.
+below hold under inference (every algorithm, `gfi`, `counterfactual`) and in
+a bare forward run alike.
 
 - A site with `:id` is addressed by it. A vector id is a hierarchical name:
   `:id [:step 3 :x]`.

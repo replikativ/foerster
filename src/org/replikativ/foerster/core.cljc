@@ -482,7 +482,8 @@
   (if (on-savepoints? opts)
     (on-savepoints (smc/pimh model-task num-particles num-iterations opts))
     (spin
-     (let [initial (await (smc-infer model-task num-particles opts))]
+     (let [seed (random/fresh-seed)
+           initial (await (smc-infer model-task num-particles opts))]
        (loop [current (normalized-samples initial)
               current-log-Z (m/log-marginal initial)
               iteration 0
@@ -492,7 +493,8 @@
            (let [proposed (await (smc-infer model-task num-particles opts))
                  proposed-log-Z (m/log-marginal proposed)
                  log-alpha (- proposed-log-Z current-log-Z)
-                 accept? (or (>= log-alpha 0.0) (< (Math/log (m/uniform01)) log-alpha))
+                 u (random/with-stream* seed [::pimh-accept iteration] m/uniform01)
+                 accept? (or (>= log-alpha 0.0) (< (Math/log u) log-alpha))
                  [current' log-Z'] (if accept?
                                      [(normalized-samples proposed) proposed-log-Z]
                                      [current current-log-Z])]

@@ -495,18 +495,23 @@
   `smc`."
   [model n iterations & [opts]]
   (fn [resolve reject]
-    ((smc model n opts)
-     (fn [initial]
-       ((sweeps iterations [(normalized initial) (m/log-marginal initial)]
-                (fn [[current log-z]]
-                  (fn [res rej]
-                    ((smc model n opts)
-                     (fn [proposed]
-                       (let [log-z' (m/log-marginal proposed)
-                             ratio (- log-z' log-z)
-                             accept? (or (>= ratio 0.0) (< (Math/log (m/uniform01)) ratio))
-                             state' (if accept? [(normalized proposed) log-z'] [current log-z])]
-                         (res [state' (first state')])))
-                     rej))))
-        resolve reject))
-     reject)))
+    ;; each iteration's accept draws from its own stream of the chain's seed
+    (let [seed (random/fresh-seed)
+          iteration (volatile! 0)]
+      ((smc model n opts)
+       (fn [initial]
+         ((sweeps iterations [(normalized initial) (m/log-marginal initial)]
+                  (fn [[current log-z]]
+                    (fn [res rej]
+                      ((smc model n opts)
+                       (fn [proposed]
+                         (let [log-z' (m/log-marginal proposed)
+                               ratio (- log-z' log-z)
+                               u (random/with-stream* seed [::accept (vswap! iteration inc)]
+                                   m/uniform01)
+                               accept? (or (>= ratio 0.0) (< (Math/log u) ratio))
+                               state' (if accept? [(normalized proposed) log-z'] [current log-z])]
+                           (res [state' (first state')])))
+                       rej))))
+          resolve reject))
+       reject))))
