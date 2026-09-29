@@ -17,7 +17,8 @@ src/org/replikativ/foerster/
 ├── measure.cljc       # EmpiricalMeasure, Sample, world-descriptors
 ├── kernel.cljc        # kernels (prior, MH descriptions, PInferenceKernel)
 ├── block.cljc hmc.cljc          # numerical blocks, HMC-within-Gibbs
-├── random.cljc        # site-keyed random streams
+├── dist.cljc          # portable distributions (raster's names/params)
+├── random.cljc        # xoshiro128** streams: site-keyed, seeded
 ├── gfi.cljc involutive.cljc counterfactual.cljc mechanism.cljc
 └── gradient.cljc reparametrize.cljc address.cljc
 ```

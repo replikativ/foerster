@@ -11,7 +11,7 @@
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [anglican.runtime :as ar]))
+            [org.replikativ.foerster.dist :as dist]))
 
 (defn- await-cps [operation]
   (let [result (promise)]
@@ -39,7 +39,7 @@
      (if (= i 3)
        xs
        (recur (inc i)
-              (conj xs (sample (ar/normal 0.0 1.0) :id [:step i :x])))))))
+              (conj xs (sample (dist/normal 0.0 1.0) :id [:step i :x])))))))
 
 (deftest a-hierarchical-name-is-the-address
   (let [t (run steps {[:step 1 :x] 0.5})]
@@ -48,15 +48,15 @@
     (is (= [:step 1 :x] (get (trace/by-path t) [:step 1 :x])))))
 
 (deftest a-scalar-name-is-its-own-address
-  (let [t (run #(spin (sample (ar/normal 0.0 1.0) :id :top)))]
+  (let [t (run #(spin (sample (dist/normal 0.0 1.0) :id :top)))]
     (is (= [:top] (:trace/order t)))
     (is (= [:top] (get-in t [:trace/entries :top :path])))))
 
 (defn- branchy []
   (spin
-   (let [b (sample (ar/flip 0.5) :id :b)
-         _ (when b (sample (ar/normal 0.0 1.0)))
-         v (sample (ar/normal 0.0 1.0))]
+   (let [b (sample (dist/flip 0.5) :id :b)
+         _ (when b (sample (dist/normal 0.0 1.0)))
+         v (sample (dist/normal 0.0 1.0))]
      [b v])))
 
 (deftest an-unnamed-site-keeps-its-address-across-an-upstream-branch
@@ -73,7 +73,7 @@
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Duplicate site address"
                         (run #(spin (loop [i 0]
                                       (when (< i 2)
-                                        (sample (ar/normal 0.0 1.0) :id :x)
+                                        (sample (dist/normal 0.0 1.0) :id :x)
                                         (recur (inc i)))))))))
 
 (deftest a-scope-prefixes-names-and-nests
@@ -82,19 +82,19 @@
                     (if (= i 2)
                       xs
                       (recur (inc i) (conj xs (with-scope [:step i]
-                                                (sample (ar/normal 0.0 1.0) :id :x))))))
+                                                (sample (dist/normal 0.0 1.0) :id :x))))))
                   (with-scope [:a]
                     (with-scope [:b 2]
-                      (sample (ar/normal 0.0 1.0) :id :y)))
-                  (sample (ar/normal 0.0 1.0) :id :top)])
+                      (sample (dist/normal 0.0 1.0) :id :y)))
+                  (sample (dist/normal 0.0 1.0) :id :top)])
                {[:step 1 :x] 0.5})]
     (is (= [[:step 0 :x] [:step 1 :x] [:a :b 2 :y] :top] (:trace/order t))
         "the scope does not leak past its form, across suspensions")
     (is (= 0.5 (second (first (:trace/result t)))) "constrained from outside by scoped name")))
 
 (deftest unnamed-sites-in-different-scopes-are-different-sites
-  (let [t (run #(spin [(with-scope [:a] (sample (ar/normal 0.0 1.0)))
-                       (with-scope [:b] (sample (ar/normal 0.0 1.0)))]))
+  (let [t (run #(spin [(with-scope [:a] (sample (dist/normal 0.0 1.0)))
+                       (with-scope [:b] (sample (dist/normal 0.0 1.0)))]))
         [pa pb] (map #(get-in t [:trace/entries % :path]) (:trace/order t))]
     (is (= 2 (count (distinct (:trace/order t)))))
     (is (= :a (first pa)))

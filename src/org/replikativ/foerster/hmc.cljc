@@ -20,7 +20,7 @@
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [anglican.runtime :as ar]))
+            [org.replikativ.foerster.dist :as dist]))
 
 (defn- kinetic [p] (* 0.5 (reduce + 0.0 (map #(* % %) p))))
 
@@ -65,7 +65,7 @@
                                 {:type ::not-a-block :address address})))
             p0 (random/in-world-stream
                 (:trace/world trace) [::momentum address iteration]
-                #(vec (repeatedly (count q0) (fn [] (ar/sample* (ar/normal 0.0 1.0))))))
+                #(vec (repeatedly (count q0) (fn [] (dist/draw (dist/normal 0.0 1.0))))))
             [q1 p1] (leapfrog dist q0 p0 step-size steps)]
         (if-not (finite-vector? q1)
           (resolve {:trace trace :accepted? false :log-ratio ##-Inf :incomplete-target? false})

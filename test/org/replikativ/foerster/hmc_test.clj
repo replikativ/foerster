@@ -15,7 +15,7 @@
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [anglican.runtime :as ar]))
+            [org.replikativ.foerster.dist :as dist]))
 
 ;; --- reference blocks --------------------------------------------------------
 
@@ -170,8 +170,8 @@
                             (loop [i 0]
                               (when (< i (count ys))
                                 (let [y (nth ys i)]
-                                  (observe (ar/normal (nth mu 0) 1.0) (nth y 0) :id [:y i 0])
-                                  (observe (ar/normal (nth mu 1) 1.0) (nth y 1) :id [:y i 1]))
+                                  (observe (dist/normal (nth mu 0) 1.0) (nth y 0) :id [:y i 0])
+                                  (observe (dist/normal (nth mu 1) 1.0) (nth y 1) :id [:y i 1]))
                                 (recur (inc i))))
                             mu)))
             t0 (await-cps (trace/run session model (itrace/policy {:init? true}) {:anchor? itrace/anchor?}))]

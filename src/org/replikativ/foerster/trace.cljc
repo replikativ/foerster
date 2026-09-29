@@ -28,7 +28,7 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [anglican.runtime :as ar]))
+            [org.replikativ.foerster.dist :as dist]))
 
 (def choose-site :inference/choose)
 (def factor-site :inference/factor)
@@ -48,9 +48,9 @@
 (defn- shifted
   "`dist` moved by `delta`: x = x₀ + δ, x₀ ~ dist."
   [dist delta]
-  (reify ar/distribution
-    (sample* [_] (+ (ar/sample* dist) delta))
-    (observe* [_ v] (ar/observe* dist (- v delta)))))
+  (reify dist/Distribution
+    (-draw [_] (+ (dist/draw dist) delta))
+    (-logpdf [_ v] (dist/logpdf dist (- v delta)))))
 
 (defn- intervention-pairs
   "`interventions` as [selector transform] pairs. A key that is not a
@@ -118,16 +118,16 @@
       ;; at its data.
       (and (contains? (:noise opts) address) (mech/mechanism? dist))
       (let [v (mech/push dist (get (:noise opts) address))]
-        {:value v :note {:dist dist :log-prob (ar/observe* dist v) :counterfactual? true}})
+        {:value v :note {:dist dist :log-prob (dist/logpdf dist v) :counterfactual? true}})
 
       observed?
-      (let [lp (ar/observe* dist value)]
+      (let [lp (dist/logpdf dist value)]
         (add-weight! world lp)
         {:value value :note {:dist dist :log-prob lp :observed? true}})
 
       (contains? constraints address)
       (let [v (get constraints address)
-            lp (ar/observe* dist v)]
+            lp (dist/logpdf dist v)]
         (add-weight! world lp)
         {:value v :note {:dist dist :log-prob lp :constrained? true}})
 
@@ -135,7 +135,7 @@
       (let [drawn (when draw (draw sp old-entry))
             kept-lp (when (and (not drawn) keep? old-entry
                                (not (:observed? (:note old-entry))))
-                      (ar/observe* dist (:value old-entry)))]
+                      (dist/logpdf dist (:value old-entry)))]
         (cond
           drawn
           (let [_ (when-not (or (:symmetric? drawn) (number? (:log-proposal drawn)))
@@ -143,7 +143,7 @@
                                     {:type ::malformed-proposal
                                      :address address
                                      :proposal (dissoc drawn :value)})))
-                lp (ar/observe* dist (:value drawn))]
+                lp (dist/logpdf dist (:value drawn))]
             (when-not (:symmetric? drawn)
               (add-weight! world (- lp (:log-proposal drawn))))
             {:value (:value drawn)
@@ -159,8 +159,8 @@
 
           :else
           (let [init (when init? (:init (:options (:savepoint/payload sp))))
-                v (if (some? init) init (ar/sample* dist))
-                lp (ar/observe* dist v)]
+                v (if (some? init) init (dist/draw dist))
+                lp (dist/logpdf dist v)]
             {:value v
              :note (cond-> {:dist dist :log-prob lp :log-proposal lp}
                      ;; The old value was there and could not be kept. The
@@ -323,7 +323,7 @@
         irreversible? (some (fn [entry]
                               (and (:redrawn? (:note entry))
                                    (when-let [was (get old-by-address (:address entry))]
-                                     (finite? (ar/observe* (:dist (:note was))
+                                     (finite? (dist/logpdf (:dist (:note was))
                                                            (:value entry))))))
                             new-entries)]
     (if irreversible?
@@ -343,8 +343,8 @@
   "Propose a fresh draw from a target site's own distribution."
   [sp _old-entry]
   (let [dist (:dist (:savepoint/payload sp))
-        v (ar/sample* dist)]
-    {:value v :log-proposal (ar/observe* dist v)}))
+        v (dist/draw dist)]
+    {:value v :log-proposal (dist/logpdf dist v)}))
 
 (defn random-walk-proposal
   "A symmetric Gaussian step of `step-size` around a real-valued target's
@@ -353,7 +353,7 @@
   [step-size]
   (fn [sp old-entry]
     (if (double? (:value old-entry))
-      {:value (+ (:value old-entry) (* step-size (ar/sample* (ar/normal 0.0 1.0))))
+      {:value (+ (:value old-entry) (* step-size (dist/draw (dist/normal 0.0 1.0))))
        :symmetric? true}
       (prior-proposal sp old-entry))))
 

@@ -1,7 +1,7 @@
 (ns org.replikativ.foerster.world-particles-test
   "Canonical Yggdrasil worlds for effectful inference particles."
   (:refer-clojure :exclude [await])
-  (:require [anglican.runtime :as ar]
+  (:require [org.replikativ.foerster.dist :as dist]
             [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.engine.context :as context]
@@ -24,7 +24,7 @@
 
 (defn- observed-model []
   (spin
-   (observe (ar/normal 0.0 1.0) 0.0 :id :evidence)
+   (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
    :done))
 
 (defn- await-cps [operation]
@@ -88,7 +88,7 @@
         (let [knowledge (ygg/register! (-> (mem-gset "particle-kb")
                                            (g/conj :root {:sync? true})))
               model (spin
-                     (observe (ar/normal 0.0 1.0) 0.0 :id :evidence)
+                     (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
                      (reset! (ygg/system-signal "particle-kb")
                              (g/conj @knowledge (slot-name) {:sync? true}))
                      (g/elements @knowledge {:sync? true}))]
@@ -127,7 +127,7 @@
       (binding [ec/*execution-context* root]
         (let [model (spin
                      (try
-                       (observe (ar/normal 0.0 1.0) 0.0 :id :evidence)
+                       (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
                        :done
                        (finally
                          (swap! finalized conj (:fork-id ec/*execution-context*)))))
@@ -154,7 +154,7 @@
         (let [posterior @(spin (await (inference/smc-infer
                                        (spin
                                         (let [answer (swap! calls inc)]
-                                          (observe (ar/normal 0.0 1.0) 0.0 :id :evidence)
+                                          (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
                                           answer))
                                        4 {:world-policy :fork})))]
           (is (= 4 @calls))
@@ -187,7 +187,7 @@
                                   (binding [ec/*execution-context* root]
                                     (let [task (inference/smc-infer
                                                 (spin
-                                                 (observe (ar/normal 0.0 1.0) 0.0 :id :evidence)
+                                                 (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
                                                  (try
                                                    (deliver model-entered true)
                                                    (await (fn [_resolve _reject] nil))
@@ -298,7 +298,7 @@
                                (await
                                 (inference/smc-infer
                                  (spin
-                                  (observe (ar/normal 0.0 1.0) 0.0 :id :evidence)
+                                  (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
                                   (throw (ex-info "model failed" {:stage :model})))
                                  3
                                  {:world-policy :fork}))
@@ -321,8 +321,8 @@
 
 (defn- latent-model []
   (spin
-   (let [x (sample (ar/normal 0.0 1.0) :id :x)]
-     (observe (ar/normal x 1.0) 0.5 :id :y)
+   (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+     (observe (dist/normal x 1.0) 0.5 :id :y)
      x)))
 
 (defn- sweeps-of [posterior n]
@@ -376,7 +376,7 @@
                                                                 {:world-policy policy
                                                                  :barrier-policy :none})))]
             (is (= [42.0 42.0 42.0] (mapv measure/get-value (measure/get-contexts posterior))))
-            (is (every? #(< (Math/abs (- % (+ -1.0 (ar/observe* (ar/normal 42.0 1.0) 0.5)))) 1e-9)
+            (is (every? #(< (Math/abs (- % (+ -1.0 (dist/logpdf (dist/normal 42.0 1.0) 0.5)))) 1e-9)
                         (mapv second (measure/get-particles posterior)))
                 "the delta and the observation make the weight"))))
       (finally
@@ -416,7 +416,7 @@
         (let [posterior @(spin (await (inference/smc-infer
                                        (spin
                                         (let [at-start (tokens)]
-                                          (observe (ar/normal 0.0 1.0) 0.0 :id :evidence)
+                                          (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
                                           [at-start (tokens)]))
                                        4 {:world-policy :fork
                                           :authority (wallet-authority ledger)

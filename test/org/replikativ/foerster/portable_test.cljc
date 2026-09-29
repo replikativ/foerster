@@ -1,11 +1,9 @@
 (ns org.replikativ.foerster.portable-test
-  "foerster compiles and loads in both runtimes; inference runs on the JVM.
-  Anglican's ClojureScript distributions need WebPPL's `dists` global, which
-  nothing provides yet, so on node only the distribution-free parts run."
+  "Inference runs in both runtimes: savepoint SMC on a conjugate model."
   (:refer-clojure :exclude [await])
   (:require #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer-macros [deftest is async]])
-            [anglican.runtime :as ar]
+            [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.foerster.measure :as m]
@@ -26,8 +24,8 @@
 (defn- conjugate-model []
   ;; μ ~ N(0, 1), y ~ N(μ, 1), y = 1: posterior mean 0.5
   (spin
-   (let [mu (sample (ar/normal 0.0 1.0) :id :mu)]
-     (observe (ar/normal mu 1.0) 1.0 :id :y)
+   (let [mu (sample (dist/normal 0.0 1.0) :id :mu)]
+     (observe (dist/normal mu 1.0) 1.0 :id :y)
      mu)))
 
 (defn- check-posterior [measure]
@@ -38,7 +36,8 @@
   #?(:clj (let [p (promise)]
             (run-spin #(infer/smc-infer (conjugate-model) 200) #(deliver p %) (fn []))
             (check-posterior (deref p 30000 ::timeout)))
-     :cljs (is (some? conjugate-model) "the model and inference namespaces load")))
+     :cljs (async done
+                  (run-spin #(infer/smc-infer (conjugate-model) 200) check-posterior done))))
 
 (deftest measures-are-portable
   (let [measure (m/empirical [[(m/sample-particle :a {}) (Math/log 1.0)]

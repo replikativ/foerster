@@ -15,7 +15,7 @@
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [anglican.runtime :as ar]))
+            [org.replikativ.foerster.dist :as dist]))
 
 (defn- await-cps [operation]
   (let [result (promise)]
@@ -37,9 +37,9 @@
 
 (defn- scm []
   (spin
-   (let [z (sample (ar/normal 0.0 1.0) :id :z)
-         x (sample (ar/normal z 1.0) :id :x)
-         y (sample (ar/normal (+ x z) 1.0) :id :y)]
+   (let [z (sample (dist/normal 0.0 1.0) :id :z)
+         x (sample (dist/normal z 1.0) :id :x)
+         y (sample (dist/normal (+ x z) 1.0) :id :y)]
      {:z z :x x :y y})))
 
 (defn- weighted-mean
@@ -61,7 +61,7 @@
     (is (sel/selects? (sel/complement* (sel/id :a)) (d :b [:b])))))
 
 (deftest seeing-is-not-doing
-  (.setSeed ^org.apache.commons.math3.random.RandomGenerator ar/RNG 3)
+  (random/set-seed! 3)
   (testing "conditioning on X = 1: E[Y | X=1] = 1.5"
     (is (< (Math/abs (- 1.5 (weighted-mean 3000 scm {:constraints {:x 1.0}} :y))) 0.1)))
   (testing "do(X = 1) by name: E[Y | do(X=1)] = 1, and X scores nothing"
@@ -71,9 +71,9 @@
     (is (< (Math/abs (- 1.0 (weighted-mean 3000 scm {:interventions {(sel/id :x) {:do 1.0}}} :y))) 0.1))))
 
 (deftest soft-shift-and-policy-interventions
-  (.setSeed ^org.apache.commons.math3.random.RandomGenerator ar/RNG 5)
+  (random/set-seed! 5)
   (testing "a new mechanism: X ~ N(3, 0.1) gives E[Y] = 3"
-    (is (< (Math/abs (- 3.0 (weighted-mean 2000 scm {:interventions {:x {:dist (ar/normal 3.0 0.1)}}} :y))) 0.1)))
+    (is (< (Math/abs (- 3.0 (weighted-mean 2000 scm {:interventions {:x {:dist (dist/normal 3.0 0.1)}}} :y))) 0.1)))
   (testing "a shift: X := X + 2 gives E[Y] = 2"
     (is (< (Math/abs (- 2.0 (weighted-mean 2000 scm {:interventions {:x {:shift 2.0}}} :y))) 0.12)))
   (testing "a policy of earlier choices: X := 2Z gives Y ~ N(3Z, 1), Var[Y] = 10"
@@ -89,6 +89,6 @@
                  (loop [i 0 acc []]
                    (if (= i 3)
                      acc
-                     (recur (inc i) (conj acc (sample (ar/normal 0.0 1.0) :id [:unit i :x])))))))
+                     (recur (inc i) (conj acc (sample (dist/normal 0.0 1.0) :id [:unit i :x])))))))
         [r] (run units {:interventions {(sel/path [:unit :* :x]) {:do 7.0}}})]
     (is (= [7.0 7.0 7.0] r))))

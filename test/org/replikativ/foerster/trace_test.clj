@@ -9,7 +9,7 @@
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [anglican.runtime :as ar]))
+            [org.replikativ.foerster.dist :as dist]))
 
 (defn- await-cps [operation]
   (let [result (promise)]
@@ -30,14 +30,14 @@
 
 (defn- model []
   (spin
-   (let [x (sample (ar/normal 0.0 1.0) :id :x)
-         z (sample (ar/normal x 1.0) :id :z)]
-     (observe (ar/normal z 1.0) 3.0 :id :y)
+   (let [x (sample (dist/normal 0.0 1.0) :id :x)
+         z (sample (dist/normal x 1.0) :id :z)]
+     (observe (dist/normal z 1.0) 3.0 :id :y)
      (factor -0.5)
      [x z])))
 
 (defn- log-normal [v mean sd]
-  (ar/observe* (ar/normal mean sd) v))
+  (dist/logpdf (dist/normal mean sd) v))
 
 (deftest assess-is-the-hand-computed-log-joint
   (with-session [root session]
@@ -69,7 +69,7 @@
   ;; x ~ N(0,1), z | x ~ N(x,1) fixed at 3  =>  x | z ~ N(1.5, 1/2)
   (let [finals
         (mapv (fn [seed]
-                (.setSeed ^org.apache.commons.math3.random.RandomGenerator ar/RNG (long seed))
+                (random/set-seed! (long seed))
                 (with-session [root session]
                   (let [constraints {:z 3.0}
                         initial (await-cps (trace/run session

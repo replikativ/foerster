@@ -10,14 +10,14 @@
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [anglican.runtime :as ar]))
+            [org.replikativ.foerster.dist :as dist]))
 
 (defn- model []
   (spin
-   (let [x (sample (ar/normal 0 1))]
-     (observe (ar/normal x 1) 2.0)
-     (let [z (sample (ar/normal 0 1))]
-       (observe (ar/normal z 1) -2.0)
+   (let [x (sample (dist/normal 0 1))]
+     (observe (dist/normal x 1) 2.0)
+     (let [z (sample (dist/normal 0 1))]
+       (observe (dist/normal z 1) -2.0)
        [x z]))))
 
 (defn- runs
