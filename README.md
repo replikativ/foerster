@@ -73,7 +73,7 @@ See [docs/worlds.md](docs/worlds.md).
 ## Numerical blocks
 
 A block is a group of latents sampled at one site, with a log density and its
-gradient. HMC moves blocks jointly. [spindel-raster] compiles block densities
+gradient. HMC moves blocks jointly. [foerster-raster] compiles block densities
 with raster (JVM, WASM, GPU) and reverse-mode AD.
 
 ## Platforms
@@ -121,4 +121,4 @@ foerster grew inside spindel and was split out with its history.
 
 Copyright © 2026 Christian Weilbach. Apache License 2.0.
 
-[spindel-raster]: https://github.com/replikativ/spindel-raster
+[foerster-raster]: https://github.com/replikativ/foerster-raster
