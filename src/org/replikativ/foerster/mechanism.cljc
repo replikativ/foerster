@@ -53,7 +53,7 @@
   PMechanism
   (noise [_] (m/uniform01))
   (push [d u] (if (< u (:p d)) 1 0))
-  (abduct [d x] (if (= 1 x) (uniform-between 0.0 (:p d)) (uniform-between (:p d) 1.0))))
+  (abduct [d x] (if (== 1 x) (uniform-between 0.0 (:p d)) (uniform-between (:p d) 1.0))))
 
 ;; discrete(w) = the first index whose cumulative weight exceeds u·Σw
 (extend-type org.replikativ.foerster.dist.Discrete
@@ -66,6 +66,7 @@
           (if (or (< target acc') (empty? more)) i (recur (inc i) acc' more))))))
   (abduct [d x]
     (let [total (:total d)
+          x (long x)
           lo (reduce + 0.0 (take x (:weights d)))]
       (uniform-between (/ lo total) (/ (+ lo (nth (:weights d) x)) total)))))
 

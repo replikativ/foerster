@@ -4,6 +4,7 @@
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
             [org.replikativ.foerster.dist :as d]
+            [org.replikativ.foerster.mechanism :as mech]
             [org.replikativ.foerster.random :as random]))
 
 (defn- close? [a b] (< (Math/abs (- a b)) (* 1e-12 (max 1.0 (Math/abs b)))))
@@ -67,3 +68,38 @@
             (str dist " mean"))
         (is (< (Math/abs (/ (- v (d/variance dist)) (d/variance dist))) 0.06)
             (str dist " variance"))))))
+
+(deftest edge-cases
+  (testing "a flat factor stays flat at the boundary"
+    (is (close? (d/logpdf (d/beta 1.0 1.0) 0.0) 0.0))
+    (is (close? (d/logpdf (d/beta 1.0 2.0) 0.0) (Math/log 2.0)))
+    (is (= ##-Inf (d/logpdf (d/beta 2.0 2.0) 0.0)))
+    (is (close? (d/logpdf (d/dirichlet [1.0 1.0 1.0]) [0.0 0.5 0.5]) (Math/log 2.0))))
+  (testing "the Dirichlet lives on the simplex"
+    (is (= ##-Inf (d/logpdf (d/dirichlet [2.0 2.0]) [0.3 0.3]))))
+  (testing "an outcome listed twice carries both weights"
+    (let [c (d/categorical [[:a 1.0] [:b 1.0] [:a 2.0]])]
+      (is (close? (d/logpdf c :a) (Math/log 0.75)))
+      (is (close? (d/logpdf c :b) (Math/log 0.25)))))
+  (testing "Bernoulli outcomes as any number, and nothing else"
+    (is (close? (d/logpdf (d/bernoulli 0.3) 1.0) (Math/log 0.3)))
+    (is (= ##-Inf (d/logpdf (d/bernoulli 0.3) true))))
+  (testing "a Bernoulli mechanism abducts 1.0 as 1"
+    (is (< (mech/abduct (d/bernoulli 0.3) 1.0) 0.3)))
+  (testing "quantiles take probabilities"
+    (is (= ##Inf (d/quantile (d/poisson 3.0) 1.0)))
+    (is (= 0 (d/quantile (d/poisson 3.0) 0.0)))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
+                 (d/quantile (d/poisson 3.0) 1.5)))))
+
+(deftest parameters-are-validated
+  (doseq [make [#(d/normal 0.0 -1.0) #(d/normal 0.0 0.0) #(d/normal ##NaN 1.0)
+                #(d/uniform 1.0 1.0) #(d/exponential 0.0) #(d/gamma -1.0 1.0)
+                #(d/beta 1.0 0.0) #(d/poisson -2.0) #(d/bernoulli 1.5) #(d/flip -0.1)
+                #(d/discrete []) #(d/discrete [1.0 -1.0]) #(d/discrete [0.0 0.0])
+                #(d/dirichlet [1.0 0.0]) #(d/categorical {}) #(d/student-t 0.0)
+                #(d/chi-squared -1.0) #(d/mvn [0.0 0.0] [[1.0]])]]
+    (is (= ::d/invalid-parameters
+           (try (make) nil
+                (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
+                  (:type (ex-data e))))))))

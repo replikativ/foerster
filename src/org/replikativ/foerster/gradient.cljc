@@ -226,7 +226,7 @@
           K (count w)]
       (fn [x]
         ;; d/d(log-w_i) = 1(i=x) - p_i
-        (mapv (fn [i pi] (- (if (= i x) 1.0 0.0) pi))
+        (mapv (fn [i pi] (- (if (== i x) 1.0 0.0) pi))
               (range K) p))))
 
   (grad-step [dist grad lr]

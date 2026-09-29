@@ -124,10 +124,10 @@ factual world's. What breaks reproducibility: randomness from `rand` or
 `Math/random`, effects whose results vary (a language model's answer), and
 iteration over unordered collections that feeds sites.
 
-## Known limitations
+## Validation
 
-- `logpdf` is `##-Inf` outside a distribution's support, except at the
-  boundary of the beta (`NaN` at 0 or 1 when a shape is 1) and off the
-  Dirichlet's simplex (not checked).
-- Parameters are not validated: a negative standard deviation gives
-  meaningless values rather than an error.
+A constructor refuses parameters outside their domain (a negative standard
+deviation, a probability above 1, weights that are all zero) with
+`::dist/invalid-parameters`; `quantile` refuses a probability outside
+[0, 1]. `logpdf` is `##-Inf` outside the support, which for the Dirichlet is
+the simplex. A categorical outcome listed twice carries both weights.
