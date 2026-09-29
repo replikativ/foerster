@@ -5,7 +5,8 @@
         ;; worlds, savepoints, world scopes, traces: the substrate foerster
         ;; runs inference on. 0.1.89: canonical particles are copies (#94);
         ;; 0.1.90: effect adapters as functions (dispatch in ClojureScript).
-        org.replikativ/spindel {:mvn/version "0.1.90"}
+        ;; 0.1.92: a forked child's completion resumes its parent in its own world.
+        org.replikativ/spindel {:mvn/version "0.1.92"}
         org.replikativ/logging {:mvn/version "0.1.3"}}
 
  :aliases
