@@ -29,9 +29,23 @@
   (-mean [d])
   (-variance [d]))
 
+(defprotocol DrawDensity
+  (-draw-logpdf [d x]
+    "The log density of `x` under what `draw` samples, or nil when that is
+    the distribution itself (`logpdf`)."))
+
+(extend-protocol DrawDensity
+  #?(:clj Object :cljs default)
+  (-draw-logpdf [_ _] nil))
+
 (defn distribution? [x] (satisfies? Distribution x))
 (defn draw "A sample of `d`." [d] (-draw d))
 (defn logpdf "The log density (log mass) of `d` at `x`." [d x] (-logpdf d x))
+(defn draw-logpdf
+  "The log density of `x` under what `(draw d)` samples: `logpdf`, unless `d`
+  draws from something else (a block's `:sample`)."
+  [d x]
+  (or (-draw-logpdf d x) (-logpdf d x)))
 (defn cdf [d x] (-cdf d x))
 (defn quantile
   "The p-quantile of `d`, p in [0, 1]."

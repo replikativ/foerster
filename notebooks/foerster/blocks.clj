@@ -75,7 +75,9 @@
   (spin (sample (block/block-dist logistic {:xs xs :ys ys}) :id :beta :init [0.0 0.0])))
 
 ;; A block that cannot be drawn from (no `:sample` capability) starts from
-;; its `:init`.
+;; its `:init`. A block drawn from under importance sampling or SMC also
+;; needs `:sample-log-density`, the density of what `:sample` draws: the
+;; particle is weighted by the block's density over it.
 
 ;; ## HMC
 ;;

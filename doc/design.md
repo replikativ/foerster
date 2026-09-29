@@ -92,9 +92,9 @@ run a program under a policy.
 - **HMC-within-Gibbs** moves block sites along the gradient of the block's
   density — plus one other latent site by single-site MH per iteration — and
   accepts on the **full** trace's log joint, so an incomplete block density
-  costs mixing, not correctness. Blocks are for MCMC: under the particle
-  methods a block site is drawn from its `:sample` capability and weighted as
-  a draw from the prior, so its density does not weigh the particle.
+  costs mixing, not correctness. Under the particle methods a block site is
+  drawn from its `:sample` capability and weighted by its density over the
+  density of the draw (`:sample-log-density`, required there).
 - **Involutive MCMC** (`foerster.involutive`): an auxiliary draw and an
   involution on (choices, aux) with its log Jacobian.
 - **BBVI** learns a mean-field q by stochastic gradient ascent on the ELBO

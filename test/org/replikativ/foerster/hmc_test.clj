@@ -3,7 +3,7 @@
   pure-Clojure reference blocks (the oracles of the spindel ↔ raster block
   contract)."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.foerster.benchmark-test :refer [run-infer weighted-values]]
+            [org.replikativ.foerster.benchmark-test :refer [run-infer weighted-values w-mean-sd]]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.hmc :as hmc]
             [org.replikativ.foerster.core :as infer]
@@ -191,3 +191,37 @@
       (finally
         (await-cps (sp/close! session))
         (ctx/stop-context! root)))))
+
+;; --- blocks under the particle methods ----------------------------------------
+
+(defn- sampled-gaussian-block
+  "The Gaussian block with `:sample` from its prior N(0, s0²) and, unless
+  `density?` is false, that prior's density as `:sample-log-density`."
+  [d density?]
+  (let [b (gaussian-block d true)
+        prior (fn [{:keys [s0]}] (dist/normal 0.0 s0))]
+    (block/block (:description b)
+                 (cond-> (assoc (:capabilities b)
+                                :sample (fn [inputs] (vec (repeatedly d #(dist/draw (prior inputs))))))
+                   density?
+                   (assoc :sample-log-density
+                          (fn [^doubles mu inputs]
+                            (reduce + (map #(dist/logpdf (prior inputs) %) mu))))))))
+
+(deftest particle-methods-weigh-block-draws-by-their-target
+  (let [b (sampled-gaussian-block 1 true)
+        model (fn [] (spin (first (sample (block/block-dist b gauss-inputs) :id :mu))))
+        [[mean _]] (gauss-posterior gauss-inputs 1)]
+    (doseq [[label make] [["importance sampling" #(infer/importance-sampling (model) 4000)]
+                          ["SMC" #(infer/smc-infer (model) 4000)]]]
+      (testing label
+        (let [m (first (w-mean-sd identity (weighted-values (run-infer 3 make))))]
+          (is (< (Math/abs (- m mean)) 0.05) (str label ": " m " vs " mean))))))
+  (testing "a block without :sample-log-density is refused, not mis-weighted"
+    (let [b (sampled-gaussian-block 1 false)
+          model (fn [] (spin (first (sample (block/block-dist b gauss-inputs) :id :mu))))
+          outcome (try (run-infer 3 #(infer/importance-sampling (model) 10))
+                       (catch Throwable e e))]
+      (is (instance? Throwable outcome))
+      (is (some #(= ::block/no-sample-density (:type (ex-data %)))
+                (take-while some? (iterate ex-cause outcome)))))))
