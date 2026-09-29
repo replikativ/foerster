@@ -82,20 +82,19 @@
 ;; 2. applies the intervention (**action**), and
 ;; 3. replays the model with the abducted noise (**prediction**).
 
-(defn scm-fn [] (sp/with-context world (scm)))
-
 (def pairs
   (let [p (promise)]
-    ((cf/counterfactual scm-fn {:evidence {:x 1.0 :y 2.5}
-                                :interventions {:x {:do 2.0}}
-                                :particles 50})
+    ((cf/counterfactual (sp/with-context world (scm))
+                        {:evidence {:x 1.0 :y 2.5}
+                         :interventions {:x {:do 2.0}}
+                         :particles 50})
      #(deliver p %) #(deliver p %))
     (deref p 60000 :timeout)))
 
-;; `counterfactual` takes a function that makes the model — it calls it once
-;; per particle, and runs that model in both the factual and the
-;; counterfactual world — and returns a CPS operation resolving
-;; factual/counterfactual pairs, one per particle, with weights:
+;; `counterfactual` takes the model spin, as `gfi` does — it runs it in a
+;; factual and a counterfactual world per particle — and returns a CPS
+;; operation resolving factual/counterfactual pairs, one per particle, with
+;; weights:
 
 (select-keys (first pairs) [:factual :counterfactual :weight])
 
@@ -119,9 +118,9 @@
        {:x x :y y}))))
 
 (let [p (promise)]
-  ((cf/counterfactual binary {:evidence {:x true :y true}
-                              :interventions {:x {:do false}}
-                              :particles 1500})
+  ((cf/counterfactual (binary) {:evidence {:x true :y true}
+                                :interventions {:x {:do false}}
+                                :particles 1500})
    #(deliver p %) #(deliver p %))
   (let [pairs (deref p 60000 [])
         ws (m/normalize-log-weights (mapv :weight pairs))]

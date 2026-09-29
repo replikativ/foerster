@@ -25,7 +25,7 @@
 (def ^:private root (context/create-execution-context))
 
 (defmacro ^:private model [& body]
-  `(fn [] (binding [ec/*execution-context* root] (spin ~@body))))
+  `(binding [ec/*execution-context* root] (spin ~@body)))
 
 (defn- close? [a b] (< (Math/abs (- a b)) 1e-9))
 

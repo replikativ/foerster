@@ -160,6 +160,41 @@
          ;; context's drains, and this body may be running inside one.
            (await-finalization (sp/close! session))))))))
 
+(defn- world-policy
+  "The `:world-policy` of `opts`, :fresh by default; refuses any other."
+  [opts]
+  (let [policy (get opts :world-policy :fresh)]
+    (when-not (#{:fresh :fork} policy)
+      (throw (ex-info "Unknown inference world policy"
+                      {:type ::invalid-world-policy
+                       :world-policy policy
+                       :supported #{:fresh :fork}})))
+    policy))
+
+(def ^:private particle-options
+  "What every particle method takes."
+  #{:world-policy :world-opts :authority :grant :executor :resample-threshold :policy})
+
+(def ^:private fork-options
+  "What applies to canonical worlds only (`:world-policy :fork`)."
+  #{:world-opts :authority :grant})
+
+(defn- check-options!
+  "Refuse options `allowed` does not name, and canonical-world options under
+  `:world-policy :fresh`: an option that would be ignored is a mistake."
+  [opts allowed]
+  (when-let [unknown (seq (remove allowed (keys opts)))]
+    (throw (ex-info (str "Unknown inference options: " (vec unknown))
+                    {:type ::unknown-options
+                     :unknown (vec unknown)
+                     :allowed allowed})))
+  (when (= :fresh (world-policy opts))
+    (when-let [misplaced (seq (filter fork-options (keys opts)))]
+      (throw (ex-info (str "Options for :world-policy :fork only: " (vec misplaced))
+                      {:type ::fork-only-options
+                       :options (vec misplaced)}))))
+  opts)
+
 (defn- markov-chain-infer
   [model-task kernel num-chains opts]
   ;; Chains run in fresh worlds of their own. Running them in forks of the
@@ -237,6 +272,9 @@
                                          {:barrier-policy :none}))]
         (query measure identity)))"
   [model-task kernel num-particles & [opts]]
+  (check-options! opts (if (mh-options kernel)
+                         #{:executor :world-policy}
+                         (conj particle-options :barrier-policy)))
   (let [smc-opts (cond-> (dissoc opts :barrier-policy)
                    (= :none (:barrier-policy opts)) (assoc :resample-threshold 0.0))]
     (cond
@@ -254,17 +292,6 @@
 ;; =============================================================================
 ;; Convenience Functions (Delegate to kernel-infer)
 ;; =============================================================================
-
-(defn- world-policy
-  "The `:world-policy` of `opts`, :fresh by default; refuses any other."
-  [opts]
-  (let [policy (get opts :world-policy :fresh)]
-    (when-not (#{:fresh :fork} policy)
-      (throw (ex-info "Unknown inference world policy"
-                      {:type ::invalid-world-policy
-                       :world-policy policy
-                       :supported #{:fresh :fork}})))
-    policy))
 
 (defn- on-savepoints?
   "Whether a particle method whose canonical worlds are not on savepoints
@@ -415,6 +442,7 @@
     (sp/with-context world @(smc-infer (model) 1000))   ; at the REPL
     (spin (query (await (smc-infer (model) 1000)) identity))"
   [model-task num-particles & [opts]]
+  (check-options! opts particle-options)
   (particles model-task num-particles opts))
 
 (defn importance-sampling
@@ -422,6 +450,7 @@
   its observations, never resampled (savepoint SMC with
   `:resample-threshold` 0). Options and result as for `smc-infer`."
   [model-task num-samples & [opts]]
+  (check-options! opts (disj particle-options :resample-threshold))
   ;; savepoint SMC that never resamples: ESS never falls below 0
   (particles model-task num-samples (assoc opts :resample-threshold 0.0)))
 
@@ -480,18 +509,19 @@
 
   Returns: Spin<EmpiricalMeasure>"
   [model-task num-particles num-iterations & [opts]]
+  (check-options! opts particle-options)
   (if (on-savepoints? opts)
     (on-savepoints (smc/pimh model-task num-particles num-iterations opts))
     (spin
      (let [seed (random/fresh-seed)
-           initial (await (smc-infer model-task num-particles opts))]
+           initial (await (particles model-task num-particles opts))]
        (loop [current (normalized-samples initial)
               current-log-Z (m/log-marginal initial)
               iteration 0
               all-samples []]
          (if (>= iteration num-iterations)
            (m/empirical all-samples)
-           (let [proposed (await (smc-infer model-task num-particles opts))
+           (let [proposed (await (particles model-task num-particles opts))
                  proposed-log-Z (m/log-marginal proposed)
                  log-alpha (- proposed-log-Z current-log-Z)
                  u (random/with-stream* seed [::pimh-accept iteration] m/uniform01)
@@ -509,7 +539,7 @@
    particles are emitted normalized."
   [model-task num-particles num-iterations opts]
   (spin
-   (let [initial (await (smc-infer model-task num-particles opts))
+   (let [initial (await (particles model-task num-particles opts))
          pick (fn [measure]
                 (let [ps (m/get-particles measure)]
                   (m/get-trace (first (nth ps (m/sample-categorical
@@ -534,6 +564,7 @@
   Returns: Spin<EmpiricalMeasure> of every sweep's particles, each sweep
   normalized to total weight one."
   [model-task num-particles num-iterations & [opts]]
+  (check-options! opts particle-options)
   (if (on-savepoints? opts)
     (on-savepoints (smc/pgibbs model-task num-particles num-iterations opts))
     (csmc-chain model-task num-particles num-iterations opts)))
@@ -618,7 +649,7 @@
   (cond
     ;; SMC sweep (no retained trace)
     (nil? retained-trace)
-    (smc-infer model-task num-particles opts)
+    (particles model-task num-particles opts)
 
     ;; CSMC sweep with retained trace
     :else
@@ -681,6 +712,7 @@
    Reference:
      Rainforth et al., 'Interacting Particle Markov Chain Monte Carlo', ICML 2016"
   [model-task num-particles num-iterations & [opts]]
+  (check-options! opts (into particle-options #{:num-nodes :num-csmc-nodes :all-particles?}))
   (spin
    (let [num-nodes (or (:num-nodes opts) 8)
          num-csmc-nodes (or (:num-csmc-nodes opts) (quot num-nodes 2))
@@ -735,6 +767,7 @@
   Returns: Spin<EmpiricalMeasure> of every sweep's particles, each sweep
   normalized to total weight one."
   [model-task num-particles num-iterations & [opts]]
+  (check-options! opts particle-options)
   (if (on-savepoints? opts)
     (on-savepoints (smc/pgas model-task num-particles num-iterations opts))
     (csmc-chain model-task num-particles num-iterations (assoc opts :ancestor-sampling? true))))
@@ -842,6 +875,9 @@
    samples from the final q (with 0 iterations: from the priors); the learned
    q is under `:variational-dists` (see `get-variational-dists`)."
   [model-task num-particles num-iterations & [opts]]
+  (check-options! opts (-> particle-options
+                           (disj :policy :resample-threshold)
+                           (into #{:base-lr :robbins-monro :adagrad})))
   (spin
    (let [base-lr (or (:base-lr opts) 1.0)
          robbins-monro (or (:robbins-monro opts) 0.0)

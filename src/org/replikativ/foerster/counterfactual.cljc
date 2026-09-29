@@ -64,8 +64,8 @@
              resolve reject)))))
 
 (defn counterfactual
-  "Pairs of factual and counterfactual results of `model` (a zero-argument
-  function returning a fresh model spin) given `:evidence` ({address value},
+  "Pairs of factual and counterfactual results of `model` (a spin, as for
+  `foerster.gfi`) given `:evidence` ({address value},
   fixed in the factual world) and `:interventions` ({selector transform}, as
   for `foerster.trace/policy`), from `:particles` importance-weighted
   factual worlds (default 1: enough when the evidence fixes every noise).
@@ -77,7 +77,7 @@
     (letfn [(step [i acc]
               (if (= i particles)
                 (resolve acc)
-                ((twin (model) evidence interventions opts)
+                ((twin model evidence interventions opts)
                  (fn [pair] (step (inc i) (conj acc pair)))
                  reject)))]
       (step 0 []))))

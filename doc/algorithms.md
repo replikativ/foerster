@@ -21,8 +21,12 @@ non-Markov-chain kernel:
 | `:resample-threshold` | `0.5` | SMC resamples when the effective sample size is below this fraction of the particles |
 | `:policy` | the prior | a `foerster.trace/policy` deciding the sites: constraints, interventions, custom proposals ([extending](extending.md)) |
 
-Options that do not apply to a method are passed on and ignored; a mistyped
-option is not reported.
+An option a method does not take is refused (`::infer/unknown-options`), and
+so are `:world-opts`, `:authority` and `:grant` under `:world-policy :fresh`
+(`::infer/fork-only-options`): an option that would be ignored is a mistake.
+`importance-sampling` takes no `:resample-threshold`, BBVI no `:policy` or
+`:resample-threshold` (it decides both), and the Markov-chain kernels only
+`:executor` and `:world-policy :fresh`.
 
 ## Particle methods
 
@@ -71,8 +75,8 @@ value and runs on ([streaming notebook](https://replikativ.github.io/foerster/fo
 - `org.replikativ.foerster.gfi`: `simulate`, `generate`, `assess`, `update`,
   `regenerate`, `mh`, `close!` — CPS operations on traces of a model spin.
 - `org.replikativ.foerster.involutive/step`: an involutive MCMC move.
-- `(counterfactual/counterfactual model-fn {:evidence :interventions
-  :particles})`: twin-world counterfactuals; `model-fn` makes the model.
+- `(counterfactual/counterfactual model {:evidence :interventions
+  :particles})`: twin-world counterfactuals of the model spin.
 
 See the [programmable](https://replikativ.github.io/foerster/foerster.programmable.html)
 and [counterfactuals](https://replikativ.github.io/foerster/foerster.counterfactuals.html)
