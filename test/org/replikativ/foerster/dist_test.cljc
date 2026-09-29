@@ -18,6 +18,11 @@
   (is (close? (d/logpdf (d/poisson 12.0) 9) -2.4376676319894672))
   (is (close? (d/cdf (d/poisson 12.0) 9) 0.24239216167051233))
   (is (close? (d/logpdf (d/exponential 0.7) 1.3) -1.2666749439387324))
+  (is (close? (d/logpdf (d/mvn [1.0 -2.0] [[2.0 0.6] [0.6 1.0]]) [0.5 -1.0]) -2.9541276263517897))
+  (is (close? (d/logpdf (d/categorical {:a 1 :b 3}) :b) (Math/log 0.75)))
+  (is (= ##-Inf (d/logpdf (d/categorical {:a 1 :b 3}) :c)))
+  (is (close? (d/logpdf (d/student-t 5.0) 0.65)
+              (- (d/logpdf (d/student-t 5.0 1.0 2.0) 2.3) (- (Math/log 2.0)))))
   (testing "a whole number is a count whatever its type"
     (is (= (d/logpdf (d/poisson 12.0) 9) (d/logpdf (d/poisson 12.0) 9.0))))
   (testing "outside the support"
@@ -55,7 +60,8 @@
   (let [n 20000]
     (doseq [dist [(d/normal 1.5 2.0) (d/uniform -1.0 3.0) (d/exponential 0.7)
                   (d/gamma 0.4 2.0) (d/gamma 3.3 1.5) (d/beta 2.0 5.0)
-                  (d/poisson 3.2) (d/poisson 57.0) (d/bernoulli 0.3)]]
+                  (d/poisson 3.2) (d/poisson 57.0) (d/bernoulli 0.3)
+                  (d/student-t 5.0 1.0 2.0) (d/chi-squared 3.0)]]
       (let [[m v] (moments (vec (repeatedly n #(d/draw dist))))]
         (is (< (Math/abs (/ (- m (d/mean dist)) (Math/sqrt (/ (d/variance dist) n)))) 4.0)
             (str dist " mean"))
