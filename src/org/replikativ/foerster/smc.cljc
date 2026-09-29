@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.smc
+(ns org.replikativ.foerster.smc
   "Sequential Monte Carlo as a savepoint handler.
 
   The program runs once in a session. The first savepoint it reaches is
@@ -19,9 +19,9 @@
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.inference.trace :as itrace]
-            [org.replikativ.spindel.inference.measure :as m]
-            [org.replikativ.spindel.inference.random :as random]
+            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.random :as random]
             [anglican.runtime :as ar]
             [replikativ.logging :as log]))
 

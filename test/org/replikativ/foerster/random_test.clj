@@ -1,13 +1,13 @@
-(ns org.replikativ.spindel.inference.random-test
+(ns org.replikativ.foerster.random-test
   "A seeded run draws the same numbers however its particles and chains are
   scheduled: every draw made in a world reads a stream keyed by the world's
   seed and what is drawn."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.inference.benchmark-test :refer [run-infer weighted-values]]
-            [org.replikativ.spindel.inference.inference :as infer]
-            [org.replikativ.spindel.inference.kernel :as k]
-            [org.replikativ.spindel.inference.smc :as smc]
-            [org.replikativ.spindel.inference.effects :refer [sample observe]]
+            [org.replikativ.foerster.benchmark-test :refer [run-infer weighted-values]]
+            [org.replikativ.foerster.core :as infer]
+            [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [anglican.runtime :as ar]))

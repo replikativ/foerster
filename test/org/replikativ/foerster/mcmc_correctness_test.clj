@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.mcmc-correctness-test
+(ns org.replikativ.foerster.mcmc-correctness-test
   "MCMC against analytic posteriors, on models whose sites are NOT laid out as
   'all samples, then all observes'. Each model isolates one thing a kernel
   that returns to a site of a program must get right:
@@ -16,13 +16,13 @@
   reject the specific wrong ratio it is there for."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.inference.random :as random]
+            [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.inference.trace :as itrace]
-            [org.replikativ.spindel.inference.inference :as infer]
-            [org.replikativ.spindel.inference.kernel :as k]
-            [org.replikativ.spindel.inference.measure :as measure]
-            [org.replikativ.spindel.inference.effects :refer [sample observe]]
+            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.core :as infer]
+            [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.measure :as measure]
+            [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :as aw]
             [org.replikativ.spindel.engine.core :as rtc]

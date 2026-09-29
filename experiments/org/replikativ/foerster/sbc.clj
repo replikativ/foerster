@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.sbc
+(ns org.replikativ.foerster.sbc
   "Simulation-based calibration (Talts et al. 2018) of HMC on block sites.
 
   Not part of the test suite: a seeded statistical experiment with explicit
@@ -11,12 +11,12 @@
   uniformity with a χ² test at level α, Bonferroni-corrected over all the
   dimensions tested. Finite samples never give exactly uniform ranks; the
   test decides whether they are too far from it. Exits 1 if any fails."
-  (:require [org.replikativ.spindel.inference.benchmark-test :refer [run-infer]]
-            [org.replikativ.spindel.inference.block :as block]
-            [org.replikativ.spindel.inference.inference :as infer]
-            [org.replikativ.spindel.inference.kernel :as k]
-            [org.replikativ.spindel.inference.measure :as m]
-            [org.replikativ.spindel.inference.effects :refer [sample]]
+  (:require [org.replikativ.foerster.benchmark-test :refer [run-infer]]
+            [org.replikativ.foerster.block :as block]
+            [org.replikativ.foerster.core :as infer]
+            [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.spindel.spin.cps :refer [spin]])
   (:import [org.apache.commons.math3.distribution ChiSquaredDistribution]))
 

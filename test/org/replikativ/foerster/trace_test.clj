@@ -1,11 +1,11 @@
-(ns org.replikativ.spindel.inference.trace-test
+(ns org.replikativ.foerster.trace-test
   "The inference layer over savepoint traces, through its own API."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.inference.random :as random]
+            [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.inference.trace :as itrace]
-            [org.replikativ.spindel.inference.effects :refer [sample observe factor]]
+            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.effects :refer [sample observe factor]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]

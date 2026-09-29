@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.site-path-test
+(ns org.replikativ.foerster.site-path-test
   "Readable site paths: `:id` names — hierarchical ones as vectors — give
   savepoint sites Gen-style addresses a caller can name from outside, and
   every trace entry records its path."
@@ -6,8 +6,8 @@
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.addressing :refer [with-scope]]
             [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.inference.trace :as itrace]
-            [org.replikativ.spindel.inference.effects :refer [sample observe]]
+            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]

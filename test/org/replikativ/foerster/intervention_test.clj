@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.intervention-test
+(ns org.replikativ.foerster.intervention-test
   "Selectors, and interventions by selector, against closed-form answers.
 
   The model is confounded: Z ~ N(0,1), X ~ N(Z,1), Y ~ N(X+Z,1). Seeing X = 1
@@ -6,12 +6,12 @@
   (E[Y | do(X=1)] = 1)."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.inference.random :as random]
+            [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.inference.trace :as itrace]
-            [org.replikativ.spindel.inference.measure :as m]
-            [org.replikativ.spindel.inference.effects :refer [sample]]
+            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]

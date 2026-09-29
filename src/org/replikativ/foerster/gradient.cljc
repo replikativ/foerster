@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.gradient
+(ns org.replikativ.foerster.gradient
   "Gradient protocol for variational inference.
 
   Provides grad-log and grad-step for distributions, enabling:

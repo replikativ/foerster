@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.world-particles-test
+(ns org.replikativ.foerster.world-particles-test
   "Canonical Yggdrasil worlds for effectful inference particles."
   (:refer-clojure :exclude [await])
   (:require [anglican.runtime :as ar]
@@ -8,10 +8,10 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.inference.effects :refer [observe sample]]
-            [org.replikativ.spindel.inference.inference :as inference]
-            [org.replikativ.spindel.inference.kernel :as kernel]
-            [org.replikativ.spindel.inference.measure :as measure]
+            [org.replikativ.foerster.effects :refer [observe sample]]
+            [org.replikativ.foerster.core :as inference]
+            [org.replikativ.foerster.kernel :as kernel]
+            [org.replikativ.foerster.measure :as measure]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.world.scope :as world-scope]
@@ -109,7 +109,7 @@
                                 (is (every? #(and (= :particle (:fork/purpose %))
                                                   (= :discarded (:fork/status %)))
                                             descriptors))
-                                (is (every? #(instance? org.replikativ.spindel.inference.measure.Sample %)
+                                (is (every? #(instance? org.replikativ.foerster.measure.Sample %)
                                             (measure/get-contexts posterior))
                                     "no execution context is retained"))
                               (testing "every world is discarded before the posterior is delivered"

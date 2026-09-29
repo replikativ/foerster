@@ -1,13 +1,13 @@
-(ns org.replikativ.spindel.inference.counterfactual-test
+(ns org.replikativ.foerster.counterfactual-test
   "Counterfactuals against closed forms: mechanisms round-trip their noise,
   a linear-Gaussian twin is exact, a confounded one is exact whatever the
   posterior over the confounder, and the probability of necessity of a binary
   model matches its analytic value."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.inference.counterfactual :as cf]
-            [org.replikativ.spindel.inference.mechanism :as mech]
-            [org.replikativ.spindel.inference.measure :as m]
-            [org.replikativ.spindel.inference.effects :refer [sample]]
+            [org.replikativ.foerster.counterfactual :as cf]
+            [org.replikativ.foerster.mechanism :as mech]
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]

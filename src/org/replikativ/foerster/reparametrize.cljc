@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.reparametrize
+(ns org.replikativ.foerster.reparametrize
   "Pure helper functions for distribution reparametrization.
 
   These are DETERMINISTIC functions that transform standard random variables
@@ -267,7 +267,7 @@
   This is what you typically use as the exogenous variable.
 
   Example:
-    (require '[org.replikativ.spindel.inference.effects :refer [choose]])
+    (require '[org.replikativ.foerster.effects :refer [choose]])
     (let [U (standard-normal-sample :my-exo)]
       (reparametrize-normal U mu sigma))"
   [id]
@@ -281,7 +281,7 @@
   This is what you typically use as the exogenous variable for inverse CDF.
 
   Example:
-    (require '[org.replikativ.spindel.inference.effects :refer [choose]])
+    (require '[org.replikativ.foerster.effects :refer [choose]])
     (let [U (standard-uniform-sample :my-exo)]
       (reparametrize-exponential U rate))"
   [id]

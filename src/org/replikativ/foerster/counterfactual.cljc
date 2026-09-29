@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.counterfactual
+(ns org.replikativ.foerster.counterfactual
   "Counterfactual queries by abduction, action and prediction (Pearl).
 
   A program's sample and observe sites are structural equations
@@ -17,9 +17,9 @@
   expectations over it. A site that exists only in the counterfactual world
   draws fresh noise and is listed as `:unaligned`: its answer is
   interventional, not counterfactual."
-  (:require [org.replikativ.spindel.inference.gfi :as gfi]
-            [org.replikativ.spindel.inference.trace :as itrace]
-            [org.replikativ.spindel.inference.mechanism :as mech]))
+  (:require [org.replikativ.foerster.gfi :as gfi]
+            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.mechanism :as mech]))
 
 (defn noise-of
   "{address u} of the sample and observe sites of `trace` whose law is a

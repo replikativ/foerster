@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.involutive
+(ns org.replikativ.foerster.involutive
   "Involutive MCMC over savepoint traces (Neklyudov et al. 2020; Gen's
   `involutive_mh`).
 
@@ -18,8 +18,8 @@
   is dropped, both scored as in single-site MH; moves that create or remove
   sites through the involution itself (reversible jump) are future work."
   (:require [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.inference.trace :as itrace]
-            [org.replikativ.spindel.inference.measure :as m]))
+            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.measure :as m]))
 
 (defn- entry-map [t]
   (into {} (map (juxt :address identity)) (itrace/entries t)))

@@ -1,12 +1,12 @@
-(ns org.replikativ.spindel.inference.gfi-test
+(ns org.replikativ.foerster.gfi-test
   "Gen's weight identities for `inference.gfi`, checked by hand on small
   models, and MH-by-selection against an analytic posterior."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.inference.gfi :as gfi]
+            [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.spindel.select :as sel]
-            [org.replikativ.spindel.inference.trace :as itrace]
-            [org.replikativ.spindel.inference.measure :as m]
-            [org.replikativ.spindel.inference.effects :refer [sample observe]]
+            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]

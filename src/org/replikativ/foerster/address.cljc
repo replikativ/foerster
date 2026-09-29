@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.address
+(ns org.replikativ.foerster.address
   "Address generation and trace manipulation.
 
   Addresses are keywords that uniquely identify probabilistic choices.

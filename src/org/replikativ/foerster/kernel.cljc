@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.kernel
+(ns org.replikativ.foerster.kernel
   "Kernel abstraction for compositional inference.
 
   Kernels are measure-preserving transformations that form the building
@@ -17,7 +17,7 @@
                        `step` gives.
                        This is what makes importance sampling vs SMC
                        a choice of kernel, not a choice of engine."
-  (:require [org.replikativ.spindel.inference.measure :as m]
+  (:require [org.replikativ.foerster.measure :as m]
             [replikativ.logging :as log]
             [anglican.runtime :as ar]))
 

@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.benchmark-test
+(ns org.replikativ.foerster.benchmark-test
   "Correctness harness for the inference algorithms.
 
    Every check compares an algorithm's output against a known answer:
@@ -15,11 +15,11 @@
    concurrently and share the one generator, so their draws interleave in
    scheduling order; their budgets leave room for that."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.inference.inference :as infer]
-            [org.replikativ.spindel.inference.kernel :as k]
-            [org.replikativ.spindel.inference.smc :as smc]
-            [org.replikativ.spindel.inference.measure :as m]
-            [org.replikativ.spindel.inference.effects :refer [sample observe]]
+            [org.replikativ.foerster.core :as infer]
+            [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :as aw]
             [org.replikativ.spindel.engine.core :as rtc]

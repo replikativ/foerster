@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.mcmc-test
+(ns org.replikativ.foerster.mcmc-test
   "What a Metropolis-Hastings kernel must do, checked against the
    properties that were broken until the replay restored its slice state:
    the trace stays the size of the model, every site is reachable, moves are
@@ -7,10 +7,10 @@
 
    Every run here is one particle from a seed, so it is bit-reproducible."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.inference.inference :as infer]
-            [org.replikativ.spindel.inference.kernel :as k]
-            [org.replikativ.spindel.inference.measure :as measure]
-            [org.replikativ.spindel.inference.effects :refer [sample observe]]
+            [org.replikativ.foerster.core :as infer]
+            [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.measure :as measure]
+            [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :as aw]
             [org.replikativ.spindel.engine.core :as rtc]

@@ -1,15 +1,15 @@
-(ns org.replikativ.spindel.inference.hmc-test
+(ns org.replikativ.foerster.hmc-test
   "HMC on block sites against analytic and quadrature posteriors, with
   pure-Clojure reference blocks (the oracles of the spindel ↔ raster block
   contract)."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.inference.benchmark-test :refer [run-infer weighted-values]]
-            [org.replikativ.spindel.inference.block :as block]
-            [org.replikativ.spindel.inference.hmc :as hmc]
-            [org.replikativ.spindel.inference.inference :as infer]
-            [org.replikativ.spindel.inference.kernel :as k]
-            [org.replikativ.spindel.inference.trace :as itrace]
-            [org.replikativ.spindel.inference.effects :refer [sample observe]]
+            [org.replikativ.foerster.benchmark-test :refer [run-infer weighted-values]]
+            [org.replikativ.foerster.block :as block]
+            [org.replikativ.foerster.hmc :as hmc]
+            [org.replikativ.foerster.core :as infer]
+            [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.engine.context :as ctx]

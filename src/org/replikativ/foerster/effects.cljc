@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.effects
+(ns org.replikativ.foerster.effects
   "Probabilistic programming effects: unified choose primitive.
 
   This provides the fundamental primitive for compositional probabilistic programming:
@@ -11,7 +11,7 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.effects :as eff]
-            [org.replikativ.spindel.inference.address :as addr]
+            [org.replikativ.foerster.address :as addr]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [replikativ.logging :as log]
             [is.simm.partial-cps.async :as pcps-async]
@@ -227,26 +227,26 @@
   ;; NOTE: We use dispatched path (no 4th arg) so adapter is called
   ;; Direct handler path bypasses adapter and expects different signature
   (eff/register-effect-by-symbol!
-   'org.replikativ.spindel.inference.effects/choose
+   'org.replikativ.foerster.effects/choose
    choose-handler  ; PEffectHandler instance
-   'org.replikativ.spindel.inference.effects/choose-adapter)
+   'org.replikativ.foerster.effects/choose-adapter)
 
   ;; Register sample (convenience wrapper) - same as choose
   (eff/register-effect-by-symbol!
-   'org.replikativ.spindel.inference.effects/sample
+   'org.replikativ.foerster.effects/sample
    choose-handler
-   'org.replikativ.spindel.inference.effects/sample-adapter)
+   'org.replikativ.foerster.effects/sample-adapter)
 
   (eff/register-effect-by-symbol!
-   'org.replikativ.spindel.inference.effects/factor
+   'org.replikativ.foerster.effects/factor
    factor-handler
-   'org.replikativ.spindel.inference.effects/factor-adapter)
+   'org.replikativ.foerster.effects/factor-adapter)
 
   ;; Register observe (different syntax: observe dist value)
   (eff/register-effect-by-symbol!
-   'org.replikativ.spindel.inference.effects/observe
+   'org.replikativ.foerster.effects/observe
    choose-handler
-   'org.replikativ.spindel.inference.effects/observe-adapter))
+   'org.replikativ.foerster.effects/observe-adapter))
 
 ;; Auto-register on namespace load
 (register-probabilistic-effects!)

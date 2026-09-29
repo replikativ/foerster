@@ -1,11 +1,11 @@
-(ns org.replikativ.spindel.inference.involutive-test
+(ns org.replikativ.foerster.involutive-test
   "Involutive MCMC against conjugate posteriors: a random walk written as an
   involution, and a scale move whose Jacobian matters — without it the chain
   settles on the wrong posterior."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.inference.involutive :as inv]
-            [org.replikativ.spindel.inference.gfi :as gfi]
-            [org.replikativ.spindel.inference.effects :refer [sample observe]]
+            [org.replikativ.foerster.involutive :as inv]
+            [org.replikativ.foerster.gfi :as gfi]
+            [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]

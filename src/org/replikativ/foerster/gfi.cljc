@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.gfi
+(ns org.replikativ.foerster.gfi
   "Gen's generative function interface over savepoint traces.
 
   Each operation is `spindel.trace/run` or `replay` under a policy of
@@ -28,9 +28,9 @@
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.inference.trace :as itrace]
-            [org.replikativ.spindel.inference.measure :as m]
-            [org.replikativ.spindel.inference.random :as random]))
+            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.random :as random]))
 
 (defn- then [operation f]
   (fn [resolve reject]

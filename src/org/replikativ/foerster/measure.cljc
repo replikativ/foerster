@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.measure
+(ns org.replikativ.foerster.measure
   "Measure abstraction for probabilistic programming.
 
   Measures represent probability distributions over execution traces.

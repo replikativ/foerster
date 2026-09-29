@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.inference
+(ns org.replikativ.foerster.core
   "Compositional probabilistic inference algorithms.
 
   Every method runs a probabilistic program as a savepoint handler: SMC
@@ -14,13 +14,13 @@
 
   All functions return Spin<EmpiricalMeasure> for composability;
   post-processing is measure-centric (query, predict)."
-  (:require [org.replikativ.spindel.inference.measure :as m]
-            [org.replikativ.spindel.inference.random :as random]
-            [org.replikativ.spindel.inference.hmc :as hmc]
-            [org.replikativ.spindel.inference.kernel :as k]
-            [org.replikativ.spindel.inference.smc :as smc]
-            [org.replikativ.spindel.inference.gradient :as grad]
-            [org.replikativ.spindel.inference.trace :as itrace]
+  (:require [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.random :as random]
+            [org.replikativ.foerster.hmc :as hmc]
+            [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.gradient :as grad]
+            [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.spindel.trace :as trace]
@@ -36,9 +36,6 @@
             [replikativ.logging :as log]
             [anglican.runtime :as ar]
             [clojure.set :as set]))
-
-(defmacro ^:private inference-spin [& body]
-  `(spin-core/with-causal-descendant-egress (spin ~@body)))
 
 ;; =============================================================================
 ;; Markov chains: replay plus accept
@@ -66,7 +63,7 @@
              targets (get blocks block-id #{})
              kernel (get block-kernels block-id)]
          (reset! proposals (when (and kernel (seq targets)
-                                      (not (instance? org.replikativ.spindel.inference.kernel.PriorBlockKernel kernel)))
+                                      (not (instance? org.replikativ.foerster.kernel.PriorBlockKernel kernel)))
                              (k/propose-block kernel legacy targets)))
          ;; Blocks are selected by id, independently of the trace.
          {:targets targets :log-selection (constantly 0.0)}))
@@ -113,53 +110,54 @@
   give every world back. Returns the chain's particles: its projected final
   state, or (kernel `:samples :all`) every state after `:burn` as a Sample."
   [model-task kernel executor seed]
-  (inference-spin
-   (let [;; per chain: a block Gibbs description closes over its own state
-         {:keys [iterations] :as step-opts} (mh-options kernel)
-         root (ctx/create-execution-context :executor executor)
-         session (sp/open! root {:purpose :mcmc :seed seed :fork-opts {:systems :none}
-                                 :retain-released? false})]
-     (try
-       (let [initial (await (trace/run session model-task (itrace/policy {:init? true})
-                                       {:anchor? itrace/anchor?}))
-             _ (when (contains? initial :trace/error)
-                 (throw (ex-info "Inference failed during model execution"
-                                 {:type ::inference-failed}
-                                 (:trace/error initial))))
+  (spin-core/with-causal-descendant-egress
+    (spin
+     (let [;; per chain: a block Gibbs description closes over its own state
+           {:keys [iterations] :as step-opts} (mh-options kernel)
+           root (ctx/create-execution-context :executor executor)
+           session (sp/open! root {:purpose :mcmc :seed seed :fork-opts {:systems :none}
+                                   :retain-released? false})]
+       (try
+         (let [initial (await (trace/run session model-task (itrace/policy {:init? true})
+                                         {:anchor? itrace/anchor?}))
+               _ (when (contains? initial :trace/error)
+                   (throw (ex-info "Inference failed during model execution"
+                                   {:type ::inference-failed}
+                                   (:trace/error initial))))
              ;; From an impossible state every ratio is NaN and nothing is
              ;; ever accepted; say so instead of returning that state.
-             _ (when (= ##-Inf (itrace/log-joint initial))
-                 (throw (ex-info "The initial state of the chain has zero density"
-                                 {:type ::impossible-initial-state})))
-             samples (volatile! [])
-             step-opts (cond-> step-opts
-                         (= :all (:samples kernel))
-                         (assoc :on-step
-                                (let [i (volatile! 0)]
-                                  (fn [{t :trace}]
-                                    (when (> (vswap! i inc) (:burn kernel 0))
-                                      (vswap! samples conj
-                                              [(m/sample-particle (:trace/result t)
-                                                                  (itrace/legacy-trace t))
-                                               0.0]))))))
-             {final :trace accepted :accepted}
-             (await (itrace/mh-chain initial iterations step-opts))
-             world (:trace/world final)]
-         (rtp/swap-state! world [:inference]
-                          (fn [state]
-                            (assoc state
-                                   :result (:trace/result final)
-                                   :trace (itrace/legacy-trace final)
-                                   :mcmc {:completed-iterations iterations
-                                          :acceptance-count accepted})))
-         (if (= :all (:samples kernel))
-           @samples
-           [[(project-posterior-context world) 0.0]]))
-       (finally
+               _ (when (= ##-Inf (itrace/log-joint initial))
+                   (throw (ex-info "The initial state of the chain has zero density"
+                                   {:type ::impossible-initial-state})))
+               samples (volatile! [])
+               step-opts (cond-> step-opts
+                           (= :all (:samples kernel))
+                           (assoc :on-step
+                                  (let [i (volatile! 0)]
+                                    (fn [{t :trace}]
+                                      (when (> (vswap! i inc) (:burn kernel 0))
+                                        (vswap! samples conj
+                                                [(m/sample-particle (:trace/result t)
+                                                                    (itrace/legacy-trace t))
+                                                 0.0]))))))
+               {final :trace accepted :accepted}
+               (await (itrace/mh-chain initial iterations step-opts))
+               world (:trace/world final)]
+           (rtp/swap-state! world [:inference]
+                            (fn [state]
+                              (assoc state
+                                     :result (:trace/result final)
+                                     :trace (itrace/legacy-trace final)
+                                     :mcmc {:completed-iterations iterations
+                                            :acceptance-count accepted})))
+           (if (= :all (:samples kernel))
+             @samples
+             [[(project-posterior-context world) 0.0]]))
+         (finally
          ;; Closing the session cancels and joins every world of the chain.
          ;; The root is not stopped here: `stop-context!` waits for the
          ;; context's drains, and this body may be running inside one.
-         (await-finalization (sp/close! session)))))))
+           (await-finalization (sp/close! session))))))))
 
 (defn- markov-chain-infer
   [model-task kernel num-chains opts]
@@ -171,20 +169,21 @@
                     {:type ::invalid-world-policy
                      :world-policy (:world-policy opts)
                      :supported #{:fresh}})))
-  (inference-spin
-   (let [own-executor (when-not (:executor opts)
-                        (sched/thread-pool-executor {:threads 2}))
-         executor (or (:executor opts) own-executor)]
-     (try
-       (let [;; drawn here, in order: the chains then run concurrently
-             seeds (vec (repeatedly num-chains random/fresh-seed))
-             chains (await (apply comb/parallel
-                                  (mapv #(run-markov-chain model-task kernel executor %) seeds)))]
-         (m/empirical (into [] cat chains)))
-       (finally
-         (when own-executor
-           #?(:clj (.close ^java.lang.AutoCloseable own-executor)
-              :cljs nil)))))))
+  (spin-core/with-causal-descendant-egress
+    (spin
+     (let [own-executor (when-not (:executor opts)
+                          #?(:clj (sched/thread-pool-executor {:threads 2}) :cljs nil))
+           executor (or (:executor opts) own-executor)]
+       (try
+         (let [;; drawn here, in order: the chains then run concurrently
+               seeds (vec (repeatedly num-chains random/fresh-seed))
+               chains (await (apply comb/parallel
+                                    (mapv #(run-markov-chain model-task kernel executor %) seeds)))]
+           (m/empirical (into [] cat chains)))
+         (finally
+           (when own-executor
+             #?(:clj (.close ^java.lang.AutoCloseable own-executor)
+                :cljs nil))))))))
 
 (declare particles)
 
@@ -276,12 +275,13 @@
   "A spin resolving the savepoint CPS `operation`, a failure reported as
   `::inference-failed` with the model's error as its cause."
   [operation]
-  (inference-spin
-   (try
-     (await operation)
-     (catch #?(:clj Throwable :cljs :default) e
-       (throw (ex-info "Inference failed during particle execution"
-                       {:type ::inference-failed} e))))))
+  (spin-core/with-causal-descendant-egress
+    (spin
+     (try
+       (await operation)
+       (catch #?(:clj Throwable :cljs :default) e
+         (throw (ex-info "Inference failed during particle execution"
+                         {:type ::inference-failed} e)))))))
 
 ;; -----------------------------------------------------------------------------
 ;; Canonical particle worlds (`:world-policy :fork`)
@@ -343,44 +343,45 @@
   `:authority` a `world.scope/PResourceAuthority` and `:grant` what the
   inference may spend of the caller's wallet."
   [model-task n opts]
-  (inference-spin
-   (let [caller rtc/*execution-context*
-         world-opts (or (:world-opts opts) {})
-         scope (world-scope/create {:purpose :particle
-                                    :authority (:authority opts)
-                                    :fork-opts (cond-> world-opts
-                                                 (:executor opts) (assoc :executor (:executor opts)))})
+  (spin-core/with-causal-descendant-egress
+    (spin
+     (let [caller rtc/*execution-context*
+           world-opts (or (:world-opts opts) {})
+           scope (world-scope/create {:purpose :particle
+                                      :authority (:authority opts)
+                                      :fork-opts (cond-> world-opts
+                                                   (:executor opts) (assoc :executor (:executor opts)))})
          ;; holds the scope open until the session joins it
-         lease (world-scope/begin-activity! scope :inference)
-         root (volatile! nil)
-         measure (volatile! nil)]
-     (try
-       (vreset! root (:child-ctx (await (fn [resolve reject]
-                                          (world-scope/fork! scope caller {:grant (:grant opts)}
-                                                             resolve reject)))))
-       (rtp/swap-state! @root [:inference :canonical?] (constantly true))
-       (vreset! measure
-                (await (smc/smc (binding [rtc/*execution-context* @root]
+           lease (world-scope/begin-activity! scope :inference)
+           root (volatile! nil)
+           measure (volatile! nil)]
+       (try
+         (vreset! root (:child-ctx (await (fn [resolve reject]
+                                            (world-scope/fork! scope caller {:grant (:grant opts)}
+                                                               resolve reject)))))
+         (rtp/swap-state! @root [:inference :canonical?] (constantly true))
+         (vreset! measure
+                  (await (smc/smc (binding [rtc/*execution-context* @root]
                                   ;; every particle runs the whole model: a
                                   ;; canonical model's effects may be random
                                   ;; without a sample site
-                                  (spin (sp/savepoint smc/start-site nil)
-                                        (await model-task)))
-                                n
-                                (-> opts
-                                    (dissoc :world-policy :world-opts :executor :authority :grant)
-                                    (assoc :root @root :scope scope
-                                           :copy? #?(:clj true :cljs false))))))
-       (catch #?(:clj Throwable :cljs :default) e
-         (throw (if (= spin-core/spin-cancelled (:type (ex-data e)))
-                  e
-                  (ex-info "Inference failed during particle execution"
-                           {:type ::inference-failed
-                            :world/recovery (canonical-recovery scope lease @root)}
-                           e))))
-       (finally
-         (await-finalization (close-canonical! scope lease @root))))
-     (with-world-descriptors @measure (world-scope/descriptors scope)))))
+                                    (spin (sp/savepoint smc/start-site nil)
+                                          (await model-task)))
+                                  n
+                                  (-> opts
+                                      (dissoc :world-policy :world-opts :executor :authority :grant)
+                                      (assoc :root @root :scope scope
+                                             :copy? #?(:clj true :cljs false))))))
+         (catch #?(:clj Throwable :cljs :default) e
+           (throw (if (= spin-core/spin-cancelled (:type (ex-data e)))
+                    e
+                    (ex-info "Inference failed during particle execution"
+                             {:type ::inference-failed
+                              :world/recovery (canonical-recovery scope lease @root)}
+                             e))))
+         (finally
+           (await-finalization (close-canonical! scope lease @root))))
+       (with-world-descriptors @measure (world-scope/descriptors scope))))))
 
 (defn- particles
   "Savepoint SMC of `model-task` with `n` particles in the worlds `opts`'

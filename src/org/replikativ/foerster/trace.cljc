@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.trace
+(ns org.replikativ.foerster.trace
   "Probabilistic programs as traced computations.
 
   `sample`, `observe` and `factor` publish savepoints (sites
@@ -24,10 +24,10 @@
   site."
   (:require [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.select :as sel]
-            [org.replikativ.spindel.inference.mechanism :as mech]
+            [org.replikativ.foerster.mechanism :as mech]
             [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.inference.measure :as m]
-            [org.replikativ.spindel.inference.random :as random]
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.random :as random]
             [anglican.runtime :as ar]))
 
 (def choose-site :inference/choose)

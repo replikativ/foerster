@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.mechanism
+(ns org.replikativ.foerster.mechanism
   "Sample sites as structural equations x = f(u), u exogenous noise.
 
   A distribution is read as a mechanism: `noise` draws u, `push` computes the
@@ -13,7 +13,7 @@
 
   Parameters come from the distribution at the site, so replaying a site with
   its old u under new parents is the counterfactual value."
-  (:require [org.replikativ.spindel.inference.measure :as m]
+  (:require [org.replikativ.foerster.measure :as m]
             [anglican.runtime :as ar]))
 
 (defprotocol PMechanism

@@ -1,12 +1,12 @@
-(ns org.replikativ.spindel.inference.streaming-smc-test
+(ns org.replikativ.foerster.streaming-smc-test
   "Online SMC against the Kalman filter: a random walk x_t = x_{t-1} + N(0,1)
   observed as y_t ~ N(x_t, 1), its observations pushed one at a time. After
   each push the particle filter's x_t must match the Kalman filtering
   distribution, and its evidence the Kalman marginal likelihood."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.inference.smc :as smc]
-            [org.replikativ.spindel.inference.measure :as m]
-            [org.replikativ.spindel.inference.effects :refer [sample]]
+            [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as executor]

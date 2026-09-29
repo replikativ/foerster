@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.block
+(ns org.replikativ.foerster.block
   "Numerical blocks as choice sites (the spindel side of the spindel ↔ raster
   block contract, spindel-raster doc/contract.md).
 

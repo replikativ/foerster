@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.random
+(ns org.replikativ.foerster.random
   "Where inference draws its randomness from.
 
   Every draw of a seeded inference run must depend only on WHAT is drawn,

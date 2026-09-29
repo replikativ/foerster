@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.inference.hmc
+(ns org.replikativ.foerster.hmc
   "Hamiltonian Monte Carlo on block sites (`inference.block`), within Gibbs.
 
   A block supplies the gradient of its log target; the move is spindel's. The
@@ -16,10 +16,10 @@
   is true when the replay changed the log probability of anything outside the
   block."
   (:require [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.inference.trace :as itrace]
-            [org.replikativ.spindel.inference.block :as block]
-            [org.replikativ.spindel.inference.measure :as m]
-            [org.replikativ.spindel.inference.random :as random]
+            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.block :as block]
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.random :as random]
             [anglican.runtime :as ar]))
 
 (defn- kinetic [p] (* 0.5 (reduce + 0.0 (map #(* % %) p))))
