@@ -418,23 +418,23 @@
           (- (log-selection new) (log-selection old)))))))
 
 (defn uniform-site
-  " Select one latent site uniformly. A selection is
-  {:targets #{address} :log-selection (fn [trace])} . "
+  "Select one latent site uniformly. A selection is
+  {:targets #{address} :log-selection (fn [trace])}."
   [trace _iteration]
   {:targets #{(m/pick-uniformly (latent-addresses trace))}
    :log-selection (fn [t] (- (Math/log (double (count (latent-addresses t))))))})
 
 (defn prior-proposal
-  " Propose a fresh draw from a target site's own distribution. "
+  "Propose a fresh draw from a target site's own distribution."
   [sp _old-entry]
   (let [dist (:dist (:savepoint/payload sp))
         v (dist/draw dist)]
     {:value v :log-proposal (dist/draw-logpdf dist v)}))
 
 (defn random-walk-proposal
-  " A symmetric Gaussian step of `step-size `around a real-valued target's
+  "A symmetric Gaussian step of `step-size` around a real-valued target's
   old value. A target whose law is not continuous (a boolean, an integer
-                                                     count, a vector) has no such step; it gets a prior proposal."
+  count, a vector) has no such step; it gets a prior proposal."
   [step-size]
   (fn [sp old-entry]
     (if (dist/continuous? (:dist (:savepoint/payload sp)))
@@ -509,7 +509,7 @@
                                     ;; a partial move must end where the trace did
                                     (and until (not (:trace/pending proposed))))
                               ##-Inf
-                              (mh-log-ratio trace proposed log-selection (when until from)
+                              (mh-log-ratio trace proposed log-selection from
                                             (when temperature (tempered-score temperature))))
                       accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
                                    (or (>= ratio 0.0)

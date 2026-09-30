@@ -84,16 +84,25 @@
   [log-weights]
   (- (log-sum-exp log-weights) (Math/log (count log-weights))))
 
+(defn- cumulative
+  "The running sums of `weights`, as a vector."
+  [weights]
+  (vec (reductions + weights)))
+
+(defn- search-cumulative
+  "The first index whose cumulative weight exceeds `u`, by bisection; the
+  last index when rounding leaves `u` above every sum."
+  [cumsum u]
+  (loop [lo 0 hi (dec (count cumsum))]
+    (if (>= lo hi)
+      lo
+      (let [mid (quot (+ lo hi) 2)]
+        (if (< u (nth cumsum mid)) (recur lo mid) (recur (inc mid) hi))))))
+
 (defn sample-categorical
   "One index drawn from normalized weights, through `uniform01`."
   [weights]
-  (let [u (uniform01)
-        n (count weights)]
-    (loop [i 0 cumsum 0.0]
-      (if (>= i (dec n))
-        (dec n)
-        (let [cumsum' (+ cumsum (nth weights i))]
-          (if (< u cumsum') i (recur (inc i) cumsum')))))))
+  (search-cumulative (cumulative weights) (uniform01)))
 
 (defn normalize-log-weights
   "Convert log-weights to normalized linear weights.
@@ -141,14 +150,16 @@
   {:pre [(every? #(and (>= % 0) (<= % 1)) weights)
          (< (Math/abs (- (reduce + weights) 1.0)) 1e-6)]}
   (let [u (/ (uniform01) n)  ; Random offset, from the seeded generator
-        cumsum (reductions + 0 weights)]
+        cumsum (cumulative weights)
+        last-index (dec (count weights))]
     (loop [i 0
            j 0
            indices []]
       (if (>= i n)
         indices
         (let [threshold (+ u (/ i n))]
-          (if (< threshold (nth cumsum (inc j)))
+          ;; the last index takes whatever rounding leaves above the sum
+          (if (or (= j last-index) (< threshold (nth cumsum j)))
             (recur (inc i) j (conj indices j))
             (recur i (inc j) indices)))))))
 
@@ -159,7 +170,8 @@
 (defn multinomial-resample
   "`n` indices drawn independently from the normalized `weights`."
   [weights n]
-  (vec (repeatedly n #(sample-categorical weights))))
+  (let [cumsum (cumulative weights)]
+    (vec (repeatedly n #(search-cumulative cumsum (uniform01))))))
 
 (defn stratified-resample
   "Stratified resampling: one uniform draw in each of the n strata [i/n,
@@ -179,14 +191,18 @@
   "Residual resampling: ⌊n·wᵢ⌋ copies of each particle, the rest drawn
   multinomially from the residual weights."
   [weights n]
-  (let [copies (mapv #(long (Math/floor (* n %))) weights)
+  ;; n·(1/n) may round to just below 1: the whole part is taken with a
+  ;; margin, or equal weights would fall back to multinomial draws
+  (let [copies (mapv #(long (Math/floor (+ (* n %) 1e-9))) weights)
         fixed (into [] (mapcat (fn [i c] (repeat c i)) (range) copies))
         left (- n (count fixed))]
     (if (zero? left)
       fixed
-      (let [residual (mapv (fn [w c] (- (* n w) c)) weights copies)
+      (let [residual (mapv (fn [w c] (max 0.0 (- (* n w) c))) weights copies)
             total (reduce + residual)]
-        (into fixed (multinomial-resample (mapv #(/ % total) residual) left))))))
+        (into fixed (if (pos? total)
+                      (multinomial-resample (mapv #(/ % total) residual) left)
+                      (systematic-resample weights left)))))))
 
 (defn resample
   "`n` ancestor indices from the normalized `weights` by `scheme`:

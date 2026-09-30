@@ -35,3 +35,14 @@
     (testing "residual keeps the whole part of n·wᵢ"
       (is (every? (fn [indices] (>= (count (filter zero? indices)) 5))
                   (repeatedly 50 #(m/resample :residual weights n)))))))
+
+(deftest resampling-edge-cases
+  (testing "weights summing just below 1 by rounding"
+    (let [ws (mapv #(* % (- 1.0 1e-7)) [0.25 0.25 0.25 0.25])]
+      (doseq [scheme [:systematic :stratified :residual :multinomial]]
+        (is (= 8 (count (m/resample scheme ws 8))) (name scheme)))))
+  (testing "residual keeps every particle when the weights are equal"
+    (doseq [n [49 98]]
+      (is (= (range n) (sort (m/resample :residual (vec (repeat n (/ 1.0 n))) n))))))
+  (testing "a single particle"
+    (is (= [0 0 0] (m/resample :systematic [1.0] 3)))))

@@ -380,8 +380,17 @@
                       (random/in-world-stream world0 [::smcp3 k]
                                               #((:forward smcp3) (itrace/choices t0) t0))]
                   (if (empty? updates)
-                    (done entry)
+                    ;; staying is a move too: its densities still weigh
+                    (do (rtp/swap-state! world0 [:inference :log-weight]
+                                         (constantly (+ w0 ((:backward smcp3) (itrace/choices t0) reverse)
+                                                        (- (or log-q 0.0)) (or log-jacobian 0.0))))
+                        (done entry))
                     (let [from (trace/earliest t0 (keys updates))
+                          _ (when-let [fixed (seq (filter #(let [n (:note (get-in t0 [:trace/entries %]))]
+                                                             (or (:observed? n) (:constrained? n)))
+                                                          (keys updates)))]
+                              (throw (ex-info "An SMCP3 update changes an observed or constrained site"
+                                              {:type ::fixed-site :addresses (vec fixed)})))
                           _ (when-not (get-in t0 [:trace/entries from :savepoint])
                               (throw (ex-info "An SMCP3 update changes a site without an anchor"
                                               {:type ::no-anchor :address from})))

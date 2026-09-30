@@ -27,6 +27,7 @@
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.trace :as trace]))
 
 (defn- log-likelihood
@@ -150,6 +151,10 @@
                     ((itrace/mh-step t {:temperature beta :propose propose
                                         :iteration [key step j] :keep-old? true})
                      (fn [{t' :trace accepted? :accepted?}]
+                     ;; the accepted world need not keep the one it replayed
+                     ;; from alive as a source of reused spins
+                       (when accepted?
+                         (rtp/swap-state! (:trace/world t') [:engine/reuse-source] (constantly nil)))
                        (go t' step (inc j) states (if accepted? (conj seen t') seen)
                            (if accepted? (inc accepted) accepted) (inc total)))
                      reject)))]
@@ -174,15 +179,21 @@
   schedule and `:rejuvenation` the moves made and accepted."
   [model n & [{:keys [ess-target moves scale waste-free max-steps executor]
                :or {ess-target 0.5 scale 2.38 max-steps 1000}}]]
+  (when-not (and (number? ess-target) (< 0.0 ess-target 1.0))
+    (throw (ex-info ":ess-target must lie in (0, 1)" {:type ::invalid-ess-target :ess-target ess-target})))
+  (when-not (or (nil? moves) (nat-int? moves))
+    (throw (ex-info ":moves must be a count" {:type ::invalid-moves :moves moves})))
   (when (and waste-free (or (not (pos-int? waste-free)) (pos? (mod n waste-free))))
     (throw (ex-info ":waste-free P must divide the number of particles"
                     {:type ::invalid-waste-free :n n :waste-free waste-free})))
   (fn [resolve reject]
     (let [seed (random/fresh-seed)
-          traces (mapv (fn [_] (gfi/run-policy model (itrace/policy {:temperature 0.0})
-                                               (cond-> {} executor (assoc :executor executor))))
+          traces (mapv (fn [_] (gfi/run-policy* model (itrace/policy {:temperature 0.0})
+                                                (cond-> {} executor (assoc :executor executor))))
                        (range n))
-          sessions (atom [])
+          ;; every particle's session, closed when inference ends however it
+          ;; ends
+          sessions (atom (mapv :session traces))
           close-all! (fn [k v]
                        (let [ss (distinct @sessions)
                              remaining (atom (count ss))]
@@ -239,13 +250,12 @@
                                      :log-normalizer log-z
                                      :temperatures temperatures
                                      :rejuvenation @stats))))]
-        ((all-settled n (fn [i res rej] ((nth traces i) res rej)))
+        ((all-settled n (fn [i res rej] ((:operation (nth traces i)) res rej)))
          (fn [ts]
            (try
-             (swap! sessions into (map :trace/session ts))
              (if-let [error (some :trace/error ts)]
                (fail! (ex-info "A particle's program failed" {:type ::model-failed} error))
                (let [ls (mapv log-likelihood ts)]
                  (step ts ls (vec (repeat n (- (Math/log n)))) 0.0 0.0 [0.0] 0)))
              (catch #?(:clj Throwable :cljs :default) e (fail! e))))
-         reject)))))
+         fail!)))))

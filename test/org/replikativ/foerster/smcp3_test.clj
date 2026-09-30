@@ -123,3 +123,27 @@
                                 (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))]
     (is (= ::smc/smcp3-without-anchors (refusal {:smcp3 random-walk-kernel})))
     (is (= ::smc/smcp3-with-retained (refusal {:anchors :all :smcp3 random-walk-kernel :retained {}})))))
+
+(def ^:private stay-or-walk
+  ;; K stays with probability .9, else walks; L stays with probability .5.
+  ;; A stay is a move with densities of its own, which weigh too.
+  {:forward (fn [{mu :mu} _]
+              (if (< (org.replikativ.foerster.random/uniform01) 0.9)
+                {:updates {} :log-q (Math/log 0.9) :reverse :stay}
+                (let [u (dist/draw step)]
+                  {:updates {:mu (+ mu u)} :log-q (+ (Math/log 0.1) (dist/logpdf step u)) :reverse (- u)})))
+   :backward (fn [_ u'] (if (= :stay u') (Math/log 0.5) (+ (Math/log 0.5) (dist/logpdf step u'))))})
+
+(deftest a-kernel-that-stays-still-weighs
+  ;; L ≠ K makes the estimate noisy (over 12 seeds the log error spread
+  ;; from −1.3 to +0.4); ignoring a stay's densities overestimated it by
+  ;; about 0.3 per observation, +9 here
+  (let [measure (b/run-infer 34 #(smc/smc (static-model) 300 {:anchors #{:mu} :smcp3 stay-or-walk}))]
+    (is (< (Math/abs (- (m/log-marginal measure) log-evidence)) 1.5)
+        (str (m/log-marginal measure) " vs " log-evidence))))
+
+(deftest an-update-to-an-observed-site-is-refused
+  (let [kernel {:forward (fn [_ _] {:updates {[:y 0] 0.0} :log-q 0.0 :reverse nil})
+                :backward (fn [_ _] 0.0)}]
+    (is (thrown-with-msg? Exception #"observed or constrained"
+                          (b/run-infer 35 #(smc/smc (static-model) 10 {:anchors :all :smcp3 kernel}))))))
