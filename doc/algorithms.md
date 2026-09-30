@@ -45,6 +45,39 @@ The pooled particle-MCMC measures are MCMC estimates: their weights are
 normalized per sweep, and `m/log-marginal` of the pool is not an evidence
 estimate.
 
+## Tempered SMC
+
+`(tempered-infer model n opts)` (`org.replikativ.foerster.tempering`) moves a
+population of complete program runs from the prior to the posterior through
+the targets p(x)·L(x)^β, L the observations' and factors' likelihood, with β
+rising from 0 to 1 (an SMC sampler; Del Moral, Doucet & Jasra 2006). Each
+step chooses the next β so that the conditional ESS of the reweighting stays
+at `:ess-target`·N (Zhou, Johansen & Aston 2016), resamples, and moves every
+particle by Metropolis-Hastings at the new temperature — random walks scaled
+by the population's spread on continuous sites, prior proposals elsewhere.
+
+Use it for posteriors with separated modes, which a Markov chain does not
+cross and SMC in program order only reaches if its early particles happen to:
+
+```clojure
+(infer/tempered-infer (model) 1000)                    ; β schedule in :temperatures
+(infer/tempered-infer (model) 1000 {:waste-free 10})   ; Dau & Chopin 2022
+```
+
+| Option | Default | |
+|---|---|---|
+| `:ess-target` | 0.5 | higher: more, smaller temperature steps |
+| `:moves` | one sweep | single-site MH moves per particle per step |
+| `:scale` | 2.38 | random-walk scale in population standard deviations |
+| `:waste-free` | — | P: resample N/P particles and keep every state of their P-step chains |
+| `:max-steps` | 1000 | |
+
+`m/log-marginal` estimates the evidence. Every move re-runs the program from
+the moved site, so a step costs N sweeps of the model; fresh worlds only.
+
+For data that arrive one observation at a time — IBIS (Chopin 2002) — use
+SMC with resample-move on the static parameters, below.
+
 ## Resample-move
 
 SMC resamples by copying good particles and dropping bad ones, so after a few

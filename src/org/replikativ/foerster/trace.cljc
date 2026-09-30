@@ -128,6 +128,23 @@
   [policy]
   (::options (meta policy)))
 
+(defn- tempered
+  "`log-lik` under the policy's `:temperature` β: β·log-lik, and 0 at β = 0
+  (the prior, whatever the likelihood)."
+  [{:keys [temperature]} log-lik]
+  (cond (nil? temperature) log-lik
+        (zero? temperature) 0.0
+        :else (* temperature log-lik)))
+
+(defn tempered-score
+  "The log target of a trace entry at temperature `beta`, for entries recorded
+  under any temperature: observations and factors by their `:log-lik`."
+  [beta]
+  (fn [{:keys [note]}]
+    (if-let [l (:log-lik note)]
+      (cond (zero? beta) 0.0 :else (* beta l))
+      (:log-prob note))))
+
 (defn- decide-choose
   [{:keys [constraints keep? draw init?] :as opts} sp old-entry]
   (let [{:keys [dist observed? value]} (:savepoint/payload sp)
@@ -148,9 +165,11 @@
         {:value v :note {:dist dist :log-prob (dist/logpdf dist v) :counterfactual? true}})
 
       observed?
-      (let [lp (dist/logpdf dist value)]
-        (add-weight! world lp)
-        {:value value :note {:dist dist :log-prob lp :observed? true}})
+      (let [lp (dist/logpdf dist value)
+            tp (tempered opts lp)]
+        (add-weight! world tp)
+        {:value value :note (cond-> {:dist dist :log-prob tp :observed? true}
+                              (:temperature opts) (assoc :log-lik lp))})
 
       (contains? constraints address)
       (let [v (get constraints address)
@@ -221,6 +240,9 @@
                  (`foerster.mechanism`), observed sites included — a
                  counterfactual world. Sites without noise are marked
                  `:unaligned?`
+    :temperature β in [0, 1]: observations and factors count β·log p — the
+                 target p(x)·L(x)^β of tempered SMC (`foerster.tempering`).
+                 Their notes keep `:log-lik`, the untempered log p
     :init?       start a sample site at its `:init` option. Only for the
                  first state of a Markov chain, which may be anything; an
                  `:init` value is not a draw, so it has no place in a move or
@@ -253,9 +275,11 @@
              {:value (:value (:savepoint/payload sp)) :note {:deterministic? true}}
 
              (= factor-site site)
-             (let [w (:log-weight (:savepoint/payload sp))]
-               (add-weight! (:savepoint/world sp) w)
-               {:value nil :note {:log-prob w :factor? true}})
+             (let [w (:log-weight (:savepoint/payload sp))
+                   tw (tempered opts w)]
+               (add-weight! (:savepoint/world sp) tw)
+               {:value nil :note (cond-> {:log-prob tw :factor? true}
+                                   (:temperature opts) (assoc :log-lik w))})
 
              :else (fallback sp old-entry))))
        {::options opts}))))
@@ -343,9 +367,12 @@
   source by reference, which holds for the in-process worlds a session forks
   and would not survive a serialized trace. With `from`, the replayed
   address, only the entries from it on are compared: the ratio is the same,
-  and it costs the replayed suffix instead of the whole trace."
+  and it costs the replayed suffix instead of the whole trace. `score`
+  (fn [entry]) is an entry's log target (default its :log-prob), e.g.
+  `tempered-score`."
   ([old new log-selection] (mh-log-ratio old new log-selection nil))
-  ([old new log-selection from]
+  ([old new log-selection from] (mh-log-ratio old new log-selection from nil))
+  ([old new log-selection from score]
    (let [;; with `from`, only the suffix from the replayed address: everything
         ;; upstream is the same entries in both and cancels, so the ratio is
         ;; the same and costs the suffix, not the trace
@@ -358,7 +385,7 @@
                         (if (= a from) (vec acc) (recur more acc))))))
          old-entries (if from (suffix old) (entries old))
          new-entries (if from (suffix new) (entries new))
-         log-joint (fn [es] (transduce (map (comp :log-prob :note)) + 0.0 es))
+         log-joint (fn [es] (transduce (map (or score (comp :log-prob :note))) + 0.0 es))
          old-by-address (into {} (map (juxt :address identity)) old-entries)
          new-by-address (into {} (map (juxt :address identity)) new-entries)
          same? (fn [a b] (and a b (identical? (:note a) (:note b))))
@@ -391,23 +418,23 @@
           (- (log-selection new) (log-selection old)))))))
 
 (defn uniform-site
-  "Select one latent site uniformly. A selection is
-  {:targets #{address} :log-selection (fn [trace])}."
+  " Select one latent site uniformly. A selection is
+  {:targets #{address} :log-selection (fn [trace])} . "
   [trace _iteration]
   {:targets #{(m/pick-uniformly (latent-addresses trace))}
    :log-selection (fn [t] (- (Math/log (double (count (latent-addresses t))))))})
 
 (defn prior-proposal
-  "Propose a fresh draw from a target site's own distribution."
+  " Propose a fresh draw from a target site's own distribution. "
   [sp _old-entry]
   (let [dist (:dist (:savepoint/payload sp))
         v (dist/draw dist)]
     {:value v :log-proposal (dist/draw-logpdf dist v)}))
 
 (defn random-walk-proposal
-  "A symmetric Gaussian step of `step-size` around a real-valued target's
+  " A symmetric Gaussian step of `step-size `around a real-valued target's
   old value. A target whose law is not continuous (a boolean, an integer
-  count, a vector) has no such step; it gets a prior proposal."
+                                                     count, a vector) has no such step; it gets a prior proposal."
   [step-size]
   (fn [sp old-entry]
     (if (dist/continuous? (:dist (:savepoint/payload sp)))
@@ -435,6 +462,10 @@
     :iteration passed to :select
     :until, :anchor? passed to the replay (`spindel.trace/run`): a move of
                a partial trace stops where the trace did
+    :temperature β: the move targets p(x)·L(x)^β, whatever temperature the
+               trace was recorded at (see `policy`)
+    :keep-old? an accepted move releases nothing of the old trace: its
+               caller releases what no one refers to
     :shared-anchors? the trace's anchors may be shared with other traces
                (SMC particles of one ancestor): an accepted move releases
                the old trace's world only, and the caller its anchors
@@ -445,7 +476,8 @@
   {:trace t :accepted? boolean :log-ratio r}; a trace with nothing to move
   resolves unchanged."
   ([trace] (mh-step trace nil))
-  ([trace {:keys [select propose iteration constraints policy-options until shared-anchors?]
+  ([trace {:keys [select propose iteration constraints policy-options until shared-anchors?
+                  temperature keep-old?]
            :or {select uniform-site propose prior-proposal iteration 0}
            anchor-pred :anchor?}]
    (fn [resolve reject]
@@ -456,12 +488,13 @@
            from (if (= 1 (count targets)) (first targets) (trace/earliest trace targets))]
        (if-not from
          (resolve {:trace trace :accepted? false :log-ratio 0.0})
-         (let [move (policy (assoc policy-options
-                                   :keep? true
-                                   :constraints (merge (:constraints policy-options) constraints)
-                                   :draw (fn [sp old-entry]
-                                           (when (contains? targets (:savepoint/address sp))
-                                             (propose sp old-entry)))))]
+         (let [move (policy (cond-> (assoc policy-options
+                                           :keep? true
+                                           :constraints (merge (:constraints policy-options) constraints)
+                                           :draw (fn [sp old-entry]
+                                                   (when (contains? targets (:savepoint/address sp))
+                                                     (propose sp old-entry))))
+                              temperature (assoc :temperature temperature)))]
            ((trace/replay trace from move (cond-> {:anchor? (or anchor-pred anchor?)}
                                             until (assoc :until until)
                                             ;; the replay's seed from the moving trace's
@@ -476,7 +509,8 @@
                                     ;; a partial move must end where the trace did
                                     (and until (not (:trace/pending proposed))))
                               ##-Inf
-                              (mh-log-ratio trace proposed log-selection (when until from)))
+                              (mh-log-ratio trace proposed log-selection (when until from)
+                                            (when temperature (tempered-score temperature))))
                       accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
                                    (or (>= ratio 0.0)
                                        (< (Math/log (random/in-world-stream
@@ -485,6 +519,7 @@
                                           ratio)))]
                   (cond
                     (not accept?) (trace/release! proposed trace)
+                    keep-old? nil
                     shared-anchors? (do ;; the displaced trace is parked there
                                       (when-let [p (:trace/pending trace)]
                                         (when (sp/pending? p) (sp/abandon p)))
