@@ -175,6 +175,10 @@
   "What every particle method takes."
   #{:world-policy :world-opts :authority :grant :executor :resample-threshold :policy})
 
+(def ^:private rejuvenation-options
+  "Resample-move (`foerster.smc`): SMC and PIMH in fresh worlds only."
+  #{:anchors :rejuvenate})
+
 (def ^:private fork-options
   "What applies to canonical worlds only (`:world-policy :fork`)."
   #{:world-opts :authority :grant})
@@ -192,6 +196,11 @@
     (when-let [misplaced (seq (filter fork-options (keys opts)))]
       (throw (ex-info (str "Options for :world-policy :fork only: " (vec misplaced))
                       {:type ::fork-only-options
+                       :options (vec misplaced)}))))
+  (when (= :fork (world-policy opts))
+    (when-let [misplaced (seq (filter rejuvenation-options (keys opts)))]
+      (throw (ex-info (str "Options for :world-policy :fresh only: " (vec misplaced))
+                      {:type ::fresh-only-options
                        :options (vec misplaced)}))))
   opts)
 
@@ -436,13 +445,15 @@
     :executor            the executor the worlds run on (default: spindel's)
     :policy              a `foerster.trace/policy` deciding the sites
                          (constraints, interventions, proposals)
+    :anchors, :rejuvenate  resample-move: after each resampling, MH moves
+                         from anchored sites (`foerster.smc/smc`; :fresh only)
 
   Returns a spin resolving the EmpiricalMeasure.
 
     (sp/with-context world @(smc-infer (model) 1000))   ; at the REPL
     (spin (query (await (smc-infer (model) 1000)) identity))"
   [model-task num-particles & [opts]]
-  (check-options! opts particle-options)
+  (check-options! opts (into particle-options rejuvenation-options))
   (particles model-task num-particles opts))
 
 (defn importance-sampling
@@ -509,7 +520,7 @@
 
   Returns: Spin<EmpiricalMeasure>"
   [model-task num-particles num-iterations & [opts]]
-  (check-options! opts particle-options)
+  (check-options! opts (into particle-options rejuvenation-options))
   (if (on-savepoints? opts)
     (on-savepoints (smc/pimh model-task num-particles num-iterations opts))
     (spin

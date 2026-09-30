@@ -20,6 +20,7 @@ non-Markov-chain kernel:
 | `:executor` | spindel's default | the executor the worlds run on |
 | `:resample-threshold` | `0.5` | SMC resamples when the effective sample size is below this fraction of the particles |
 | `:policy` | the prior | a `foerster.trace/policy` deciding the sites: constraints, interventions, custom proposals ([extending](extending.md)) |
+| `:anchors`, `:rejuvenate` | — | resample-move (below); `smc-infer` and `pimh-infer`, fresh worlds |
 
 An option a method does not take is refused (`::infer/unknown-options`), and
 so are `:world-opts`, `:authority` and `:grant` under `:world-policy :fresh`
@@ -43,6 +44,40 @@ so are `:world-opts`, `:authority` and `:grant` under `:world-policy :fresh`
 The pooled particle-MCMC measures are MCMC estimates: their weights are
 normalized per sweep, and `m/log-marginal` of the pool is not an evidence
 estimate.
+
+## Resample-move
+
+SMC resamples by copying good particles and dropping bad ones, so after a few
+observations most particles share their early choices (a static parameter
+sampled once is the extreme case). **Resample-move** (Gilks & Berzuini 2001)
+gives every particle Metropolis-Hastings moves after each resampling, which
+restores diversity without changing the target or the weights:
+
+```clojure
+(infer/smc-infer (model) 1000
+  {:anchors #{:mu}                          ; where moves may start
+   :rejuvenate {:moves 2                    ; per particle, per resampling
+                :propose (trace/random-walk-proposal 0.2)}})
+```
+
+A move replays the program from an **anchor** — a kept fork of the world at a
+latent site — up to the observation the particle is parked at, and accepts on
+the MH ratio of the two partial traces. Which sites keep anchors is the
+trade-off:
+
+| `:anchors` | Moves may target | Cost |
+|---|---|---|
+| a set of addresses | those sites (static parameters) | one anchor per particle per site; a move replays from the site to the current observation, O(t) |
+| `{:lag L}` | latent sites of the last L observations | anchors of older sites are released; a move replays O(L) steps — fixed-lag rejuvenation, and the choice for `smc/stream` |
+| `:all` | every latent site | an anchor per latent site, shared between particles of one ancestor |
+| `(fn [sp])` | sites the predicate names | |
+
+Moves happen only when the population is resampled, so with the default
+`:resample-threshold` they become rare as a static posterior concentrates
+(Chopin 2002). The measure's `:rejuvenation` reports `:moves`, `:accepted`
+and `:max-anchors`. Resample-move runs in fresh worlds only, and not in
+conditional SMC (particle Gibbs, PGAS). A model whose moves reach effects
+(a model call) runs them again on every replay.
 
 ## Kernels
 
