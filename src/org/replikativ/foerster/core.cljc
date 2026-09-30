@@ -180,6 +180,10 @@
   "Resample-move (`foerster.smc`): SMC and PIMH in fresh worlds only."
   #{:anchors :rejuvenate})
 
+(def ^:private smc-options
+  "What SMC and PIMH take beyond every particle method's options."
+  (into #{:resampling :genealogy?} rejuvenation-options))
+
 (def ^:private fork-options
   "What applies to canonical worlds only (`:world-policy :fork`)."
   #{:world-opts :authority :grant})
@@ -454,7 +458,7 @@
     (sp/with-context world @(smc-infer (model) 1000))   ; at the REPL
     (spin (query (await (smc-infer (model) 1000)) identity))"
   [model-task num-particles & [opts]]
-  (check-options! opts (into particle-options rejuvenation-options))
+  (check-options! opts (into particle-options smc-options))
   (particles model-task num-particles opts))
 
 (defn tempered-infer
@@ -540,7 +544,7 @@
 
   Returns: Spin<EmpiricalMeasure>"
   [model-task num-particles num-iterations & [opts]]
-  (check-options! opts (into particle-options rejuvenation-options))
+  (check-options! opts (into particle-options smc-options))
   (if (on-savepoints? opts)
     (on-savepoints (smc/pimh model-task num-particles num-iterations opts))
     (spin

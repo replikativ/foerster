@@ -18,3 +18,20 @@
         stats (m/measure-stats measure m/get-value)]
     (is (< (Math/abs (- 1.0 (:mean stats))) 1e-12))
     (is (= {:p025 0.0 :p50 0.0 :p975 10.0} (:quantiles stats)))))
+
+(deftest resampling-schemes-are-unbiased
+  ;; E[copies of i] = n·wᵢ for every scheme
+  (let [weights [0.5 0.3 0.15 0.05]
+        n 10
+        reps 3000]
+    (doseq [scheme [:systematic :stratified :residual :multinomial]]
+      (testing (name scheme)
+        (let [counts (reduce (fn [acc indices] (reduce #(update %1 %2 inc) acc indices))
+                             (vec (repeat 4 0))
+                             (repeatedly reps #(m/resample scheme weights n)))]
+          (doseq [[i w] (map-indexed vector weights)]
+            (is (< (Math/abs (- (/ (nth counts i) (* reps n)) w)) 0.01)
+                (str (name scheme) " " i))))))
+    (testing "residual keeps the whole part of n·wᵢ"
+      (is (every? (fn [indices] (>= (count (filter zero? indices)) 5))
+                  (repeatedly 50 #(m/resample :residual weights n)))))))

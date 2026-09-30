@@ -21,6 +21,8 @@ non-Markov-chain kernel:
 | `:resample-threshold` | `0.5` | SMC resamples when the effective sample size is below this fraction of the particles |
 | `:policy` | the prior | a `foerster.trace/policy` deciding the sites: constraints, interventions, custom proposals ([extending](extending.md)) |
 | `:anchors`, `:rejuvenate` | — | resample-move (below); `smc-infer` and `pimh-infer`, fresh worlds |
+| `:resampling` | `:systematic` | `:stratified`, `:residual` or `:multinomial` (Douc, Cappé & Moulines 2005); `smc-infer`, `pimh-infer` |
+| `:genealogy?` | `false` | record every resampling's ancestor indices in the measure's `:history` |
 
 An option a method does not take is refused (`::infer/unknown-options`), and
 so are `:world-opts`, `:authority` and `:grant` under `:world-policy :fresh`

@@ -205,7 +205,7 @@
   with the value, which turns them into an ordinary barrier. When all have
   returned, `on-done` gets the final measure; `on-error` any failure."
   [model n {:keys [resample-threshold policy executor retained ancestor-sampling? root copy?
-                   anchors rejuvenate] :as opts}
+                   anchors rejuvenate resampling genealogy?] :as opts}
    {:keys [on-idle on-done on-error]}]
   (when (and copy? anchors)
     (throw (ex-info "Anchors in copied (canonical) worlds are not supported yet"
@@ -246,6 +246,7 @@
                                        :fork-opts {:systems :none}
                                        :retain-released? false}
                                       (dissoc opts :resample-threshold :policy :executor :retained
+                                              :resampling :genealogy?
                                               :ancestor-sampling? :root :copy? :anchors :rejuvenate)))
         ;; {:parked {slot {:sp sp :value v}}  at an observe (or a supplied stream
         ;;                                    site), resumed with v after the barrier
@@ -253,7 +254,8 @@
         ;;  :done {slot {:sample s :log-weight w}}
         ;;  :log-z accumulated :in-barrier? :finished?}
         state (atom {:parked {} :streaming {} :done {} :log-z 0.0
-                     :rejuvenation {:moves 0 :accepted 0}})
+                     :rejuvenation {:moves 0 :accepted 0}
+                     :history []})
         close! (fn []
                  ((sp/close! session)
                   (fn [_] nil)
@@ -263,7 +265,7 @@
                     (callback outcome)
                     (close!)))
         fail! #(finish! on-error %)
-        measure (fn [{:keys [parked streaming done log-z rejuvenation]}]
+        measure (fn [{:keys [parked streaming done log-z rejuvenation history]}]
                   (cond-> (assoc (m/empirical
                                   (mapv (fn [slot]
                                           (if-let [d (get done slot)]
@@ -273,6 +275,7 @@
                                               [(sample-of w nil) (weight-of w)])))
                                         (range n)))
                                  :log-normalizer log-z)
+                    true (assoc :history history)
                     rejuvenate (assoc :rejuvenation rejuvenation)))]
     (letfn [(arrived! []
               ;; the last arrival claims the barrier, atomically: two particles
@@ -393,8 +396,13 @@
                     log-ws (mapv #(if-let [d (get done %)] (:log-weight d) (weight-of (world-of %)))
                                  slots)
                     weights (m/normalize-log-weights log-ws)
+                    ess (m/compute-ess weights)
                     resample? (or (some? retained)
-                                  (< (m/compute-ess weights) (* threshold n)))]
+                                  (< ess (* threshold n)))]
+                (swap! state update :history conj
+                       {:ess ess :resampled? resample?
+                        ;; the barrier's factor of the evidence estimate
+                        :log-mean-weight (when resample? (m/log-mean-exp log-ws))})
                 (if-not resample?
                   (do (when lag (gc! parked streaming))
                       (swap! state assoc :parked {} :in-barrier? false)
@@ -407,11 +415,14 @@
                                       ;; own lineage, or the past PGAS drew for it
                                        (into [retained-ancestor]
                                              (repeatedly (dec n) (fn [] (m/sample-categorical weights))))
-                                       (m/systematic-resample weights n)))
+                                       (m/resample resampling weights n)))
                         live? #(or (contains? parked %) (contains? streaming %))
                         forked-slots (filterv #(live? (nth ancestors %)) slots)
                         source (fn [a] (or (:sp (get parked a)) (get streaming a)))]
                     (swap! state update :log-z + (m/log-mean-exp log-ws))
+                    (when genealogy?
+                      (swap! state update :history
+                             (fn [h] (update h (dec (count h)) assoc :ancestors ancestors))))
                     ((if copy?
                        (all-copied (mapv #(source (nth ancestors %)) forked-slots))
                        (all-forked (mapv #(source (nth ancestors %)) forked-slots)))
@@ -606,6 +617,12 @@
   evidence estimate are unchanged. Not in copied worlds or with
   `:retained`. The measure's `:rejuvenation` counts `:moves`, `:accepted`
   and `:max-anchors`, the most anchors alive at a barrier.
+
+  `:resampling` is `:systematic` (default), `:stratified`, `:residual` or
+  `:multinomial` (`measure/resample`). The measure's `:history` has a map per
+  barrier: `:ess` before resampling, `:resampled?`, `:log-mean-weight` (the
+  barrier's factor of the evidence) and, with `:genealogy? true`, the
+  `:ancestors` each slot was resampled from.
 
   Resolves an `EmpiricalMeasure` of `Sample`s (result + trace) whose
   `log-marginal` is the SMC evidence estimate. A model with stream sites

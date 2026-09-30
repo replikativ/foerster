@@ -52,6 +52,12 @@ before resampling. After SMC resamples, the weights are equal again and it
 counts particles, though many may be copies of a few; for equally weighted
 MCMC output it counts samples, not their autocorrelation.
 
+**History** — an SMC measure's `:history` has one map per observation
+barrier: `:ess` before resampling, `:resampled?`, `:log-mean-weight` (that
+barrier's factor of the evidence) and, with `:genealogy? true`, the
+`:ancestors` each particle was resampled from — enough to see where the
+population degenerated and to trace lineages.
+
 **Evidence** — `(m/log-marginal measure)` estimates log p(data), the
 normalizer of the posterior, for importance sampling and SMC: compare models
 by it. For pooled particle-MCMC output it is not an evidence estimate.

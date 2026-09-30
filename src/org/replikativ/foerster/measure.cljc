@@ -152,6 +152,53 @@
             (recur (inc i) j (conj indices j))
             (recur i (inc j) indices)))))))
 
+;; -----------------------------------------------------------------------------
+;; Other resampling schemes (Douc, Cappé & Moulines 2005)
+;; -----------------------------------------------------------------------------
+
+(defn multinomial-resample
+  "`n` indices drawn independently from the normalized `weights`."
+  [weights n]
+  (vec (repeatedly n #(sample-categorical weights))))
+
+(defn stratified-resample
+  "Stratified resampling: one uniform draw in each of the n strata [i/n,
+  (i+1)/n). Lower variance than multinomial, never more than systematic's
+  failure modes."
+  [weights n]
+  (let [cumsum (vec (reductions + weights))
+        last-index (dec (count weights))]
+    (loop [i 0 j 0 out []]
+      (if (= i n)
+        out
+        (let [u (/ (+ i (uniform01)) n)
+              j (loop [j j] (if (and (< j last-index) (< (nth cumsum j) u)) (recur (inc j)) j))]
+          (recur (inc i) j (conj out j)))))))
+
+(defn residual-resample
+  "Residual resampling: ⌊n·wᵢ⌋ copies of each particle, the rest drawn
+  multinomially from the residual weights."
+  [weights n]
+  (let [copies (mapv #(long (Math/floor (* n %))) weights)
+        fixed (into [] (mapcat (fn [i c] (repeat c i)) (range) copies))
+        left (- n (count fixed))]
+    (if (zero? left)
+      fixed
+      (let [residual (mapv (fn [w c] (- (* n w) c)) weights copies)
+            total (reduce + residual)]
+        (into fixed (multinomial-resample (mapv #(/ % total) residual) left))))))
+
+(defn resample
+  "`n` ancestor indices from the normalized `weights` by `scheme`:
+  `:systematic` (default), `:stratified`, `:residual` or `:multinomial`."
+  [scheme weights n]
+  (case (or scheme :systematic)
+    :systematic (systematic-resample weights n)
+    :stratified (stratified-resample weights n)
+    :residual (residual-resample weights n)
+    :multinomial (multinomial-resample weights n)
+    (throw (ex-info "Unknown resampling scheme" {:type ::unknown-resampling :scheme scheme}))))
+
 ;; =============================================================================
 ;; EmpiricalMeasure - Weighted Particle Set
 ;; =============================================================================
