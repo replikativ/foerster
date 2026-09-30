@@ -328,7 +328,7 @@
             (decide-site! [sp slot anchor]
               (try
                 (let [{:keys [value]} (decide! (policy-of slot) sp anchor)]
-                  (if (:observed? (:savepoint/payload sp))
+                  (if (itrace/barrier-site? sp)
                     (do (swap! state assoc-in [:parked slot] {:sp sp :value value})
                         (arrived!))
                     (sp/resume sp value)))

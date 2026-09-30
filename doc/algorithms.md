@@ -147,6 +147,33 @@ the posterior's spread and heavy-tailed for large ones; an L close to the
 reversal of K under the target keeps them flat. Fresh worlds, not with
 `:retained`.
 
+## Steering a process: scored steps
+
+A program whose proposals come from an outside process — a language model's
+turn, a simulator — with no density to report, and whose data is a *score*
+(a verifier, a judge, a process reward model), is steered by factors that
+are barriers: `(factor w :barrier true)` makes SMC park and resample there,
+as at an observation. `foerster.steer/model` builds the step loop:
+
+```clojure
+(infer/smc-infer
+  (steer/model {:init s0
+                :step (fn [state] (spin …))      ; the next state, from the process
+                :value (fn [state] (spin …))     ; log ψ: the reward to come
+                :reward (fn [state] (spin …))    ; the final log potential
+                :done? (fn [state] …)})
+  16 {:resampling :stratified})
+```
+
+The target is p(trajectory)·exp(reward): the process's own law tilted by the
+reward (Korbak et al. 2022). The process's randomness has no sample site, so
+it acts as the proposal and its density cancels; the weights are the
+factors. A value estimate twists the intermediate targets — each step adds
+log ψ_t − log ψ_{t−1} and the end reward − log ψ_T — which resamples early
+without changing the final target (twisted SMC); without one, SMC is
+best-of-N weighted by the reward. The model starts at `smc/start-site`, so
+every particle takes every step itself.
+
 ## Kernels
 
 `(kernel-infer model kernel n opts)` runs a kernel from

@@ -26,6 +26,7 @@ The value of the spin — here `mu` — is what the posterior is over.
 | `(sample d & opts)` | a latent value drawn from distribution `d` |
 | `(observe d v & opts)` | the data `v`, scored under `d` (`log d(v)` enters the weight); evaluates to `v` |
 | `(factor w)` | multiplies the weight by `exp(w)`: a score that is not the density of a value (a soft constraint, a reward, a likelihood computed elsewhere) |
+| `(factor w :barrier true)` | the same, and SMC resamples there as at an observation (scored steps; see [algorithms](algorithms.md#steering-a-process-scored-steps)) |
 | `(deterministic v :id a)` | records `v`, a value computed from the choices, in the trace under `a`; no randomness, no weight; evaluates to `v` |
 
 A `deterministic` site makes a derived quantity part of every particle's

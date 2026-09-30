@@ -208,6 +208,11 @@
   not the density of a value (a soft constraint, a reward, a likelihood that
   was computed elsewhere).
 
+  `(factor w :barrier true)` is also a barrier of SMC: particles park there
+  and the population is resampled, as at an observation — a scored step of a
+  program whose data is a score (a verifier's, a value estimate's; see
+  `foerster.steer`).
+
   Must only be called inside a spin; outside, this throws."
   [& _]
   (throw (ex-info "factor called outside of spin context (should be CPS-transformed)" {})))
@@ -215,10 +220,11 @@
 (defn- factor-handler-fn
   [_runtime args resolve reject]
   (let [ctx rtc/*execution-context*
-        {:keys [log-weight spin-id source-loc]} args]
+        {:keys [log-weight barrier spin-id source-loc]} args]
     (if (sp/handled? ctx :inference/factor)
       (sp/publish! ctx {:site :inference/factor
-                        :payload {:log-weight log-weight}
+                        :payload (cond-> {:log-weight log-weight}
+                                   barrier (assoc :barrier true))
                         :spin-id spin-id
                         :source-loc source-loc}
                    resolve reject)
@@ -229,8 +235,9 @@
 (def factor-handler
   (eff/async-effect factor-handler-fn))
 
-(defn factor-adapter [args]
-  {:log-weight (first args)})
+(defn factor-adapter [[log-weight & opts]]
+  (let [{:keys [barrier]} (apply hash-map opts)]
+    {:log-weight log-weight :barrier (boolean barrier)}))
 
 (defn register-probabilistic-effects!
   "Register probabilistic effects with spindel effect system.
