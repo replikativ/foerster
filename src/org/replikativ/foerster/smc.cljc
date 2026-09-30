@@ -100,11 +100,13 @@
 
 (defn- movable
   "Addresses a rejuvenation move may target: latent entries in the window
-  that hold a pending anchor. The same rule on both traces of a move, so
+  that hold an anchor. The same rule on both traces of a move, so
   the reverse selection is scored alike."
   [trace k lag]
   (into [] (comp (filter itrace/latent?)
-                 (filter #(some-> (:savepoint %) sp/pending?))
+                 ;; decided by the trace alone: an anchor in a live window is
+                 ;; never abandoned, and a replay from a dead one fails loudly
+                 (filter :savepoint)
                  (map :address))
         (rseq (window-entries trace k lag))))
 
@@ -211,6 +213,11 @@
   (when (and rejuvenate policy (not (contains? (meta policy) :org.replikativ.foerster.trace/options)))
     (throw (ex-info ":rejuvenate repeats the particles' policy in its moves: pass one made by foerster.trace/policy"
                     {:type ::opaque-policy})))
+  (when (and rejuvenate retained)
+    ;; the moves are not invariant for the conditional (particle Gibbs)
+    ;; target: an exact enumeration puts the stationary law off by TV ~ 1e-3
+    (throw (ex-info ":rejuvenate is not supported in conditional SMC (:retained)"
+                    {:type ::rejuvenate-with-retained})))
   (when (and rejuvenate (not anchors))
     (throw (ex-info ":rejuvenate needs :anchors to replay from"
                     {:type ::rejuvenate-without-anchors})))
@@ -478,7 +485,7 @@
                 (let [world0 (:savepoint/world sp)
                       k (rtp/get-state world0 [:inference :barriers])
                       w0 (weight-of world0)
-                      t0 (particle-trace session world0)
+                      t0 (assoc (particle-trace session world0) :trace/pending sp :trace/pending-value value)
                       count-movable #(count (movable % k lag))
                       opts {:select (fn [t _]
                                       (let [ms (movable t k lag)]
@@ -488,7 +495,11 @@
                                            :log-selection #(- (Math/log (double (count-movable %))))})))
                             :propose (or (:propose rejuvenate) itrace/prior-proposal)
                             :policy-options (itrace/policy-options (policy-of slot))
-                            :constraints (constrained-values t0)
+                            :constraints (constrained-values
+                                          (if lag
+                                            {:trace/entries (into {} (map (juxt :address identity))
+                                                                  (window-entries t0 k lag))}
+                                            t0))
                             ;; stop at this particle's own k-th barrier
                             :until (fn [s] (and (itrace/barrier-site? s)
                                                 (= k (rtp/get-state (:savepoint/world s)
@@ -497,7 +508,7 @@
                             :shared-anchors? true}
                       steps (:moves rejuvenate 1)
                       finish (fn [t]
-                               (if (identical? t t0)
+                               (if (= (:fork-id (:trace/world t)) (:fork-id world0))
                                  (done {:sp sp :value value})
                                  (let [w (:trace/world t)]
                                    ;; the moved particle continues in the
@@ -505,6 +516,9 @@
                                    ;; the slot's weight
                                    (rtp/swap-state! w [:inference :slot] (constantly slot))
                                    (rtp/swap-state! w [:inference :log-weight] (constantly w0))
+                                   ;; and does not keep the displaced world
+                                   ;; alive as the source of reused spins
+                                   (rtp/swap-state! w [:engine/reuse-source] (constantly nil))
                                    (sp/install-handlers! w @handler-table)
                                    (done {:sp (:trace/pending t) :value (:trace/pending-value t)}))))]
                   (letfn [(step [j t]
@@ -581,6 +595,17 @@
   `:ancestor-sampling? true` particle 0 instead redraws its ancestor at every
   barrier, ∝ w_i · p(retained future | particle i's past), the future scored
   by replaying each particle in a fork on the retained values (PGAS).
+
+  Resample-move: `:anchors` keeps an anchor at latent sites — `:all`,
+  `{:lag L}` (those of the last L barriers), a set of addresses, or a
+  predicate of the savepoint — and `:rejuvenate {:moves m :propose p}` makes
+  every particle take m Metropolis-Hastings moves after each resampling,
+  each replaying from an anchor up to the particle's current barrier (`p` a
+  proposal as for `foerster.trace/mh-step`, default the prior). The moves
+  leave the target up to that barrier invariant, so the weights and the
+  evidence estimate are unchanged. Not in copied worlds or with
+  `:retained`. The measure's `:rejuvenation` counts `:moves`, `:accepted`
+  and `:max-anchors`, the most anchors alive at a barrier.
 
   Resolves an `EmpiricalMeasure` of `Sample`s (result + trace) whose
   `log-marginal` is the SMC evidence estimate. A model with stream sites

@@ -341,40 +341,54 @@
   Entries upstream of the replayed address are the SAME entries in both
   traces and cancel everywhere. That relies on a fork sharing the notes of its
   source by reference, which holds for the in-process worlds a session forks
-  and would not survive a serialized trace."
-  [old new log-selection]
-  (let [old-entries (entries old)
-        new-entries (entries new)
-        old-by-address (into {} (map (juxt :address identity)) old-entries)
-        new-by-address (into {} (map (juxt :address identity)) new-entries)
-        same? (fn [a b] (and a b (identical? (:note a) (:note b))))
-        forward (transduce
-                 (comp (filter latent?)
-                       (remove #(same? % (get old-by-address (:address %))))
-                       (remove (comp :kept? :note))
-                       (remove (comp :symmetric? :note))
-                       (map (comp :log-proposal :note)))
-                 + 0.0 new-entries)
-        backward (transduce
+  and would not survive a serialized trace. With `from`, the replayed
+  address, only the entries from it on are compared: the ratio is the same,
+  and it costs the replayed suffix instead of the whole trace."
+  ([old new log-selection] (mh-log-ratio old new log-selection nil))
+  ([old new log-selection from]
+   (let [;; with `from`, only the suffix from the replayed address: everything
+        ;; upstream is the same entries in both and cancels, so the ratio is
+        ;; the same and costs the suffix, not the trace
+         suffix (fn [t]
+                  (loop [[a & more] (rseq (:trace/order t)) acc ()]
+                    (if (nil? a)
+                      (vec acc)
+                      (let [e (get-in t [:trace/entries a])
+                            acc (if (#{choose-site factor-site} (:site e)) (conj acc (assoc e :address a)) acc)]
+                        (if (= a from) (vec acc) (recur more acc))))))
+         old-entries (if from (suffix old) (entries old))
+         new-entries (if from (suffix new) (entries new))
+         log-joint (fn [es] (transduce (map (comp :log-prob :note)) + 0.0 es))
+         old-by-address (into {} (map (juxt :address identity)) old-entries)
+         new-by-address (into {} (map (juxt :address identity)) new-entries)
+         same? (fn [a b] (and a b (identical? (:note a) (:note b))))
+         forward (transduce
                   (comp (filter latent?)
-                        (remove #(same? % (get new-by-address (:address %))))
-                        (remove #(:kept? (:note (get new-by-address (:address %)))))
-                        (remove #(:symmetric? (:note (get new-by-address (:address %)))))
+                        (remove #(same? % (get old-by-address (:address %))))
+                        (remove (comp :kept? :note))
+                        (remove (comp :symmetric? :note))
+                        (map (comp :log-proposal :note)))
+                  + 0.0 new-entries)
+         backward (transduce
+                   (comp (filter latent?)
+                         (remove #(same? % (get new-by-address (:address %))))
+                         (remove #(:kept? (:note (get new-by-address (:address %)))))
+                         (remove #(:symmetric? (:note (get new-by-address (:address %)))))
                         ;; the reverse move draws as the prior proposal does
-                        (map (fn [{:keys [note value]}]
-                               (or (dist/-draw-logpdf (:dist note) value) (:log-prob note)))))
-                  + 0.0 old-entries)
-        irreversible? (some (fn [entry]
-                              (and (:redrawn? (:note entry))
-                                   (when-let [was (get old-by-address (:address entry))]
-                                     (finite? (dist/logpdf (:dist (:note was))
-                                                           (:value entry))))))
-                            new-entries)]
-    (if irreversible?
-      ##-Inf
-      (+ (- (log-joint new) (log-joint old))
-         (- backward forward)
-         (- (log-selection new) (log-selection old))))))
+                         (map (fn [{:keys [note value]}]
+                                (or (dist/-draw-logpdf (:dist note) value) (:log-prob note)))))
+                   + 0.0 old-entries)
+         irreversible? (some (fn [entry]
+                               (and (:redrawn? (:note entry))
+                                    (when-let [was (get old-by-address (:address entry))]
+                                      (finite? (dist/logpdf (:dist (:note was))
+                                                            (:value entry))))))
+                             new-entries)]
+     (if irreversible?
+       ##-Inf
+       (+ (- (log-joint new-entries) (log-joint old-entries))
+          (- backward forward)
+          (- (log-selection new) (log-selection old)))))))
 
 (defn uniform-site
   "Select one latent site uniformly. A selection is
@@ -436,10 +450,10 @@
            anchor-pred :anchor?}]
    (fn [resolve reject]
      (let [{:keys [targets log-selection]}
-           (when (seq (latent-addresses trace))
+           (when (or until (seq (latent-addresses trace)))
              (random/in-world-stream (:trace/world trace) [::select iteration]
                                      #(select trace iteration)))
-           from (trace/earliest trace targets)]
+           from (if (= 1 (count targets)) (first targets) (trace/earliest trace targets))]
        (if-not from
          (resolve {:trace trace :accepted? false :log-ratio 0.0})
          (let [move (policy (assoc policy-options
@@ -449,12 +463,20 @@
                                            (when (contains? targets (:savepoint/address sp))
                                              (propose sp old-entry)))))]
            ((trace/replay trace from move (cond-> {:anchor? (or anchor-pred anchor?)}
-                                            until (assoc :until until)))
+                                            until (assoc :until until)
+                                            ;; the replay's seed from the moving trace's
+                                            ;; world and the move index, not from a
+                                            ;; shared anchor's fork counter
+                                            (sp/seed (:trace/world trace))
+                                            (assoc :seed (sp/derive-seed (sp/seed (:trace/world trace))
+                                                                         ::move iteration))))
             (fn [proposed]
               (try
-                (let [ratio (if (:trace/error proposed)
+                (let [ratio (if (or (:trace/error proposed)
+                                    ;; a partial move must end where the trace did
+                                    (and until (not (:trace/pending proposed))))
                               ##-Inf
-                              (mh-log-ratio trace proposed log-selection))
+                              (mh-log-ratio trace proposed log-selection (when until from)))
                       accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
                                    (or (>= ratio 0.0)
                                        (< (Math/log (random/in-world-stream
@@ -463,7 +485,10 @@
                                           ratio)))]
                   (cond
                     (not accept?) (trace/release! proposed trace)
-                    shared-anchors? (sp/release-world! (:trace/session trace) (:trace/world trace))
+                    shared-anchors? (do ;; the displaced trace is parked there
+                                      (when-let [p (:trace/pending trace)]
+                                        (when (sp/pending? p) (sp/abandon p)))
+                                      (sp/release-world! (:trace/session trace) (:trace/world trace)))
                     :else (trace/release! trace proposed))
                   (resolve {:trace (if accept? proposed trace)
                             :accepted? accept?

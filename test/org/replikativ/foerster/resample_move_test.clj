@@ -10,6 +10,9 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.smc :as smc]
             [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.spindel.effects.await :as aw]
+            [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as executor]
@@ -52,8 +55,8 @@
   (let [plain (b/hmm-error (b/weighted-values (b/run-infer 11 #(smc/smc (hmm) 300 {:resample-threshold 1.0}))))
         moved (b/hmm-error (b/weighted-values
                             (b/run-infer 11 #(smc/smc (hmm) 300 {:resample-threshold 1.0
-                                                                  :anchors :all
-                                                                  :rejuvenate {:moves 2}}))))]
+                                                                 :anchors :all
+                                                                 :rejuvenate {:moves 2}}))))]
     (is (< moved 0.045) (str "rms " moved))
     (is (< moved plain) (str moved " vs plain " plain))))
 
@@ -82,7 +85,56 @@
                                 (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))]
     (is (= ::smc/rejuvenate-without-anchors (refusal {:rejuvenate {:moves 1}})))
     (is (= ::smc/opaque-policy (refusal {:anchors :all :rejuvenate {} :policy (fn [_ _] nil)})))
-    (is (= ::smc/invalid-anchors (refusal {:anchors 3})))))
+    (is (= ::smc/invalid-anchors (refusal {:anchors 3})))
+    (is (= ::smc/rejuvenate-with-retained
+           (refusal {:anchors :all :rejuvenate {} :retained {:mu 0.0}})))))
+
+(deftest a-move-may-change-how-many-observations-there-are
+  ;; b = true adds an observation: a move flipping b at the second barrier
+  ;; would end the program before reaching it, and is rejected
+  (let [measure (b/run-infer 14 #(smc/smc (b/varlen-model) 500
+                                          {:resample-threshold 1.0 :anchors :all :rejuvenate {:moves 2}}))
+        p (b/w-mean #(if % 1.0 0.0) (b/weighted-values measure))]
+    (is (< (Math/abs (- p b/varlen-truth)) 0.06) (str p " vs " b/varlen-truth))
+    (is (pos? (:accepted (:rejuvenation measure))))))
+
+(defn- live-worlds [root]
+  (count (world-scope/handles @(:scope (sp/session root)))))
+
+(deftest moves-give-their-worlds-back
+  ;; a displaced or rejected particle's world is released at once, not when
+  ;; the session closes: the live worlds stay near N·(lag + 1)
+  (random/set-seed! 15)
+  (let [n 100
+        root (context/create-execution-context)
+        live (promise)]
+    (binding [ec/*execution-context* root]
+      ((smc/smc (hmm) n {:root root :resample-threshold 1.0
+                         :anchors {:lag 2} :rejuvenate {:moves 3}})
+       (fn [_] (deliver live (live-worlds root)))
+       (fn [e] (deliver live e))))
+    (let [worlds (deref live 120000 ::timeout)]
+      (is (and (number? worlds) (<= worlds (* 5 n))) (str worlds " live worlds")))))
+
+(deftest seeded-moves-reproduce-on-a-thread-pool
+  ;; latents in awaited sub-spins run concurrently; siblings share anchors,
+  ;; and every replay names its seed
+  (let [ys (vec (take 12 ys))
+        step (fn [t x] (spin (sample (dist/normal x 1.0) :id [:x t])))
+        model (fn []
+                (spin (loop [t 0 x 0.0]
+                        (if (= t (count ys))
+                          x
+                          (let [x' (aw/await (step t x))]
+                            (observe (dist/normal x' 1.0) (nth ys t) :id [:y t])
+                            (recur (inc t) x'))))))
+        run (fn [] (let [exec (executor/thread-pool-executor {:threads 4})]
+                     (try (b/weighted-values
+                           (b/run-infer 16 #(smc/smc (model) 60
+                                                     {:executor exec :resample-threshold 1.0
+                                                      :anchors :all :rejuvenate {:moves 3}})))
+                          (finally (.close ^java.lang.AutoCloseable exec)))))]
+    (is (apply = (repeatedly 3 run)))))
 
 ;; --- streaming ---------------------------------------------------------------
 
