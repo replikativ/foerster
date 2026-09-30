@@ -116,6 +116,12 @@
   (into {} (keep (fn [e] (when-let [a (:savepoint e)] [(trace/anchor-id a) a])))
         (window-entries trace k lag)))
 
+(defn- until-barrier
+  "The `:until` of a replay that stops at the particle's k-th barrier."
+  [k]
+  (fn [s] (and (itrace/barrier-site? s)
+               (= k (rtp/get-state (:savepoint/world s) [:inference :barriers])))))
+
 (defn- particle-trace [session world]
   (assoc (rtp/get-state world [:savepoint/trace]) :trace/world world :trace/session session))
 
@@ -205,7 +211,7 @@
   with the value, which turns them into an ordinary barrier. When all have
   returned, `on-done` gets the final measure; `on-error` any failure."
   [model n {:keys [resample-threshold policy executor retained ancestor-sampling? root copy?
-                   anchors rejuvenate resampling genealogy?] :as opts}
+                   anchors rejuvenate resampling genealogy? smcp3] :as opts}
    {:keys [on-idle on-done on-error]}]
   (when (and copy? anchors)
     (throw (ex-info "Anchors in copied (canonical) worlds are not supported yet"
@@ -218,6 +224,12 @@
     ;; target: an exact enumeration puts the stationary law off by TV ~ 1e-3
     (throw (ex-info ":rejuvenate is not supported in conditional SMC (:retained)"
                     {:type ::rejuvenate-with-retained})))
+  (when (and smcp3 (not anchors))
+    (throw (ex-info ":smcp3 needs :anchors to replay from"
+                    {:type ::smcp3-without-anchors})))
+  (when (and smcp3 retained)
+    (throw (ex-info ":smcp3 is not supported in conditional SMC (:retained)"
+                    {:type ::smcp3-with-retained})))
   (when (and rejuvenate (not anchors))
     (throw (ex-info ":rejuvenate needs :anchors to replay from"
                     {:type ::rejuvenate-without-anchors})))
@@ -246,7 +258,7 @@
                                        :fork-opts {:systems :none}
                                        :retain-released? false}
                                       (dissoc opts :resample-threshold :policy :executor :retained
-                                              :resampling :genealogy?
+                                              :resampling :genealogy? :smcp3
                                               :ancestor-sampling? :root :copy? :anchors :rejuvenate)))
         ;; {:parked {slot {:sp sp :value v}}  at an observe (or a supplied stream
         ;;                                    site), resumed with v after the barrier
@@ -337,8 +349,81 @@
                fail!))
 
             (barrier! []
-              (let [k (swap! barriers inc)]
-                (random/with-stream* seed [::barrier k] #(barrier-at! k))))
+              (let [k (swap! barriers inc)
+                    go! #(random/with-stream* seed [::barrier k] (fn [] (barrier-at! k)))]
+                (if smcp3 (smcp3-all! go!) (go!))))
+
+            (smcp3-all! [continue!]
+              ;; every parked particle takes its SMCP3 step, then the barrier
+              ;; resamples on the updated weights
+              (let [parked (:parked @state)
+                    slots (vec (keys parked))
+                    results (atom parked)
+                    remaining (atom (count slots))]
+                (if (empty? slots)
+                  (continue!)
+                  (doseq [slot slots]
+                    (smcp3-particle! slot (get parked slot)
+                                     (fn [entry]
+                                       (swap! results assoc slot entry)
+                                       (when (zero? (swap! remaining dec))
+                                         (swap! state assoc :parked @results)
+                                         (continue!))))))))
+
+            (smcp3-particle! [slot {:keys [sp value] :as entry} done]
+              (try
+                (let [world0 (:savepoint/world sp)
+                      k (rtp/get-state world0 [:inference :barriers])
+                      w0 (weight-of world0)
+                      t0 (assoc (particle-trace session world0) :trace/pending sp :trace/pending-value value)
+                      {:keys [updates log-q reverse log-jacobian]}
+                      (random/in-world-stream world0 [::smcp3 k]
+                                              #((:forward smcp3) (itrace/choices t0) t0))]
+                  (if (empty? updates)
+                    (done entry)
+                    (let [from (trace/earliest t0 (keys updates))
+                          _ (when-not (get-in t0 [:trace/entries from :savepoint])
+                              (throw (ex-info "An SMCP3 update changes a site without an anchor"
+                                              {:type ::no-anchor :address from})))
+                          base (itrace/policy-options (policy-of slot))
+                          move (itrace/policy
+                                (assoc base
+                                       :keep? true
+                                       :constraints (merge (:constraints base) (constrained-values t0))
+                                       :draw (fn [s _]
+                                               (let [a (:savepoint/address s)]
+                                                 (when (contains? updates a)
+                                                   ;; K's value; its density is
+                                                   ;; in K's log-q, not here
+                                                   {:value (get updates a) :symmetric? true})))))]
+                      ((trace/replay t0 from move {:anchor? anchor?
+                                                   :until (until-barrier k)
+                                                   :seed (sp/derive-seed (sp/seed world0) ::smcp3 k)})
+                       (fn [t1]
+                         (try
+                           (if (or (:trace/error t1) (not (:trace/pending t1)))
+                             ;; K proposed a state the program cannot reach:
+                             ;; the particle stays, with no weight
+                             (do (trace/release! t1 t0)
+                                 (rtp/swap-state! world0 [:inference :log-weight] (constantly ##-Inf))
+                                 (done entry))
+                             (let [increment (+ (itrace/mh-log-ratio t0 t1 (constantly 0.0) from)
+                                                ((:backward smcp3) (itrace/choices t1) reverse)
+                                                (- log-q)
+                                                (or log-jacobian 0.0))
+                                   w1 (:trace/world t1)]
+                               (rtp/swap-state! w1 [:inference :slot] (constantly slot))
+                               (rtp/swap-state! w1 [:inference :log-weight] (constantly (+ w0 increment)))
+                               (rtp/swap-state! w1 [:engine/reuse-source] (constantly nil))
+                               (sp/install-handlers! w1 @handler-table)
+                               (swap! registry merge (anchors-of t1 k lag))
+                               ;; the particle continues in t1's world
+                               (when (sp/pending? sp) (sp/abandon sp))
+                               (sp/release-world! session world0)
+                               (done {:sp (:trace/pending t1) :value (:trace/pending-value t1)})))
+                           (catch #?(:clj Throwable :cljs :default) e (fail! e))))
+                       fail!))))
+                (catch #?(:clj Throwable :cljs :default) e (fail! e))))
 
             (barrier-at! [k]
               (if (and retained ancestor-sampling? (contains? (:parked @state) 0))
@@ -512,9 +597,7 @@
                                                                   (window-entries t0 k lag))}
                                             t0))
                             ;; stop at this particle's own k-th barrier
-                            :until (fn [s] (and (itrace/barrier-site? s)
-                                                (= k (rtp/get-state (:savepoint/world s)
-                                                                    [:inference :barriers]))))
+                            :until (until-barrier k)
                             :anchor? anchor?
                             :shared-anchors? true}
                       steps (:moves rejuvenate 1)
@@ -617,6 +700,21 @@
   evidence estimate are unchanged. Not in copied worlds or with
   `:retained`. The measure's `:rejuvenation` counts `:moves`, `:accepted`
   and `:max-anchors`, the most anchors alive at a barrier.
+
+  SMCP3 (Lew et al. 2023): `:smcp3 {:forward K :backward L}` gives every
+  particle parked at a barrier a move-reweight step before the resampling
+  decision. `(K choices trace)` — the particle's `foerster.trace/choices` and
+  its partial trace — returns `{:updates {address value} :log-q lq :reverse
+  u' :log-jacobian lj}`: new values for some latent sites (earlier ones
+  included, so K may revise the past), the log density of K's own random
+  choices, the auxiliary value the backward kernel would draw to go back, and
+  an optional log |Jacobian| for a deterministic continuous map. `(L choices'
+  u')` is the log density of that reverse draw given the new choices. The
+  particle is replayed from the earliest updated site (it needs an anchor
+  there, `:anchors`) to its barrier, and its weight multiplied by
+  p(x')·L(u'|x') / (p(x)·K(u|x)) · |J|. K draws from `foerster.random` (it
+  runs in the particle's stream). Sites K does not update are kept, and those
+  the replay reaches afresh are drawn from their prior, as in a move.
 
   `:resampling` is `:systematic` (default), `:stratified`, `:residual` or
   `:multinomial` (`measure/resample`). The measure's `:history` has a map per

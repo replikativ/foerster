@@ -23,6 +23,7 @@ non-Markov-chain kernel:
 | `:anchors`, `:rejuvenate` | — | resample-move (below); `smc-infer` and `pimh-infer`, fresh worlds |
 | `:resampling` | `:systematic` | `:stratified`, `:residual` or `:multinomial` (Douc, Cappé & Moulines 2005); `smc-infer`, `pimh-infer` |
 | `:genealogy?` | `false` | record every resampling's ancestor indices in the measure's `:history` |
+| `:smcp3` | — | `{:forward K :backward L}`: SMCP3 move-reweight steps at each observation (below); needs `:anchors` |
 
 An option a method does not take is refused (`::infer/unknown-options`), and
 so are `:world-opts`, `:authority` and `:grant` under `:world-policy :fresh`
@@ -113,6 +114,38 @@ Moves happen only when the population is resampled, so with the default
 and `:max-anchors`. Resample-move runs in fresh worlds only, and not in
 conditional SMC (particle Gibbs, PGAS). A model whose moves reach effects
 (a model call) runs them again on every replay.
+
+## SMCP3: move-reweight steps
+
+SMCP3 (Lew et al. 2023) generalizes resample-move: at each observation a
+particle takes a step of a forward kernel K and is reweighted by a backward
+kernel L instead of accepting or rejecting. K may change any latent site the
+particle has passed — revise the past, propose from the data just seen — and
+the weight keeps the particle properly weighted:
+
+    w ← w · p(x')·L(u' | x') / (p(x)·K(u | x)) · |J|
+
+```clojure
+(def random-walk-kernel
+  {:forward  (fn [{mu :mu} trace]            ; the particle's choices and trace
+               (let [u (dist/draw (dist/normal 0.0 0.05))]
+                 {:updates {:mu (+ mu u)}    ; new values
+                  :log-q (dist/logpdf (dist/normal 0.0 0.05) u)
+                  :reverse (- u)}))          ; what L would draw to go back
+   :backward (fn [choices' u'] (dist/logpdf (dist/normal 0.0 0.05) u'))})
+
+(infer/smc-infer (model) 1000 {:anchors #{:mu} :smcp3 random-walk-kernel})
+```
+
+K draws from `foerster.random` (it runs in the particle's stream), may
+return `:log-jacobian` for a deterministic continuous map, and needs an
+anchor at the earliest site it updates. Sites it does not update are kept,
+and sites the replay reaches afresh are drawn from their prior. The weight's
+variance depends on how well L reverses K: a symmetric random walk as L
+multiplies the weights by π(x')/π(x), which is fine for steps small against
+the posterior's spread and heavy-tailed for large ones; an L close to the
+reversal of K under the target keeps them flat. Fresh worlds, not with
+`:retained`.
 
 ## Kernels
 

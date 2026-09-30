@@ -177,8 +177,9 @@
   #{:world-policy :world-opts :authority :grant :executor :resample-threshold :policy})
 
 (def ^:private rejuvenation-options
-  "Resample-move (`foerster.smc`): SMC and PIMH in fresh worlds only."
-  #{:anchors :rejuvenate})
+  "Resample-move and SMCP3 (`foerster.smc`): SMC and PIMH in fresh worlds
+  only."
+  #{:anchors :rejuvenate :smcp3})
 
 (def ^:private smc-options
   "What SMC and PIMH take beyond every particle method's options."
