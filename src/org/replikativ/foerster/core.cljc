@@ -19,6 +19,7 @@
             [org.replikativ.foerster.hmc :as hmc]
             [org.replikativ.foerster.kernel :as k]
             [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.tempering :as tempering]
             [org.replikativ.foerster.gradient :as grad]
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.spindel.effects.savepoint :as sp]
@@ -176,8 +177,13 @@
   #{:world-policy :world-opts :authority :grant :executor :resample-threshold :policy})
 
 (def ^:private rejuvenation-options
-  "Resample-move (`foerster.smc`): SMC and PIMH in fresh worlds only."
-  #{:anchors :rejuvenate})
+  "Resample-move and SMCP3 (`foerster.smc`): SMC and PIMH in fresh worlds
+  only."
+  #{:anchors :rejuvenate :smcp3})
+
+(def ^:private smc-options
+  "What SMC and PIMH take beyond every particle method's options."
+  (into #{:resampling :genealogy?} rejuvenation-options))
 
 (def ^:private fork-options
   "What applies to canonical worlds only (`:world-policy :fork`)."
@@ -453,8 +459,27 @@
     (sp/with-context world @(smc-infer (model) 1000))   ; at the REPL
     (spin (query (await (smc-infer (model) 1000)) identity))"
   [model-task num-particles & [opts]]
-  (check-options! opts (into particle-options rejuvenation-options))
+  (check-options! opts (into particle-options smc-options))
   (particles model-task num-particles opts))
+
+(defn tempered-infer
+  "Tempered SMC (`foerster.tempering`): `num-particles` complete runs of
+  `model-task`, moved from the prior to the posterior through the targets
+  p(x)·L(x)^β with an adaptive schedule of β. Explores posteriors whose
+  modes a Markov chain cannot cross, and estimates the evidence.
+
+  Options: `:ess-target` (0.5), `:moves` (single-site MH moves per particle
+  per step; default a sweep), `:scale` (2.38), `:waste-free` P, `:max-steps`,
+  `:executor`; fresh worlds only.
+
+  Returns a spin resolving the EmpiricalMeasure; `:temperatures` holds the
+  schedule."
+  [model-task num-particles & [opts]]
+  (check-options! opts #{:ess-target :moves :scale :waste-free :max-steps :executor :world-policy})
+  (when (= :fork (world-policy opts))
+    (throw (ex-info "Tempered SMC runs in fresh worlds" {:type ::invalid-world-policy
+                                                         :world-policy :fork :supported #{:fresh}})))
+  (on-savepoints (tempering/tempered model-task num-particles (dissoc opts :world-policy))))
 
 (defn importance-sampling
   "Importance sampling: `num-samples` runs of `model-task`, each weighted by
@@ -520,7 +545,7 @@
 
   Returns: Spin<EmpiricalMeasure>"
   [model-task num-particles num-iterations & [opts]]
-  (check-options! opts (into particle-options rejuvenation-options))
+  (check-options! opts (into particle-options smc-options))
   (if (on-savepoints? opts)
     (on-savepoints (smc/pimh model-task num-particles num-iterations opts))
     (spin

@@ -21,6 +21,9 @@ non-Markov-chain kernel:
 | `:resample-threshold` | `0.5` | SMC resamples when the effective sample size is below this fraction of the particles |
 | `:policy` | the prior | a `foerster.trace/policy` deciding the sites: constraints, interventions, custom proposals ([extending](extending.md)) |
 | `:anchors`, `:rejuvenate` | — | resample-move (below); `smc-infer` and `pimh-infer`, fresh worlds |
+| `:resampling` | `:systematic` | `:stratified`, `:residual` or `:multinomial` (Douc, Cappé & Moulines 2005); `smc-infer`, `pimh-infer` |
+| `:genealogy?` | `false` | record every resampling's ancestor indices in the measure's `:history` |
+| `:smcp3` | — | `{:forward K :backward L}`: SMCP3 move-reweight steps at each observation (below); needs `:anchors` |
 
 An option a method does not take is refused (`::infer/unknown-options`), and
 so are `:world-opts`, `:authority` and `:grant` under `:world-policy :fresh`
@@ -44,6 +47,39 @@ so are `:world-opts`, `:authority` and `:grant` under `:world-policy :fresh`
 The pooled particle-MCMC measures are MCMC estimates: their weights are
 normalized per sweep, and `m/log-marginal` of the pool is not an evidence
 estimate.
+
+## Tempered SMC
+
+`(tempered-infer model n opts)` (`org.replikativ.foerster.tempering`) moves a
+population of complete program runs from the prior to the posterior through
+the targets p(x)·L(x)^β, L the observations' and factors' likelihood, with β
+rising from 0 to 1 (an SMC sampler; Del Moral, Doucet & Jasra 2006). Each
+step chooses the next β so that the conditional ESS of the reweighting stays
+at `:ess-target`·N (Zhou, Johansen & Aston 2016), resamples, and moves every
+particle by Metropolis-Hastings at the new temperature — random walks scaled
+by the population's spread on continuous sites, prior proposals elsewhere.
+
+Use it for posteriors with separated modes, which a Markov chain does not
+cross and SMC in program order only reaches if its early particles happen to:
+
+```clojure
+(infer/tempered-infer (model) 1000)                    ; β schedule in :temperatures
+(infer/tempered-infer (model) 1000 {:waste-free 10})   ; Dau & Chopin 2022
+```
+
+| Option | Default | |
+|---|---|---|
+| `:ess-target` | 0.5 | higher: more, smaller temperature steps |
+| `:moves` | one sweep | single-site MH moves per particle per step |
+| `:scale` | 2.38 | random-walk scale in population standard deviations |
+| `:waste-free` | — | P: resample N/P particles and keep every state of their P-step chains |
+| `:max-steps` | 1000 | |
+
+`m/log-marginal` estimates the evidence. Every move re-runs the program from
+the moved site, so a step costs N sweeps of the model; fresh worlds only.
+
+For data that arrive one observation at a time — IBIS (Chopin 2002) — use
+SMC with resample-move on the static parameters, below.
 
 ## Resample-move
 
@@ -78,6 +114,38 @@ Moves happen only when the population is resampled, so with the default
 and `:max-anchors`. Resample-move runs in fresh worlds only, and not in
 conditional SMC (particle Gibbs, PGAS). A model whose moves reach effects
 (a model call) runs them again on every replay.
+
+## SMCP3: move-reweight steps
+
+SMCP3 (Lew et al. 2023) generalizes resample-move: at each observation a
+particle takes a step of a forward kernel K and is reweighted by a backward
+kernel L instead of accepting or rejecting. K may change any latent site the
+particle has passed — revise the past, propose from the data just seen — and
+the weight keeps the particle properly weighted:
+
+    w ← w · p(x')·L(u' | x') / (p(x)·K(u | x)) · |J|
+
+```clojure
+(def random-walk-kernel
+  {:forward  (fn [{mu :mu} trace]            ; the particle's choices and trace
+               (let [u (dist/draw (dist/normal 0.0 0.05))]
+                 {:updates {:mu (+ mu u)}    ; new values
+                  :log-q (dist/logpdf (dist/normal 0.0 0.05) u)
+                  :reverse (- u)}))          ; what L would draw to go back
+   :backward (fn [choices' u'] (dist/logpdf (dist/normal 0.0 0.05) u'))})
+
+(infer/smc-infer (model) 1000 {:anchors #{:mu} :smcp3 random-walk-kernel})
+```
+
+K draws from `foerster.random` (it runs in the particle's stream), may
+return `:log-jacobian` for a deterministic continuous map, and needs an
+anchor at the earliest site it updates. Sites it does not update are kept,
+and sites the replay reaches afresh are drawn from their prior. The weight's
+variance depends on how well L reverses K: a symmetric random walk as L
+multiplies the weights by π(x')/π(x), which is fine for steps small against
+the posterior's spread and heavy-tailed for large ones; an L close to the
+reversal of K under the target keeps them flat. Fresh worlds, not with
+`:retained`.
 
 ## Kernels
 

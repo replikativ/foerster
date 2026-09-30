@@ -38,10 +38,11 @@
                             (catch #?(:clj Throwable :cljs :default) e (reject e))))
                reject)))
 
-(defn- run
-  "Run `model` under `policy` in a new root world and session. Options:
-  `:executor` for the root world, the rest are session options
-  (`effects.savepoint/open!`). A run that fails closes its session."
+(defn- run*
+  "{:session s :operation op}: `model` under `policy` in a new root world and
+  session `s`, run by the CPS operation `op`. Options: `:executor` for the
+  root world, the rest are session options (`effects.savepoint/open!`). A run
+  that fails closes its session."
   [model policy {:keys [executor] :as opts}]
   (let [root (if executor
                (ctx/create-execution-context :executor executor)
@@ -51,11 +52,22 @@
                                        :fork-opts {:systems :none}
                                        :retain-released? false}
                                       (dissoc opts :executor)))]
-    (fn [resolve reject]
-      ((trace/run session model policy {:anchor? itrace/anchor?})
-       resolve
-       (fn [error]
-         ((sp/close! session) (fn [_] (reject error)) (fn [_] (reject error))))))))
+    {:session session
+     :operation (fn [resolve reject]
+                  ((trace/run session model policy {:anchor? itrace/anchor?})
+                   resolve
+                   (fn [error]
+                     ((sp/close! session) (fn [_] (reject error)) (fn [_] (reject error))))))}))
+
+(defn- run [model policy opts]
+  (:operation (run* model policy opts)))
+
+(defn run-policy*
+  "As `run-policy`, but returns {:session s :operation op}: the session is
+  known before the run ends, for a caller that must close it whatever
+  happens to others."
+  ([model policy] (run-policy* model policy nil))
+  ([model policy opts] (run* model policy opts)))
 
 (defn run-policy
   "Run `model` under any `foerster.trace/policy` in a root world and session
