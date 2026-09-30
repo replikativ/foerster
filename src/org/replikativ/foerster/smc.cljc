@@ -44,12 +44,85 @@
     (rtp/get-state world [:inference :canonical?]) (assoc :world-id (:fork-id world))))
 
 (defn- decide!
-  "Decide `sp` under `policy` and record it in its world's trace. Returns
-  the decision."
-  [policy sp]
-  (let [decision (policy sp nil)]
-    (trace/record! (:savepoint/world sp) sp decision nil)
-    decision))
+  "Decide `sp` under `policy` and record it in its world's trace, with
+  `anchor` (a pending fork of `sp`, or nil). Returns the decision."
+  ([policy sp] (decide! policy sp nil))
+  ([policy sp anchor]
+   (let [decision (policy sp nil)]
+     (trace/record! (:savepoint/world sp) sp decision anchor)
+     decision)))
+
+;; -----------------------------------------------------------------------------
+;; Resample-move: anchors and moves
+;; -----------------------------------------------------------------------------
+;;
+;; With `:anchors`, a particle keeps an anchor (a pending fork, `spindel.trace`)
+;; at the latent sites the policy names; with `:rejuvenate`, every particle
+;; resampled at barrier k then makes Metropolis-Hastings moves that replay
+;; from an anchor up to its k-th barrier (`trace/replay :until`), so each move
+;; leaves the target — the program up to its k-th observation — invariant and
+;; the weights (equal after resampling) unchanged. Siblings share their
+;; ancestor's anchors, so anchors are released by reachability at barriers,
+;; not by the traces that lose a move.
+
+(defn- anchor-predicate
+  "(fn [sp]) whether a particle anchors a latent site, for `:anchors`: `:all`,
+  `{:lag L}` (every latent site; the last L barriers' are kept), a set of
+  addresses, or a predicate of the savepoint."
+  [anchors]
+  (when anchors
+    (let [chosen (cond
+                   (or (= :all anchors) (map? anchors)) (constantly true)
+                   (set? anchors) #(contains? anchors (:savepoint/address %))
+                   (fn? anchors) anchors
+                   :else (throw (ex-info "Unknown :anchors" {:type ::invalid-anchors
+                                                             :anchors anchors})))]
+      (fn [sp]
+        (and (itrace/anchor? sp) (not (itrace/barrier-site? sp)) (boolean (chosen sp)))))))
+
+(defn- window-entries
+  "The entries of `trace` (with :address) a move may target when the trace
+  stands at barrier `k`: every latent entry, or with `lag` those at
+  barrier index ≥ k − lag, found from the end so the cost is the window's."
+  [trace k lag]
+  (let [by-address (:trace/entries trace)
+        entry-of (fn [a] (assoc (get by-address a) :address a))]
+    (if lag
+      (loop [[a & more] (rseq (:trace/order trace)) acc []]
+        (if-not a
+          acc
+          (let [e (entry-of a)
+                b (:barrier (:note e))]
+            (cond
+              (and b (< b (- k lag))) acc
+              :else (recur more (conj acc e))))))
+      (mapv entry-of (:trace/order trace)))))
+
+(defn- movable
+  "Addresses a rejuvenation move may target: latent entries in the window
+  that hold a pending anchor. The same rule on both traces of a move, so
+  the reverse selection is scored alike."
+  [trace k lag]
+  (into [] (comp (filter itrace/latent?)
+                 (filter #(some-> (:savepoint %) sp/pending?))
+                 (map :address))
+        (rseq (window-entries trace k lag))))
+
+(defn- anchors-of
+  "{anchor-id anchor} of the entries of `trace` in its window."
+  [trace k lag]
+  (into {} (keep (fn [e] (when-let [a (:savepoint e)] [(trace/anchor-id a) a])))
+        (window-entries trace k lag)))
+
+(defn- particle-trace [session world]
+  (assoc (rtp/get-state world [:savepoint/trace]) :trace/world world :trace/session session))
+
+(defn- constrained-values
+  "{address value} of the constrained entries of `trace` (stream data, the
+  policy's constraints): what every move must keep."
+  [trace]
+  (into {} (keep (fn [[a e]] (when (:constrained? (:note e)) [a (:value e)])))
+        (:trace/entries trace)))
 
 (defn- all-forked
   "Fork each of `sps` (a vector) into a world; resolves the child savepoints
@@ -129,9 +202,24 @@
   `on-idle` gets the current measure; `supply!` then scores every stream site
   with the value, which turns them into an ordinary barrier. When all have
   returned, `on-done` gets the final measure; `on-error` any failure."
-  [model n {:keys [resample-threshold policy executor retained ancestor-sampling? root copy?] :as opts}
+  [model n {:keys [resample-threshold policy executor retained ancestor-sampling? root copy?
+                   anchors rejuvenate] :as opts}
    {:keys [on-idle on-done on-error]}]
+  (when (and copy? anchors)
+    (throw (ex-info "Anchors in copied (canonical) worlds are not supported yet"
+                    {:type ::anchors-in-copies})))
+  (when (and rejuvenate policy (not (contains? (meta policy) :org.replikativ.foerster.trace/options)))
+    (throw (ex-info ":rejuvenate repeats the particles' policy in its moves: pass one made by foerster.trace/policy"
+                    {:type ::opaque-policy})))
+  (when (and rejuvenate (not anchors))
+    (throw (ex-info ":rejuvenate needs :anchors to replay from"
+                    {:type ::rejuvenate-without-anchors})))
   (let [threshold (or resample-threshold 0.5)
+        anchor? (anchor-predicate anchors)
+        lag (:lag anchors)
+        ;; {anchor-id anchor}: every anchor that may still be pending
+        registry (atom {})
+        handler-table (volatile! nil)
         policy (or policy (itrace/policy))
         policy-of (if retained
                     (let [rp (retained-policy retained)]
@@ -151,13 +239,14 @@
                                        :fork-opts {:systems :none}
                                        :retain-released? false}
                                       (dissoc opts :resample-threshold :policy :executor :retained
-                                              :ancestor-sampling? :root :copy?)))
+                                              :ancestor-sampling? :root :copy? :anchors :rejuvenate)))
         ;; {:parked {slot {:sp sp :value v}}  at an observe (or a supplied stream
         ;;                                    site), resumed with v after the barrier
         ;;  :streaming {slot sp}               at a stream site, waiting for a value
         ;;  :done {slot {:sample s :log-weight w}}
         ;;  :log-z accumulated :in-barrier? :finished?}
-        state (atom {:parked {} :streaming {} :done {} :log-z 0.0})
+        state (atom {:parked {} :streaming {} :done {} :log-z 0.0
+                     :rejuvenation {:moves 0 :accepted 0}})
         close! (fn []
                  ((sp/close! session)
                   (fn [_] nil)
@@ -167,16 +256,17 @@
                     (callback outcome)
                     (close!)))
         fail! #(finish! on-error %)
-        measure (fn [{:keys [parked streaming done log-z]}]
-                  (assoc (m/empirical
-                          (mapv (fn [slot]
-                                  (if-let [d (get done slot)]
-                                    [(:sample d) (:log-weight d)]
-                                    (let [w (:savepoint/world (or (:sp (get parked slot))
-                                                                  (get streaming slot)))]
-                                      [(sample-of w nil) (weight-of w)])))
-                                (range n)))
-                         :log-normalizer log-z))]
+        measure (fn [{:keys [parked streaming done log-z rejuvenation]}]
+                  (cond-> (assoc (m/empirical
+                                  (mapv (fn [slot]
+                                          (if-let [d (get done slot)]
+                                            [(:sample d) (:log-weight d)]
+                                            (let [w (:savepoint/world (or (:sp (get parked slot))
+                                                                          (get streaming slot)))]
+                                              [(sample-of w nil) (weight-of w)])))
+                                        (range n)))
+                                 :log-normalizer log-z)
+                    rejuvenate (assoc :rejuvenation rejuvenation)))]
     (letfn [(arrived! []
               ;; the last arrival claims the barrier, atomically: two particles
               ;; may arrive on two executor threads at once
@@ -198,14 +288,28 @@
             (run-site! [sp]
               (try
                 (let [slot (slot-of (:savepoint/world sp))]
-                  (if (stream-site? sp)
+                  (cond
+                    (stream-site? sp)
                     (do (swap! state assoc-in [:streaming slot] sp)
                         (arrived!))
-                    (let [{:keys [value]} (decide! (policy-of slot) sp)]
-                      (if (:observed? (:savepoint/payload sp))
-                        (do (swap! state assoc-in [:parked slot] {:sp sp :value value})
-                            (arrived!))
-                        (sp/resume sp value)))))
+
+                    (and anchor? (anchor? sp))
+                    ((sp/fork sp)
+                     (fn [anchor]
+                       (swap! registry assoc (trace/anchor-id anchor) anchor)
+                       (decide-site! sp slot anchor))
+                     fail!)
+
+                    :else (decide-site! sp slot nil)))
+                (catch #?(:clj Throwable :cljs :default) e (fail! e))))
+
+            (decide-site! [sp slot anchor]
+              (try
+                (let [{:keys [value]} (decide! (policy-of slot) sp anchor)]
+                  (if (:observed? (:savepoint/payload sp))
+                    (do (swap! state assoc-in [:parked slot] {:sp sp :value value})
+                        (arrived!))
+                    (sp/resume sp value)))
                 (catch #?(:clj Throwable :cljs :default) e (fail! e))))
 
             (spawn! [first-sp]
@@ -285,7 +389,8 @@
                     resample? (or (some? retained)
                                   (< (m/compute-ess weights) (* threshold n)))]
                 (if-not resample?
-                  (do (swap! state assoc :parked {} :in-barrier? false)
+                  (do (when lag (gc! parked streaming))
+                      (swap! state assoc :parked {} :in-barrier? false)
                       (doseq [[_ {:keys [sp value]}] (sort-by key parked)]
                         (sp/resume sp value)))
                   (let [ancestors (random/with-stream*
@@ -325,13 +430,97 @@
                          (doseq [sp (concat (map :sp (vals parked)) (vals streaming))
                                  :when (sp/pending? sp)]
                            (sp/abandon sp))
-                         (swap! state assoc :parked {} :streaming streaming' :done carried
-                                :in-barrier? false)
-                         (if (empty? parked')
-                           (arrived!)
-                           (doseq [[_ {:keys [sp value]}] (sort-by key parked')]
-                             (sp/resume sp value)))))
+                         (let [continue!
+                               (fn [parked']
+                                 (when anchor? (gc! parked' streaming'))
+                                 (swap! state assoc :parked {} :streaming streaming' :done carried
+                                        :in-barrier? false)
+                                 (if (empty? parked')
+                                   (arrived!)
+                                   (doseq [[_ {:keys [sp value]}] (sort-by key parked')]
+                                     (sp/resume sp value))))]
+                           (if (and rejuvenate (seq parked'))
+                             (rejuvenate! parked' continue!)
+                             (continue! parked')))))
                      fail!)))))
+
+            (gc! [parked streaming]
+              ;; anchors no live particle's window reaches are given back
+              (let [live (reduce (fn [acc sp]
+                                   (let [w (:savepoint/world sp)]
+                                     (merge acc (anchors-of (particle-trace session w)
+                                                            (or (rtp/get-state w [:inference :barriers]) 0)
+                                                            lag))))
+                                 {}
+                                 (concat (map :sp (vals parked)) (vals streaming)))]
+                (doseq [[id a] @registry
+                        :when (and (not (contains? live id)) (sp/pending? a))]
+                  (sp/abandon a))
+                (reset! registry live)
+                (swap! state update-in [:rejuvenation :max-anchors] (fnil max 0) (count live))))
+
+            (rejuvenate! [parked done!]
+              ;; every resampled particle moves, the retained one excepted
+              (let [slots (vec (remove #(and retained (= 0 %)) (keys parked)))
+                    results (atom parked)
+                    remaining (atom (count slots))]
+                (if (empty? slots)
+                  (done! parked)
+                  (doseq [slot slots]
+                    (move-particle! slot (get parked slot)
+                                    (fn [entry]
+                                      (swap! results assoc slot entry)
+                                      (when (zero? (swap! remaining dec))
+                                        (done! @results))))))))
+
+            (move-particle! [slot {:keys [sp value]} done]
+              (try
+                (let [world0 (:savepoint/world sp)
+                      k (rtp/get-state world0 [:inference :barriers])
+                      w0 (weight-of world0)
+                      t0 (particle-trace session world0)
+                      count-movable #(count (movable % k lag))
+                      opts {:select (fn [t _]
+                                      (let [ms (movable t k lag)]
+                                        (if (empty? ms)
+                                          {:targets #{} :log-selection (constantly 0.0)}
+                                          {:targets #{(m/pick-uniformly ms)}
+                                           :log-selection #(- (Math/log (double (count-movable %))))})))
+                            :propose (or (:propose rejuvenate) itrace/prior-proposal)
+                            :policy-options (itrace/policy-options (policy-of slot))
+                            :constraints (constrained-values t0)
+                            ;; stop at this particle's own k-th barrier
+                            :until (fn [s] (and (itrace/barrier-site? s)
+                                                (= k (rtp/get-state (:savepoint/world s)
+                                                                    [:inference :barriers]))))
+                            :anchor? anchor?
+                            :shared-anchors? true}
+                      steps (:moves rejuvenate 1)
+                      finish (fn [t]
+                               (if (identical? t t0)
+                                 (done {:sp sp :value value})
+                                 (let [w (:trace/world t)]
+                                   ;; the moved particle continues in the
+                                   ;; replay's world: it is the slot's now, with
+                                   ;; the slot's weight
+                                   (rtp/swap-state! w [:inference :slot] (constantly slot))
+                                   (rtp/swap-state! w [:inference :log-weight] (constantly w0))
+                                   (sp/install-handlers! w @handler-table)
+                                   (done {:sp (:trace/pending t) :value (:trace/pending-value t)}))))]
+                  (letfn [(step [j t]
+                            (if (= j steps)
+                              (finish t)
+                              ((itrace/mh-step t (assoc opts :iteration j))
+                               (fn [{t' :trace accepted? :accepted?}]
+                                 (swap! state update :rejuvenation
+                                        #(-> % (update :moves inc)
+                                             (update :accepted + (if accepted? 1 0))))
+                                 (when accepted?
+                                   (swap! registry merge (anchors-of t' k lag)))
+                                 (step (inc j) t'))
+                               fail!)))]
+                    (step 0 t0)))
+                (catch #?(:clj Throwable :cljs :default) e (fail! e))))
 
             (supply! [value]
               ;; every particle waiting at a stream site scores `value` there;
@@ -348,28 +537,28 @@
                   (arrived!))
                 (catch #?(:clj Throwable :cljs :default) e (fail! e))))]
       (try
-        (sp/install-handlers!
-         root
-         {sp/any-site
-          (fn [s]
-            (if (nil? (slot-of (:savepoint/world s)))
-              (spawn! s)
-              (run-site! s)))
-          sp/result-site
-          (fn [{world :savepoint/world result :savepoint/payload}]
-            (if-let [slot (slot-of world)]
-              (do (swap! state assoc-in [:done slot] {:sample (sample-of world result)
-                                                      :log-weight (weight-of world)})
+        (vreset! handler-table
+                 {sp/any-site
+                  (fn [s]
+                    (if (nil? (slot-of (:savepoint/world s)))
+                      (spawn! s)
+                      (run-site! s)))
+                  sp/result-site
+                  (fn [{world :savepoint/world result :savepoint/payload}]
+                    (if-let [slot (slot-of world)]
+                      (do (swap! state assoc-in [:done slot] {:sample (sample-of world result)
+                                                              :log-weight (weight-of world)})
                   ;; the Sample holds what the measure needs; give the world
                   ;; back now instead of holding every finished particle until
                   ;; the session closes
-                  (sp/release-world! session world)
-                  (arrived!))
+                          (sp/release-world! session world)
+                          (arrived!))
               ;; a program without savepoints: one deterministic particle
-              (finish! on-done (m/empirical (vec (repeat n [(sample-of world result) 0.0]))))))
-          sp/error-site
-          (fn [{error :savepoint/payload}] (fail! error))
-          sp/abandoned-site (fn [_] nil)})
+                      (finish! on-done (m/empirical (vec (repeat n [(sample-of world result) 0.0]))))))
+                  sp/error-site
+                  (fn [{error :savepoint/payload}] (fail! error))
+                  sp/abandoned-site (fn [_] nil)})
+        (sp/install-handlers! root @handler-table)
         (sp/start! session model)
         (catch #?(:clj Throwable :cljs :default) e
           (log/error :smc/start-failed {:error e})

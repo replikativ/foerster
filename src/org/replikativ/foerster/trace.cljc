@@ -26,6 +26,7 @@
   is about to resume, so the weight of a fork starts from the weight at its
   site."
   (:require [org.replikativ.spindel.trace :as trace]
+            [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.foerster.mechanism :as mech]
             [org.replikativ.spindel.engine.protocols :as rtp]
@@ -104,6 +105,28 @@
                                     (assoc sp :savepoint/payload (assoc payload :dist new-dist))
                                     old-entry)]
         (assoc-in decision [:note :intervened?] true)))))
+
+(defn barrier-site?
+  "Whether a choose savepoint is where SMC parks a particle: an observation,
+  or a stream site."
+  [sp]
+  (let [payload (:savepoint/payload sp)]
+    (boolean (or (:observed? payload) (:stream (:options payload))))))
+
+(defn- count-barrier!
+  "The barrier index of a choose site in its world: how many barrier sites
+  (`barrier-site?`) its run has decided, this one included. Kept in the
+  world, so a fork or a replay continues the count from where it starts."
+  [sp]
+  (let [world (:savepoint/world sp)]
+    (if (barrier-site? sp)
+      (rtp/swap-state! world [:inference :barriers] (fnil inc 0))
+      (or (rtp/get-state world [:inference :barriers]) 0))))
+
+(defn policy-options
+  "The options a `policy` was made from, or nil for another function."
+  [policy]
+  (::options (meta policy)))
 
 (defn- decide-choose
   [{:keys [constraints keep? draw init?] :as opts} sp old-entry]
@@ -205,31 +228,37 @@
     :else        policy for every other site (default: its payload)
 
   With no options every sample site is drawn from its prior: forward
-  simulation, likelihood weighting."
+  simulation, likelihood weighting.
+
+  Every choose entry's note records `:barrier`, its barrier index (see
+  `barrier-site?`); `policy-options` recovers the options."
   ([] (policy nil))
   ([{fallback :else :as opts}]
    (let [fallback (or fallback trace/payload-policy)]
-     (fn [sp old-entry]
-       (let [site (:savepoint/site sp)]
-         (cond
-           (= choose-site site)
-           (cond-> (random/in-world-stream (:savepoint/world sp) (:savepoint/address sp)
-                                           #(decide-choose opts sp old-entry))
+     (with-meta
+       (fn [sp old-entry]
+         (let [site (:savepoint/site sp)]
+           (cond
+             (= choose-site site)
+             (cond-> (random/in-world-stream (:savepoint/world sp) (:savepoint/address sp)
+                                             #(decide-choose opts sp old-entry))
+               true (assoc-in [:note :barrier] (count-barrier! sp))
              ;; with :noise, a site that got no factual noise (it did not
              ;; exist in the factual world, or its law is not a mechanism)
              ;; is reported
-             (and (:noise opts) (not (contains? (:noise opts) (:savepoint/address sp))))
-             (update :note (fn [n] (if (:intervened? n) n (assoc n :unaligned? true)))))
+               (and (:noise opts) (not (contains? (:noise opts) (:savepoint/address sp))))
+               (update :note (fn [n] (if (:intervened? n) n (assoc n :unaligned? true)))))
 
-           (= deterministic-site site)
-           {:value (:value (:savepoint/payload sp)) :note {:deterministic? true}}
+             (= deterministic-site site)
+             {:value (:value (:savepoint/payload sp)) :note {:deterministic? true}}
 
-           (= factor-site site)
-           (let [w (:log-weight (:savepoint/payload sp))]
-             (add-weight! (:savepoint/world sp) w)
-             {:value nil :note {:log-prob w :factor? true}})
+             (= factor-site site)
+             (let [w (:log-weight (:savepoint/payload sp))]
+               (add-weight! (:savepoint/world sp) w)
+               {:value nil :note {:log-prob w :factor? true}})
 
-           :else (fallback sp old-entry)))))))
+             :else (fallback sp old-entry))))
+       {::options opts}))))
 
 ;; =============================================================================
 ;; Scored traces
@@ -386,7 +415,15 @@
                so a proposal must be the prior or symmetric.
     :constraints as for `policy`; the conditioning of the chain, which
                every move must repeat
+    :policy-options the options of the policy the trace was made with
+               (interventions, …), which every move repeats; `:keep?`,
+               `:draw` and `:constraints` are the move's own
     :iteration passed to :select
+    :until, :anchor? passed to the replay (`spindel.trace/run`): a move of
+               a partial trace stops where the trace did
+    :shared-anchors? the trace's anchors may be shared with other traces
+               (SMC particles of one ancestor): an accepted move releases
+               the old trace's world only, and the caller its anchors
 
   The computation is replayed from the earliest target; every other site
   keeps its value and is rescored under its distribution as it is now. The
@@ -394,8 +431,9 @@
   {:trace t :accepted? boolean :log-ratio r}; a trace with nothing to move
   resolves unchanged."
   ([trace] (mh-step trace nil))
-  ([trace {:keys [select propose iteration constraints]
-           :or {select uniform-site propose prior-proposal iteration 0}}]
+  ([trace {:keys [select propose iteration constraints policy-options until shared-anchors?]
+           :or {select uniform-site propose prior-proposal iteration 0}
+           anchor-pred :anchor?}]
    (fn [resolve reject]
      (let [{:keys [targets log-selection]}
            (when (seq (latent-addresses trace))
@@ -404,12 +442,14 @@
            from (trace/earliest trace targets)]
        (if-not from
          (resolve {:trace trace :accepted? false :log-ratio 0.0})
-         (let [move (policy {:keep? true
-                             :constraints constraints
-                             :draw (fn [sp old-entry]
-                                     (when (contains? targets (:savepoint/address sp))
-                                       (propose sp old-entry)))})]
-           ((trace/replay trace from move {:anchor? anchor?})
+         (let [move (policy (assoc policy-options
+                                   :keep? true
+                                   :constraints (merge (:constraints policy-options) constraints)
+                                   :draw (fn [sp old-entry]
+                                           (when (contains? targets (:savepoint/address sp))
+                                             (propose sp old-entry)))))]
+           ((trace/replay trace from move (cond-> {:anchor? (or anchor-pred anchor?)}
+                                            until (assoc :until until)))
             (fn [proposed]
               (try
                 (let [ratio (if (:trace/error proposed)
@@ -421,9 +461,10 @@
                                                      (:trace/world proposed) ::accept
                                                      m/uniform01))
                                           ratio)))]
-                  (if accept?
-                    (trace/release! trace proposed)
-                    (trace/release! proposed trace))
+                  (cond
+                    (not accept?) (trace/release! proposed trace)
+                    shared-anchors? (sp/release-world! (:trace/session trace) (:trace/world trace))
+                    :else (trace/release! trace proposed))
                   (resolve {:trace (if accept? proposed trace)
                             :accepted? accept?
                             :log-ratio ratio}))
