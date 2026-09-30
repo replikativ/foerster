@@ -107,11 +107,11 @@
         (assoc-in decision [:note :intervened?] true)))))
 
 (defn barrier-site?
-  "Whether a choose savepoint is where SMC parks a particle: an observation,
-  or a stream site."
+  "Whether a savepoint is where SMC parks a particle: an observation, a
+  stream site, or a factor marked `:barrier`."
   [sp]
   (let [payload (:savepoint/payload sp)]
-    (boolean (or (:observed? payload) (:stream (:options payload))))))
+    (boolean (or (:observed? payload) (:stream (:options payload)) (:barrier payload)))))
 
 (defn- count-barrier!
   "The barrier index of a choose site in its world: how many barrier sites
@@ -278,7 +278,8 @@
              (let [w (:log-weight (:savepoint/payload sp))
                    tw (tempered opts w)]
                (add-weight! (:savepoint/world sp) tw)
-               {:value nil :note (cond-> {:log-prob tw :factor? true}
+               {:value nil :note (cond-> {:log-prob tw :factor? true
+                                          :barrier (count-barrier! sp)}
                                    (:temperature opts) (assoc :log-lik w))})
 
              :else (fallback sp old-entry))))
