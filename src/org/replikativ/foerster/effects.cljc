@@ -117,6 +117,44 @@
   (eff/async-effect choose-handler-fn))
 
 ;; =============================================================================
+;; Deterministic sites
+;; =============================================================================
+
+(defn deterministic
+  "Record `value`, a quantity computed from the program's choices, in the
+  trace under its `:id`: it adds no randomness and no weight, and returns
+  `value`. Posteriors of it are read from the particles' traces
+  (`measure/site-value`); traces carrying the values a model computed are
+  also what learned proposals train on.
+
+    (let [h (sample (dist/normal 1.7 0.1) :id :height)
+          w (sample (dist/normal 70 10) :id :weight)]
+      (deterministic (/ w (* h h)) :id :bmi))
+
+  Must only be called inside a spin; outside, this throws."
+  [& _]
+  (throw (ex-info "deterministic called outside of spin context (should be CPS-transformed)" {})))
+
+(defn- deterministic-handler-fn
+  [_runtime args resolve reject]
+  (let [ctx rtc/*execution-context*
+        {:keys [value options spin-id source-loc]} args]
+    (if (sp/handled? ctx :inference/deterministic)
+      (sp/publish! ctx {:site :inference/deterministic
+                        :payload {:value value}
+                        :opts (when-let [id (:id options)] {:id id})
+                        :spin-id spin-id
+                        :source-loc source-loc}
+                   resolve reject)
+      (spin-core/resume resolve value))))
+
+(def deterministic-handler
+  (eff/async-effect deterministic-handler-fn))
+
+(defn deterministic-adapter [[value & opts]]
+  {:value value :options (apply hash-map opts)})
+
+;; =============================================================================
 ;; Interventions
 ;; =============================================================================
 
@@ -218,6 +256,11 @@
    'org.replikativ.foerster.effects/factor
    factor-handler
    factor-adapter)
+
+  (eff/register-effect-by-symbol!
+   'org.replikativ.foerster.effects/deterministic
+   deterministic-handler
+   deterministic-adapter)
 
   ;; Register observe (different syntax: observe dist value)
   (eff/register-effect-by-symbol!

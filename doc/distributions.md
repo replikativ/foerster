@@ -105,9 +105,11 @@ and what is being decided**:
 
 World seeds are derived per fork from the parent's seed, the site's address
 and the fork's index, so the same run draws the same numbers however it is
-scheduled, and a proposal draws from a fresh stream. Draws outside any world
-— the seeds of an inference's sessions, SMC's resampling at a barrier — come
-from the process generator in program order.
+scheduled, and a proposal draws from a fresh stream. SMC's resampling at a
+barrier draws from a stream of its run's seed and the barrier's index; the
+seeds themselves (one per SMC run, BBVI iteration or chain) come from the
+process generator in program order — IPMCMC draws its nodes' seeds before
+running them in parallel.
 
 Streams are keyed by **address**. A named site (`:id`) is addressed by its
 name, so a seeded run draws the same numbers wherever and however often the

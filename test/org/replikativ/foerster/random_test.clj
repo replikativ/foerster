@@ -48,6 +48,13 @@
     (is (= a b c))
     (is (not= a (first (runs 1 22 make))))))
 
+(deftest parallel-ipmcmc-is-reproducible
+  ;; its nodes are SMC runs in parallel: each has its own seed and draws its
+  ;; resampling from its own streams
+  (let [make (fn [exec] (infer/ipmcmc-infer (model) 20 6 {:num-nodes 4 :executor exec}))
+        [a b c] (runs 3 41 make)]
+    (is (= a b c))))
+
 (deftest parallel-pimh-is-reproducible
   (let [make (fn [exec] (smc/pimh (model) 20 10 {:executor exec}))
         [a b] (runs 2 31 make)]

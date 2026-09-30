@@ -1,8 +1,8 @@
 # Language
 
 A foerster model is a [spindel](https://github.com/replikativ/spindel) spin
-that calls three effects: `sample`, `observe` and `factor`. Everything else is
-ordinary Clojure.
+that calls three effects: `sample`, `observe` and `factor` (and, to record
+what it computes, `deterministic`). Everything else is ordinary Clojure.
 
 ```clojure
 (require '[org.replikativ.foerster.effects :refer [sample observe factor]]
@@ -26,6 +26,13 @@ The value of the spin — here `mu` — is what the posterior is over.
 | `(sample d & opts)` | a latent value drawn from distribution `d` |
 | `(observe d v & opts)` | the data `v`, scored under `d` (`log d(v)` enters the weight); evaluates to `v` |
 | `(factor w)` | multiplies the weight by `exp(w)`: a score that is not the density of a value (a soft constraint, a reward, a likelihood computed elsewhere) |
+| `(deterministic v :id a)` | records `v`, a value computed from the choices, in the trace under `a`; no randomness, no weight; evaluates to `v` |
+
+A `deterministic` site makes a derived quantity part of every particle's
+trace, so its posterior can be read without returning it from the model:
+`(m/measure-stats measure #(m/site-value % :bmi))` (see
+[posteriors](posteriors.md)). Traces that carry what a model computed are also
+the training data of learned proposals.
 
 Options of `sample` and `observe`:
 
