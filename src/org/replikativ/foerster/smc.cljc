@@ -141,8 +141,13 @@
                root root
                executor (ctx/create-execution-context :executor executor)
                :else (ctx/create-execution-context))
+        ;; one draw from the process generator per run: the session's seed
+        ;; keys every world's streams and every barrier's draws, so runs in
+        ;; parallel (IPMCMC's nodes) do not depend on how they interleave
+        seed (or (:seed opts) (random/fresh-seed))
+        barriers (atom 0)
         session (sp/open! root (merge {:purpose :smc
-                                       :seed (random/fresh-seed)
+                                       :seed seed
                                        :fork-opts {:systems :none}
                                        :retain-released? false}
                                       (dissoc opts :resample-threshold :policy :executor :retained
@@ -218,6 +223,10 @@
                fail!))
 
             (barrier! []
+              (let [k (swap! barriers inc)]
+                (random/with-stream* seed [::barrier k] #(barrier-at! k))))
+
+            (barrier-at! [k]
               (if (and retained ancestor-sampling? (contains? (:parked @state) 0))
                 ;; PGAS: the retained particle redraws the past it continues
                 ;; from, ∝ w_i · p(retained future | particle i's past)
@@ -228,10 +237,11 @@
                      (let [combined (mapv (fn [slot score]
                                             (+ (weight-of (:savepoint/world (:sp (get parked slot)))) score))
                                           candidates scores)]
-                       (resample-with! (nth candidates
-                                            (m/sample-categorical (m/normalize-log-weights combined))))))
+                       (resample-with! k (nth candidates
+                                              (random/with-stream* seed [::ancestor k]
+                                                #(m/sample-categorical (m/normalize-log-weights combined)))))))
                    fail!))
-                (resample-with! 0)))
+                (resample-with! k 0)))
 
             (score-futures [entries]
               ;; each parked particle's future replayed on the retained values
@@ -264,7 +274,7 @@
                          (sp/resume child value))
                        (fn [e] (when (compare-and-set! failed? false true) (reject e)))))))))
 
-            (resample-with! [retained-ancestor]
+            (resample-with! [k retained-ancestor]
               (let [{:keys [parked streaming done]} @state
                     slots (vec (range n))
                     world-of (fn [slot] (:savepoint/world (or (:sp (get parked slot))
@@ -278,12 +288,14 @@
                   (do (swap! state assoc :parked {} :in-barrier? false)
                       (doseq [[_ {:keys [sp value]}] (sort-by key parked)]
                         (sp/resume sp value)))
-                  (let [ancestors (if retained
-                                    ;; conditional: slot 0 continues from its own
-                                    ;; lineage, or the past PGAS drew for it
-                                    (into [retained-ancestor]
-                                          (repeatedly (dec n) #(m/sample-categorical weights)))
-                                    (m/systematic-resample weights n))
+                  (let [ancestors (random/with-stream*
+                                    seed [::resample k]
+                                    #(if retained
+                                      ;; conditional: slot 0 continues from its
+                                      ;; own lineage, or the past PGAS drew for it
+                                       (into [retained-ancestor]
+                                             (repeatedly (dec n) (fn [] (m/sample-categorical weights))))
+                                       (m/systematic-resample weights n)))
                         live? #(or (contains? parked %) (contains? streaming %))
                         forked-slots (filterv #(live? (nth ancestors %)) slots)
                         source (fn [a] (or (:sp (get parked a)) (get streaming a)))]

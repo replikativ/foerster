@@ -671,8 +671,11 @@
    Returns: Spin<Vector<Measure>> - A spin that completes with all sweep measures"
   [model-task num-particles retained-traces opts]
   ;; Create individual sweep spins for each node
+  ;; each node's seed is drawn here, in program order, so the nodes do not
+  ;; depend on the order in which they run
   (let [sweep-spins (mapv (fn [retained-trace]
-                            (run-sweep model-task num-particles retained-trace opts))
+                            (run-sweep model-task num-particles retained-trace
+                                       (assoc opts :seed (random/fresh-seed))))
                           retained-traces)]
     ;; Use parallel combinator to run all sweeps concurrently
     (apply comb/parallel sweep-spins)))
