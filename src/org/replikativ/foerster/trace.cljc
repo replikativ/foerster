@@ -17,6 +17,9 @@
                    value was not drawn (observed, constrained, kept)
     :observed? :constrained? :kept? :symmetric? :factor?
 
+  A `deterministic` site is recorded with `{:deterministic? true}` only; it is
+  not among `entries`, so it neither scores nor moves.
+
   and the world accumulates the importance weight at `[:inference
   :log-weight]`: `log p` of what was observed, constrained or factored, and
   `log p - log q` of what a proposal drew. A policy writes it to the world it
@@ -32,6 +35,7 @@
 
 (def choose-site :inference/choose)
 (def factor-site :inference/factor)
+(def deterministic-site :inference/deterministic)
 
 ;; =============================================================================
 ;; The scoring policy
@@ -216,6 +220,9 @@
              ;; is reported
              (and (:noise opts) (not (contains? (:noise opts) (:savepoint/address sp))))
              (update :note (fn [n] (if (:intervened? n) n (assoc n :unaligned? true)))))
+
+           (= deterministic-site site)
+           {:value (:value (:savepoint/payload sp)) :note {:deterministic? true}}
 
            (= factor-site site)
            (let [w (:log-weight (:savepoint/payload sp))]
@@ -449,13 +456,17 @@
 
 (defn legacy-trace
   "`trace` in the legacy shape of a particle's trace (`[:inference :trace]`):
-  {address {:value :distribution :log-prob :observed?}}."
+  {address {:value :distribution :log-prob :observed?}}, and
+  {address {:value :deterministic? true}} for deterministic sites."
   [trace]
   (into {}
-        (comp (filter #(= choose-site (:site %)))
-              (map (fn [{:keys [address value note]}]
-                     [address {:value value
-                               :distribution (:dist note)
-                               :log-prob (:log-prob note)
-                               :observed? (boolean (:observed? note))}])))
-        (entries trace)))
+        (keep (fn [address]
+                (let [{:keys [site value note]} (get-in trace [:trace/entries address])]
+                  (condp = site
+                    choose-site [address {:value value
+                                          :distribution (:dist note)
+                                          :log-prob (:log-prob note)
+                                          :observed? (boolean (:observed? note))}]
+                    deterministic-site [address {:value value :deterministic? true}]
+                    nil))))
+        (:trace/order trace)))

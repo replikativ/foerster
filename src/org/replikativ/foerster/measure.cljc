@@ -271,6 +271,12 @@
     (:trace context)
     (rtp/get-state context [:inference :trace])))
 
+(defn site-value
+  "The value a particle's site `address` took: a sample, an observation or a
+  `deterministic` value."
+  [particle address]
+  (:value (get (get-trace particle) address)))
+
 ;; =============================================================================
 ;; Print Methods (avoid StackOverflow from circular refs)
 ;; =============================================================================

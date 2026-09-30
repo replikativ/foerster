@@ -15,8 +15,9 @@ A particle is a `Sample` for the particle methods (and for the Markov
 chains' `:samples :all`), or a projected context (a chain's final state):
 
 ```clojure
-(m/get-value particle)   ; the program's value
-(m/get-trace particle)   ; {address {:value :distribution :log-prob :observed?}}
+(m/get-value particle)        ; the program's value
+(m/get-trace particle)        ; {address {:value :distribution :log-prob :observed?}}
+(m/site-value particle :bmi)  ; the value of one site, a `deterministic` one included
 ```
 
 Weights are log-scale and unnormalized; `(m/normalize-log-weights lws)`
@@ -32,6 +33,9 @@ collects them).
 (infer/query measure #(* 2 %))   ; a function of the value
 (infer/predict measure m/get-value 1000)   ; 1000 resampled draws
 ```
+
+For a site's posterior rather than the value's,
+`(m/measure-stats measure #(m/site-value % :mu))` gives the same statistics.
 
 `query` needs a numeric function of the value; its `:samples` and
 `:weights` are the per-particle values and normalized weights, which any

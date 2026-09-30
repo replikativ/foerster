@@ -442,7 +442,7 @@
   "{address value} of the unobserved sample sites of `trace` (a Sample's):
   the `:retained` of a conditional sweep that keeps that trajectory."
   [trace]
-  (into {} (keep (fn [[a e]] (when-not (:observed? e) [a (:value e)]))) trace))
+  (into {} (keep (fn [[a e]] (when-not (or (:observed? e) (:deterministic? e)) [a (:value e)]))) trace))
 
 (defn- choices-of [sample] (retained-choices (m/get-trace sample)))
 
