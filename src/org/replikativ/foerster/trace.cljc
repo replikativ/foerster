@@ -204,12 +204,18 @@
            :note {:dist dist :log-prob kept-lp :kept? true}}
 
           :else
-          (let [init (when init? (:init (:options (:savepoint/payload sp))))
-                v (if (some? init) init (dist/draw dist))
+          (let [{:keys [init proposal]} (:options (:savepoint/payload sp))
+                init (when init? init)
+                v (cond (some? init) init
+                        proposal (dist/draw proposal)
+                        :else (dist/draw dist))
                 lp (dist/logpdf dist v)
-                ;; a draw from something other than the site's law (a
-                ;; block's :sample) is weighed by the difference
-                lq (if (some? init) lp (or (dist/-draw-logpdf dist v) lp))]
+                ;; a draw from something other than the site's law (the
+                ;; site's `:proposal`, a block's :sample) is weighed by the
+                ;; difference
+                lq (cond (some? init) lp
+                         proposal (dist/logpdf proposal v)
+                         :else (or (dist/-draw-logpdf dist v) lp))]
             (when (not= lp lq)
               (add-weight! world (- lp lq)))
             {:value v

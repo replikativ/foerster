@@ -48,7 +48,13 @@
 
   Examples:
     (sample (normal 0 1))
-    (sample (uniform 0 1) :id :my-param)"
+    (sample (uniform 0 1) :id :my-param)
+    (sample (normal 0 1) :id :mu :proposal (normal 0.8 0.5))
+
+  `:proposal` is a distribution a fresh draw under inference comes from
+  instead (a guide, possibly computed from the data: amortized inference);
+  the weight takes log p − log q, so the target is unchanged. Replays, moves
+  and a policy's `:draw` take precedence."
   [dist & opts]
   (apply choose dist opts))
 
