@@ -195,8 +195,8 @@ difference of their SMC log-evidences.
   particles; its acceptance falls as the SMC's evidence estimates get
   noisier, so give the inner SMC enough particles for a log-evidence
   standard deviation around 1. Its measure holds one particle per iteration,
-  drawn from that iteration's SMC (θ and a state trajectory), and
-  `:thetas` the chain.
+  drawn from that iteration's SMC (θ and a state trajectory); `:thetas` is
+  the chain after burn-in, `:acceptance` the rate over every iteration.
 - **SMC²** (Chopin, Jacob & Papaspiliopoulos 2013) carries θ-particles, each
   with an inner streaming SMC. A pushed observation reweights each by its
   inner evidence increment; when the θ-particles' ESS falls below
@@ -204,12 +204,17 @@ difference of their SMC log-evidences.
   population's worlds (`smc/stream`'s `:fork`), so copies evolve
   independently — and moved by PMMH steps that run a fresh inner filter on
   the data so far. `m/log-marginal` of its measure is the evidence of the
-  data so far.
+  data so far, observations the program makes before its first stream site
+  included.
 
 θ's prior is the program's own: a θ-particle starts from a simulation of the
 program. A proposal that leaves the support — a distribution refusing its
-parameters — has density zero and is rejected. Correlated PMMH, which needs
-SMC driven by explicit noise, is not provided.
+parameters — has density zero and is rejected; one outside the prior's
+support is rejected too, after its SMC ran. The default random walk moves
+continuous parameters; give discrete ones a `:propose` of their own. The
+caller's `:policy` (proposals, other constraints) carries into every inner
+SMC. Correlated PMMH, which needs SMC driven by explicit noise, is not
+provided.
 
 ## Kernels
 

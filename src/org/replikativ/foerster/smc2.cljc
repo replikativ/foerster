@@ -85,10 +85,18 @@
     (operation resolve (fn [e] (if (invalid-parameters? e) (resolve nil) (reject e))))))
 
 (defn- conditioned
-  "SMC options that hold the parameter sites at θ."
+  "SMC options that hold the parameter sites at θ, over the caller's policy."
   [theta opts]
-  (assoc (dissoc opts :params :propose :scale :ess-target :moves :n-theta :n-x :burn)
-         :policy (itrace/policy {:constraints theta})))
+  (let [base (some-> (:policy opts) itrace/policy-options)]
+    (assoc (dissoc opts :params :propose :scale :ess-target :moves :n-theta :n-x :burn)
+           :policy (itrace/policy (update base :constraints merge theta)))))
+
+(defn- log-prior
+  "Σ log p of the parameter sites in a particle of `measure`: what the
+  constraints added to the inner evidence."
+  [measure params]
+  (let [trace (m/get-trace (ffirst (m/get-particles measure)))]
+    (reduce + 0.0 (map #(or (:log-prob (get trace %)) 0.0) params))))
 
 (defn- random-walk
   "A symmetric Gaussian random walk on every parameter, with `scales`
@@ -137,7 +145,11 @@
   (fn [resolve reject]
     (let [seed (random/fresh-seed)
           propose (or propose (random-walk (zipmap params (repeat scale))))
-          run (fn [theta] (or-impossible (smc/smc model n (conditioned theta opts))))
+          ;; every run its own seed: a fixed one would make the chain target
+          ;; the posterior of one noise draw
+          run (fn [theta key]
+                (or-impossible (smc/smc model n (assoc (conditioned theta opts)
+                                                       :seed (sp/derive-seed seed ::inner key)))))
           pick (fn [measure k]
                  (let [ps (m/get-particles measure)
                        i (random/with-stream* seed [::pick k]
@@ -145,16 +157,17 @@
                    [(first (nth ps i)) 0.0]))]
       ((then (prior-draw model params opts)
              (fn [theta0 res rej]
-               ((run theta0)
+               ((run theta0 -1)
                 (fn [measure0]
                   (letfn [(step [i theta log-z sample accepted out]
                             (if (= i iterations)
                               (res (assoc (m/empirical out)
                                           :acceptance (/ (double accepted) (max 1 iterations))
+                                          ;; after burn-in, as the measure
                                           :thetas (mapv (comp :theta meta first) out)))
                               (let [{theta' :theta lr :log-ratio}
                                     (random/with-stream* seed [::propose i] #(propose theta))]
-                                ((run theta')
+                                ((run theta' i)
                                  (fn [measure']
                                    (let [log-z' (if measure' (m/log-marginal measure') ##-Inf)
                                          ratio (+ (- log-z' log-z) (or lr 0.0))
@@ -223,6 +236,7 @@
                           (feed step0 ys)))
                       rej))))
           close-all! (fn [ps] (doseq [p ps] ((:close (:step p)))))
+          started (atom [])
           stats (atom {:moves 0 :accepted 0})]
       (letfn [(measure [ps lw log-z]
                 (assoc (m/empirical (mapv (fn [p w] [(m/sample-particle (:theta p) {}) w]) ps lw))
@@ -236,10 +250,19 @@
                     (not done?) (assoc :push (fn [y] (push ps lw log-z (conj ys y) y))))))
               (push [ps lw log-z ys y]
                 (fn [res rej]
-                  ((all-settled (count ps) (fn [i r j] (((:push (:step (nth ps i))) y) r j)))
+                  ((all-settled (count ps) (fn [i r j]
+                                             (let [step (:step (nth ps i))]
+                                               ;; a population that has finished
+                                               ;; takes no more data
+                                               (if-let [push (:push step)]
+                                                 ((push y) r j)
+                                                 (r step)))))
                    (fn [steps]
                      (try
-                       (let [incs (mapv (fn [p s] (- (m/log-marginal (:measure s)) (:log-z p))) ps steps)
+                       (let [incs (mapv (fn [p s]
+                                          (let [z (m/log-marginal (:measure s))]
+                                            (if (= ##-Inf z) ##-Inf (- z (:log-z p)))))
+                                        ps steps)
                              ps (mapv (fn [p s] (assoc p :step s :log-z (m/log-marginal (:measure s)))) ps steps)
                              lw (mapv + lw incs)
                              weights (m/normalize-log-weights lw)]
@@ -248,7 +271,7 @@
                             res rej)
                            (res (step-of ps lw log-z ys))))
                        (catch #?(:clj Throwable :cljs :default) e (rej e))))
-                   rej)))
+                   (fn [e] (close-all! ps) (rej e)))))
               (rejuvenate [ps weights log-z ys]
                 ;; resample: a duplicate forks its inner population
                 (fn [res rej]
@@ -304,9 +327,17 @@
                         ((then (prior-draw model params opts)
                                (fn [theta r j]
                                  ((inner theta [::init i])
-                                  (fn [step] (r {:theta theta :step step
-                                                 :log-z (m/log-marginal (:measure step))}))
+                                  (fn [step]
+                                    (let [p {:theta theta :step step
+                                             :log-z (m/log-marginal (:measure step))}]
+                                      (swap! started conj p)
+                                      (r p)))
                                   j)))
                          res rej)))
-         (fn [ps] (resolve (step-of ps (vec (repeat n-theta 0.0)) 0.0 [])))
-         reject)))))
+         (fn [ps]
+           ;; a θ-particle starts weighted by what the program observed before
+           ;; its first stream site: its inner evidence without the prior
+           ;; it was drawn from
+           (resolve (step-of ps (mapv (fn [p] (- (:log-z p) (log-prior (:measure (:step p)) params))) ps)
+                             0.0 [])))
+         (fn [e] (close-all! @started) (reject e)))))))

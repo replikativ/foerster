@@ -666,14 +666,20 @@
               ;; every particle waiting at a stream site scores `value` there;
               ;; that is an ordinary barrier from here on
               (try
-                (let [{:keys [streaming]} @state
+                (let [;; the idle population is claimed once: a stale step's
+                      ;; push, or two at once, must not reopen a barrier
+                      [before _] (swap-vals! state #(if (:idle? %) (assoc % :idle? false) %))
+                      _ (when-not (:idle? before)
+                          (throw (ex-info "The population is not waiting for a value"
+                                          {:type ::not-waiting})))
+                      {:keys [streaming]} before
                       parked (into {} (map (fn [[slot sp]]
                                              (let [policy (itrace/policy
                                                            {:constraints {(:savepoint/address sp) value}})]
                                                (decide! policy sp)
                                                [slot {:sp sp :value value}])))
                                    streaming)]
-                  (swap! state assoc :streaming {} :parked parked :in-barrier? false :idle? false)
+                  (swap! state assoc :streaming {} :parked parked :in-barrier? false)
                   (arrived!))
                 (catch #?(:clj Throwable :cljs :default) e (fail! e))))]
       (try
@@ -723,18 +729,21 @@
        :close! close!
        ;; an independent copy of the population waiting at its stream sites:
        ;; a controller of its own in the same session
-       :fork (fn [callbacks]
-               (let [{:keys [parked streaming] :as st} @state]
-                 (when-not (:idle? st)
-                   (throw (ex-info "Only a population waiting at stream sites can be forked"
-                                   {:type ::fork-while-running})))
-                 (swap! leases inc)
-                 (run-particles nil n
-                                (assoc opts :adopt {:root root :session session :leases leases
-                                                    :seed (sp/derive-seed seed ::fork (swap! forks inc))
-                                                    :barriers @barriers
-                                                    :population st})
-                                callbacks)))})))
+       ;; not with anchors (siblings would share them), a retained path (two
+       ;; conditional filters on one reference) or copied worlds
+       :fork (when-not (or anchors retained copy?)
+               (fn [callbacks]
+                 (let [{:keys [parked streaming] :as st} @state]
+                   (when-not (:idle? st)
+                     (throw (ex-info "Only a population waiting at stream sites can be forked"
+                                     {:type ::fork-while-running})))
+                   (swap! leases inc)
+                   (run-particles nil n
+                                  (assoc opts :adopt {:root root :session session :leases leases
+                                                      :seed (sp/derive-seed seed ::fork (swap! forks inc))
+                                                      :barriers @barriers
+                                                      :population st})
+                                  callbacks))))})))
 
 (defn smc
   "Run `model` (a spin) with `n` particles. Options: `:resample-threshold`
@@ -821,9 +830,10 @@
                                                  (fn [res' rej']
                                                    (reset! waiting (sp/in-callers-world res' rej'))
                                                    ((:supply! (controller)) y)))
-                                         :fork (fn []
-                                                 (stream-steps (fn [callbacks]
-                                                                 ((:fork (controller)) callbacks)))))))))
+                                         :fork (when (:fork (controller))
+                                                 (fn []
+                                                   (stream-steps (fn [callbacks]
+                                                                   ((:fork (controller)) callbacks))))))))))
                        [before _] (swap-vals! cell (fn [c] (if (:controller c) c (assoc c :deferred deliver))))]
                    (when (:controller before) (deliver))))
           made (start {:on-idle #(step false %)
@@ -844,8 +854,8 @@
      :done?    true once every particle has returned (no :push then)
      :fork     (fn []) -> CPS resolving the step of an independent copy of
                the population: every waiting particle's world is forked, and
-               the copy is pushed, resampled and closed on its own (no :fork
-               with `:anchors`)
+               the copy is pushed, resampled and closed on its own (absent
+               with `:anchors`, `:retained` or copied worlds)
      :close    (fn []) giving the worlds back}
 
   Each push costs the particles' work up to their next stream site; nothing

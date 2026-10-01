@@ -16,16 +16,20 @@
 ;; x_t = x_{t-1} + N(0,1), y_t ~ N(x_t, s), s ~ U(0.3, 2.0)
 (def ^:private ys [0.4 -0.6 1.9 0.2 2.8 1.1 3.5 2.0])
 
-(defn- model [stream?]
-  (spin (let [s (sample (dist/uniform 0.3 2.0) :id :s)]
-          (loop [t 0 x 0.0]
-            (if (= t (count ys))
-              s
-              (let [x' (sample (dist/normal x 1.0) :id [:x t])]
-                (if stream?
-                  (sample (dist/normal x' s) :id [:y t] :stream true)
-                  (observe (dist/normal x' s) (nth ys t) :id [:y t]))
-                (recur (inc t) x')))))))
+(defn- model
+  ([stream?] (model stream? false))
+  ([stream? pre?]
+   (spin (let [s (sample (dist/uniform 0.3 2.0) :id :s)]
+          ;; with pre?, an observation of s before the stream begins
+           (when pre? (observe (dist/normal s 0.5) 1.4 :id :pre))
+           (loop [t 0 x 0.0]
+             (if (= t (count ys))
+               s
+               (let [x' (sample (dist/normal x 1.0) :id [:x t])]
+                 (if stream?
+                   (sample (dist/normal x' s) :id [:y t] :stream true)
+                   (observe (dist/normal x' s) (nth ys t) :id [:y t]))
+                 (recur (inc t) x'))))))))
 
 (defn- kalman-log-lik [s ys]
   (loop [[y & more] ys pm 0.0 pv 0.0 ll 0.0]
@@ -35,12 +39,16 @@
         (recur more (+ pm (* k (- y pm))) (* (- 1.0 k) pv)
                (+ ll (dist/logpdf (dist/normal pm (Math/sqrt sv)) y)))))))
 
-(defn- exact [ys]
-  (let [h 1e-3 ss (range 0.3 2.0 h)
-        ls (map #(Math/exp (kalman-log-lik % ys)) ss)
-        z (* h (reduce + ls))]
-    {:mean (/ (* h (reduce + (map * ss ls))) z)
-     :log-evidence (Math/log (/ z 1.7))}))
+(defn- exact
+  ([ys] (exact ys false))
+  ([ys pre?]
+   (let [h 1e-3 ss (range 0.3 2.0 h)
+         ls (map #(Math/exp (+ (kalman-log-lik % ys)
+                               (if pre? (dist/logpdf (dist/normal % 0.5) 1.4) 0.0)))
+                 ss)
+         z (* h (reduce + ls))]
+     {:mean (/ (* h (reduce + (map * ss ls))) z)
+      :log-evidence (Math/log (/ z 1.7))})))
 
 (deftest pmmh-finds-the-noise-posterior
   (let [measure (b/run-infer 51 #(smc2/pmmh (model false) 40 150
@@ -86,3 +94,19 @@
                 ((:close final))
                 out))]
     (is (= (run) (run)))))
+
+(deftest smc2-counts-what-the-program-saw-before-the-stream
+  (random/set-seed! 54)
+  (let [root (context/create-execution-context)
+        step0 (await-cps (smc2/smc2 (binding [ec/*execution-context* root] (model true true))
+                                    {:params #{:s} :n-theta 40 :n-x 30}))
+        final (reduce (fn [step y] (await-cps ((:push step) y))) step0 ys)
+        measure (:measure final)
+        ps (m/get-particles measure)
+        ws (m/normalize-log-weights (mapv second ps))
+        mean (reduce + (map (fn [[p _] w] (* w (:s (m/get-value p)))) ps ws))
+        {exact-mean :mean exact-z :log-evidence} (exact ys true)]
+    (is (< (Math/abs (- mean exact-mean)) 0.2) (str mean " vs " exact-mean))
+    (is (< (Math/abs (- (m/log-marginal measure) exact-z)) 0.4)
+        (str (m/log-marginal measure) " vs " exact-z))
+    ((:close final))))

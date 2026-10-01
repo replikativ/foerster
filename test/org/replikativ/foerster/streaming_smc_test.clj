@@ -100,3 +100,9 @@
     (is (not= (m/log-marginal (:measure original)) (m/log-marginal (:measure forked)))
         "the copies resample independently")
     ((:close forked))))
+
+(deftest a-population-with-anchors-offers-no-fork
+  (let [root (context/create-execution-context)
+        step (await-cps (smc/stream (random-walk root) 20 {:anchors :all}))]
+    (is (nil? (:fork step)))
+    ((:close step))))
