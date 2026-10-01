@@ -323,7 +323,10 @@
                   (let [{:keys [parked streaming]} after]
                     (cond
                       (seq parked) (barrier!)
-                      (seq streaming) (do (swap! state assoc :in-barrier? false)
+                      ;; the population stays claimed until `supply!` hands
+                      ;; it a value: a particle whose `arrived!` runs late
+                      ;; must not declare it idle a second time
+                      (seq streaming) (do (swap! state assoc :idle? true)
                                           (on-idle (measure after)))
                       :else (finish! on-done (measure after)))))))
 
@@ -670,7 +673,7 @@
                                                (decide! policy sp)
                                                [slot {:sp sp :value value}])))
                                    streaming)]
-                  (swap! state assoc :streaming {} :parked parked)
+                  (swap! state assoc :streaming {} :parked parked :in-barrier? false :idle? false)
                   (arrived!))
                 (catch #?(:clj Throwable :cljs :default) e (fail! e))))]
       (try
@@ -707,7 +710,8 @@
                  (sp/install-handlers! (:savepoint/world child) @handler-table))
                (swap! state assoc
                       :streaming (zipmap slots children)
-                      :done done :log-z log-z :history history)
+                      :done done :log-z log-z :history history
+                      :in-barrier? true :idle? true)
                (on-idle (measure @state)))
              fail!))
           (do (sp/install-handlers! root @handler-table)
@@ -721,7 +725,7 @@
        ;; a controller of its own in the same session
        :fork (fn [callbacks]
                (let [{:keys [parked streaming] :as st} @state]
-                 (when (or (seq parked) (:in-barrier? st))
+                 (when-not (:idle? st)
                    (throw (ex-info "Only a population waiting at stream sites can be forked"
                                    {:type ::fork-while-running})))
                  (swap! leases inc)
@@ -796,27 +800,37 @@
 
 (defn- stream-steps
   "The step interface of a streaming controller made by `(start callbacks)`
-  (see `stream`)."
+  (see `stream`). A controller may declare itself idle while it is being
+  made (the program runs to its first stream site at once); that step is
+  delivered once the controller is known, so a push from its callback finds
+  it."
   [start]
   (fn [resolve reject]
     (let [waiting (atom (sp/in-callers-world resolve reject))
-          controller (atom nil)
+          ;; {:controller c} once made; {:deferred thunk} a step that came first
+          cell (atom {})
+          controller #(:controller @cell)
           step (fn [done? m]
-                 (let [[res _] @waiting]
-                   (res (cond-> {:measure m :done? done?
-                                 :close (fn [] ((:close! @controller)))}
-                          (not done?)
-                          (assoc :push (fn [y]
-                                         (fn [res' rej']
-                                           (reset! waiting (sp/in-callers-world res' rej'))
-                                           ((:supply! @controller) y)))
-                                 :fork (fn []
-                                         (stream-steps (fn [callbacks]
-                                                         ((:fork @controller) callbacks)))))))))]
-      (reset! controller
-              (start {:on-idle #(step false %)
-                      :on-done #(step true %)
-                      :on-error (fn [e] ((second @waiting) e))})))))
+                 (let [deliver
+                       (fn []
+                         (let [[res _] @waiting]
+                           (res (cond-> {:measure m :done? done?
+                                         :close (fn [] ((:close! (controller))))}
+                                  (not done?)
+                                  (assoc :push (fn [y]
+                                                 (fn [res' rej']
+                                                   (reset! waiting (sp/in-callers-world res' rej'))
+                                                   ((:supply! (controller)) y)))
+                                         :fork (fn []
+                                                 (stream-steps (fn [callbacks]
+                                                                 ((:fork (controller)) callbacks)))))))))
+                       [before _] (swap-vals! cell (fn [c] (if (:controller c) c (assoc c :deferred deliver))))]
+                   (when (:controller before) (deliver))))
+          made (start {:on-idle #(step false %)
+                       :on-done #(step true %)
+                       :on-error (fn [e] ((second @waiting) e))})
+          [before _] (swap-vals! cell assoc :controller made)]
+      (when-let [deferred (:deferred before)] (deferred)))))
 
 (defn stream
   "Online SMC: `model` marks the sites whose values arrive from outside as
