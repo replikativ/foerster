@@ -116,11 +116,12 @@ split), and every world is discarded before the result is delivered. See
 
 ## Not implemented yet
 
-- `:proposal` and `:parents` in a site's payload. A learned proposal is a
-  function of the trace so far, called by the handler; `:parents` declares
-  which earlier choices a site read — which no address scheme can recover —
-  and makes a trace a graph (variables, edges, observed mask, values), the
-  training datum of amortized inference and graphically structured models.
+- `:parents` in a site's payload: which earlier choices a site read — which
+  no address scheme can recover — making a trace a graph (variables, edges,
+  observed mask, values), the training datum of graphically structured
+  amortized inference. (`:proposal`, a guide distribution the program
+  computes, is implemented: a fresh draw comes from it and the weight takes
+  log p − log q.)
 - Markov chains in canonical worlds.
 - Resample-move inside conditional SMC (particle Gibbs, PGAS), refused
   today: keeping the retained particle unmoved while the others move leaves

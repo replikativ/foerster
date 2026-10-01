@@ -33,6 +33,13 @@ so are `:world-opts`, `:authority` and `:grant` under `:world-policy :fresh`
 `:resample-threshold` (it decides both), and the Markov-chain kernels only
 `:executor` and `:world-policy :fresh`.
 
+A program can also name a proposal at a site:
+`(sample (dist/normal 0 1) :id :mu :proposal guide)` draws a fresh value
+from `guide` — a distribution the program computes, for instance from its
+data, which is how an amortized guide plugs in — and weighs it by
+log p − log q, so every method's target stays the program's posterior.
+Replays, moves and a policy's `:draw` take precedence.
+
 ## Particle methods
 
 | Function | What it does |
