@@ -336,6 +336,21 @@
   (-mean [_] lambda)
   (-variance [_] lambda))
 
+(defrecord NegativeBinomial [r p]
+  ;; the number of failures before the r-th success, success probability p:
+  ;; a Poisson whose mean is Gamma(r, (1−p)/p)
+  Distribution
+  (-draw [_] (poisson-draw (* (standard-gamma r) (/ (- 1.0 p) p))))
+  (-logpdf [_ k]
+    (if (and (whole? k) (not (neg? k)))
+      (+ (- (lgamma (+ k r)) (lgamma r) (lgamma (+ k 1.0)))
+         (* r (Math/log p))
+         (if (zero? k) 0.0 (* k (Math/log (- 1.0 p)))))
+      ##-Inf))
+  Moments
+  (-mean [_] (/ (* r (- 1.0 p)) p))
+  (-variance [_] (/ (* r (- 1.0 p)) (* p p))))
+
 (defrecord Bernoulli [p]
   Distribution
   (-draw [_] (if (< (u01) p) 1 0))
@@ -428,6 +443,13 @@
 (defn beta "Beta(α, β), α, β > 0." [alpha beta]
   (check! (and (positive? alpha) (positive? beta)) :beta {:alpha alpha :beta beta})
   (->Beta (double alpha) (double beta)))
+
+(defn negative-binomial
+  "Failures before the r-th success, success probability p ∈ (0, 1]; r > 0
+  need not be whole."
+  [r p]
+  (check! (and (positive? r) (finite? p) (< 0.0 p) (<= p 1.0)) :negative-binomial {:r r :p p})
+  (->NegativeBinomial (double r) (double p)))
 
 (defn poisson "Poisson with mean λ > 0." [lambda]
   (check! (positive? lambda) :poisson {:lambda lambda})

@@ -224,6 +224,29 @@ without changing the final target (twisted SMC); without one, SMC is
 best-of-N weighted by the reward. The model starts at `smc/start-site`, so
 every particle takes every step itself.
 
+## Conjugate parameters, never sampled
+
+When a static parameter is conjugate to its data, the program can carry its
+posterior instead of a sampled value (`org.replikativ.foerster.conjugate`):
+score each datum under the posterior predictive, update the posterior in
+closed form, and draw the parameter only if it is needed:
+
+```clojure
+(spin (loop [c (conjugate/beta-bernoulli 1 1) [y & more] ys]
+        (if y
+          (do (observe (conjugate/predictive c) y)
+              (recur (conjugate/update c y) more))
+          (sample (conjugate/posterior c) :id :p))))
+```
+
+That is exact marginalization (Rao-Blackwellization; the conjugate case of
+delayed sampling, Murray et al. 2018): under SMC the parameter never
+degenerates, because it is never resampled, and streaming pays the same per
+observation however long the stream. Families: `normal-mean` (known
+observation sd), `beta-bernoulli`, `gamma-poisson` (predictive: the negative
+binomial) and `dirichlet-discrete`. A parameter that is not conjugate to its
+data needs PMMH or SMC² (below).
+
 ## Static parameters: PMMH and SMC²
 
 A state-space program with parameters θ — named sample sites — is filtered

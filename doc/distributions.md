@@ -18,6 +18,7 @@ the exponential takes a rate and `discrete` counts from 0.)
 | `(gamma alpha beta)` | x > 0 | shape, **scale** (mean αβ) |
 | `(beta alpha beta)` | [0, 1] | shapes |
 | `(poisson lambda)` | 0, 1, 2, … | mean |
+| `(negative-binomial r p)` | 0, 1, 2, … | failures before the r-th success, success probability p |
 | `(bernoulli p)` | 0 or 1 | P(1) |
 | `(flip p)` | `true`/`false` | P(true) |
 | `(discrete weights)` | indices 0 … n−1 | weights, normalized |

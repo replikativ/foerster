@@ -122,6 +122,16 @@ split), and every world is discarded before the result is delivered. See
   and makes a trace a graph (variables, edges, observed mask, values), the
   training datum of amortized inference and graphically structured models.
 - Markov chains in canonical worlds.
+- Resample-move inside conditional SMC (particle Gibbs, PGAS), refused
+  today: keeping the retained particle unmoved while the others move leaves
+  the conditional target off (an exact enumeration of one sweep puts its
+  stationary law off by 2·10⁻⁴ to 3·10⁻³ in total variation). The exact
+  construction treats the retained path as the state *after* each barrier's
+  move and draws its state before the move backwards through the move's
+  reversal (for a reversible MH kernel, the kernel itself) — exact to 10⁻¹⁵
+  in the same enumeration. It needs the retained path drawn backwards
+  through every barrier's move before a sweep, and slot 0 switched from its
+  pre-move to its post-move values at each barrier.
 
 ## What else the same programs admit
 
