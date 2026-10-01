@@ -211,8 +211,11 @@
   with the value, which turns them into an ordinary barrier. When all have
   returned, `on-done` gets the final measure; `on-error` any failure."
   [model n {:keys [resample-threshold policy executor retained ancestor-sampling? root copy?
-                   anchors rejuvenate resampling genealogy? smcp3 adopt] :as opts}
+                   anchors rejuvenate resampling genealogy? smcp3 adopt batch] :as opts}
    {:keys [on-idle on-done on-error]}]
+  (when (and batch (or retained anchors smcp3 (not (pos-int? batch))))
+    (throw (ex-info ":batch is a positive count, not combined with :retained, :anchors or :smcp3"
+                    {:type ::invalid-batch :batch batch})))
   (when (and adopt anchors)
     ;; siblings would share anchors, which each one's reachability GC could
     ;; abandon under the other
@@ -269,7 +272,7 @@
                                            :fork-opts {:systems :none}
                                            :retain-released? false}
                                           (dissoc opts :resample-threshold :policy :executor :retained
-                                                  :resampling :genealogy? :smcp3
+                                                  :resampling :genealogy? :smcp3 :batch
                                                   :ancestor-sampling? :root :copy? :anchors :rejuvenate :adopt))))
         ;; {:parked {slot {:sp sp :value v}}  at an observe (or a supplied stream
         ;;                                    site), resumed with v after the barrier
@@ -334,6 +337,9 @@
               (try
                 (let [slot (slot-of (:savepoint/world sp))]
                   (cond
+                    (and batch (stream-site? sp))
+                    (fail! (ex-info ":batch does not apply to stream sites" {:type ::batch-with-stream}))
+
                     (stream-site? sp)
                     (do (swap! state assoc-in [:streaming slot] sp)
                         (arrived!))
@@ -351,11 +357,89 @@
             (decide-site! [sp slot anchor]
               (try
                 (let [{:keys [value]} (decide! (policy-of slot) sp anchor)]
-                  (if (itrace/barrier-site? sp)
-                    (do (swap! state assoc-in [:parked slot] {:sp sp :value value})
-                        (arrived!))
-                    (sp/resume sp value)))
+                  (cond
+                    (not (itrace/barrier-site? sp)) (sp/resume sp value)
+                    batch (join-batch! sp slot value)
+                    :else (do (swap! state assoc-in [:parked slot] {:sp sp :value value})
+                              (arrived!))))
                 (catch #?(:clj Throwable :cljs :default) e (fail! e))))
+
+            ;; -----------------------------------------------------------------
+            ;; Arrival-batched resampling (`:batch B`): a particle at its k-th
+            ;; barrier joins stage k's open batch; a full batch — or the last
+            ;; one, once no other particle can still reach stage k — resamples
+            ;; within itself, every child weighted by the batch's mean weight.
+            ;; Weights are never reset, so the evidence is the final mean
+            ;; weight. Each batch's resampling preserves its total weight in
+            ;; expectation whatever decided its membership, so the estimate
+            ;; stays unbiased with arrival order depending on the state.
+            ;; -----------------------------------------------------------------
+            (stage-of [world] (or (rtp/get-state world [:inference :barriers]) 0))
+
+            (join-batch! [sp slot value]
+              (let [k (stage-of (:savepoint/world sp))]
+                (claim-batch! k #(-> %
+                                     (update-in [:stages k :batch] (fnil conj []) {:slot slot :sp sp :value value})
+                                     (update-in [:stages k :arrived] (fnil inc 0))))))
+
+            (close-batch! [k] (claim-batch! k identity))
+
+            (claim-batch! [k change]
+              ;; one atomic step: `change` (joining), then claiming the stage's
+              ;; open batch when it is full, or when every particle has arrived
+              ;; at k or finished before it
+              (let [[before after]
+                    (swap-vals! state
+                                (fn [st]
+                                  (let [st (change st)
+                                        {open :batch arrived :arrived} (get-in st [:stages k])
+                                        finished-before (count (filter #(< (:stage %) k) (vals (:done st))))
+                                        last? (= n (+ (or arrived 0) finished-before))]
+                                    (if (and (seq open) (or (>= (count open) batch) last?))
+                                      (-> st
+                                          (assoc-in [:stages k :claimed] open)
+                                          (assoc-in [:stages k :batch] [])
+                                          (update-in [:stages k :batches] (fnil inc 0)))
+                                      (assoc-in st [:stages k :claimed] nil)))))
+                    taken (get-in after [:stages k :claimed])]
+                (when taken
+                  (resample-batch! k (get-in before [:stages k :batches] 0) taken))))
+
+            (resample-batch! [k index entries]
+              (let [log-ws (mapv #(weight-of (:savepoint/world (:sp %))) entries)
+                    weights (m/normalize-log-weights log-ws)
+                    size (count entries)
+                    ess (m/compute-ess weights)
+                    resample? (< ess (* threshold size))
+                    mean (m/log-mean-exp log-ws)]
+                (swap! state update :history conj {:stage k :batch index :size size
+                                                   :ess ess :resampled? resample?})
+                (if-not resample?
+                  (doseq [{:keys [sp value]} entries] (sp/resume sp value))
+                  (let [ancestors (random/with-stream* seed [::batch k index]
+                                    #(m/resample resampling weights size))
+                        sources (mapv #(:sp (nth entries %)) ancestors)]
+                    ((if copy? (all-copied sources) (all-forked sources))
+                     (fn [children]
+                       (doseq [[{:keys [slot]} child] (map vector entries children)
+                               :let [w (:savepoint/world child)]]
+                         (rtp/swap-state! w [:inference :slot] (constantly slot))
+                         (rtp/swap-state! w [:inference :log-weight] (constantly mean)))
+                       (doseq [{:keys [sp]} entries :when (sp/pending? sp)]
+                         (sp/abandon sp))
+                       (doseq [[child a] (map vector children ancestors)]
+                         (sp/resume child (:value (nth entries a)))))
+                     fail!)))))
+
+            (batch-finished! [stage]
+              ;; a particle that finished before later stages may close their
+              ;; last batches; when every particle has finished, inference is
+              ;; done
+              (let [st @state]
+                (doseq [k (keys (:stages st)) :when (> k stage)]
+                  (close-batch! k))
+                (when (= n (count (:done @state)))
+                  (finish! on-done (measure @state)))))
 
             (spawn! [first-sp]
               ;; the root's first savepoint becomes N particle worlds
@@ -693,12 +777,15 @@
                   (fn [{world :savepoint/world result :savepoint/payload}]
                     (if-let [slot (slot-of world)]
                       (do (swap! state assoc-in [:done slot] {:sample (sample-of world result)
-                                                              :log-weight (weight-of world)})
+                                                              :log-weight (weight-of world)
+                                                              :stage (stage-of world)})
                   ;; the Sample holds what the measure needs; give the world
                   ;; back now instead of holding every finished particle until
                   ;; the session closes
                           (sp/release-world! session world)
-                          (arrived!))
+                          (if batch
+                            (batch-finished! (stage-of world))
+                            (arrived!)))
               ;; a program without savepoints: one deterministic particle
                       (finish! on-done (m/empirical (vec (repeat n [(sample-of world result) 0.0]))))))
                   sp/error-site

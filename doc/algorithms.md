@@ -23,6 +23,7 @@ non-Markov-chain kernel:
 | `:anchors`, `:rejuvenate` | — | resample-move (below); `smc-infer` and `pimh-infer`, fresh worlds |
 | `:resampling` | `:systematic` | `:stratified`, `:residual` or `:multinomial` (Douc, Cappé & Moulines 2005); `smc-infer`, `pimh-infer` |
 | `:genealogy?` | `false` | record every resampling's ancestor indices in the measure's `:history` |
+| `:batch` | — | B: resample in batches of B in arrival order instead of at a barrier for all (below) |
 | `:smcp3` | — | `{:forward K :backward L}`: SMCP3 move-reweight steps at each observation (below); needs `:anchors` |
 
 An option a method does not take is refused (`::infer/unknown-options`), and
@@ -80,6 +81,31 @@ the moved site, so a step costs N sweeps of the model; fresh worlds only.
 
 For data that arrive one observation at a time — IBIS (Chopin 2002) — use
 SMC with resample-move on the static parameters, below.
+
+## Arrival-batched SMC: no waiting for the slowest
+
+SMC resamples at each observation once *every* particle has arrived, so a
+population whose steps take uneven time — a model call, a tool, a simulation
+that sometimes runs long — waits for its slowest particle at every
+observation. With `:batch B`, the particles arriving at an observation form
+batches of B in arrival order; a full batch resamples within itself at once
+(B children, each weighted by the batch's mean weight), and the last batch
+of an observation closes once no other particle can still reach it.
+
+```clojure
+(infer/smc-infer (model) 1000 {:batch 32})
+```
+
+Weights are never reset, so the evidence is the final mean weight. Each
+batch's resampling keeps its total weight in expectation, whatever decided
+which particles are in it, so the estimate stays unbiased even when the
+arrival order depends on the particles' states (Paige et al. 2014's
+condition for the particle cascade, here per batch; an island model with
+islands formed by arrival). B = N is ordinary SMC; smaller B resamples
+sooner but within fewer particles. The measure's `:history` lists every
+batch. Batch membership follows arrival order, so on a multi-threaded
+executor runs are not reproducible from their seed. Not with stream sites,
+`:retained`, `:anchors` or `:smcp3`.
 
 ## Resample-move
 
