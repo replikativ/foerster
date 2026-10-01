@@ -77,3 +77,26 @@
   (let [root (context/create-execution-context)]
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"stream sites"
                           (await-cps (smc/smc (random-walk root) 10))))))
+
+(deftest a-population-forks-into-independent-copies
+  (random/set-seed! 7)
+  (let [root (context/create-execution-context)
+        truth (kalman ys)
+        push (fn [step y] (await-cps ((:push step) y)))
+        start (await-cps (smc/stream (random-walk root) 2000
+                                     {:executor (executor/thread-pool-executor {:threads 1})}))
+        shared (reduce push start (take 2 ys))
+        copy (await-cps ((:fork shared)))
+        original (reduce push shared (drop 2 ys))
+        _ ((:close original))
+        forked (reduce push copy (drop 2 ys))
+        [kmean kvar ll] (peek truth)]
+    (is (= (m/log-marginal (:measure shared)) (m/log-marginal (:measure copy)))
+        "the copy starts where the population stood")
+    (doseq [[label step] [["original" original] ["copy" forked]]]
+      (testing label
+        (is (:done? step))
+        (is (< (Math/abs (- (m/log-marginal (:measure step)) ll)) 0.15))))
+    (is (not= (m/log-marginal (:measure original)) (m/log-marginal (:measure forked)))
+        "the copies resample independently")
+    ((:close forked))))
