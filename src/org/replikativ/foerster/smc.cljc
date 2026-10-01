@@ -283,22 +283,32 @@
                      :rejuvenation {:moves 0 :accepted 0}
                      :history []})
         closed? (atom false)
-        close! (fn []
-                 (when (compare-and-set! closed? false true)
-                   (if (zero? (swap! leases dec))
-                     ((sp/close! session)
-                      (fn [_] nil)
-                      (fn [e] (log/warn :smc/close-failed {:error e})))
-                   ;; a sibling still runs in the session: give back only
-                   ;; this population's worlds
-                     (let [{:keys [parked streaming]} @state]
-                       (doseq [sp (concat (map :sp (vals parked)) (vals streaming))
-                               :when (sp/pending? sp)]
-                         (sp/abandon sp))))))
+        ;; `then` runs once the population's worlds are given back
+        close! (fn close!
+                 ([] (close! (fn [])))
+                 ([then]
+                  (if-not (compare-and-set! closed? false true)
+                    (then)
+                    (if (zero? (swap! leases dec))
+                      ((sp/close! session)
+                       (fn [_] (then))
+                       (fn [e] (log/warn :smc/close-failed {:error e}) (then)))
+                      ;; a sibling still runs in the session: give back only
+                      ;; this population's worlds
+                      (let [{:keys [parked streaming]} @state]
+                        (doseq [sp (concat (map :sp (vals parked)) (vals streaming))
+                                :when (sp/pending? sp)]
+                          (sp/abandon sp))
+                        (then))))))
+        ;; the outcome is delivered after the session closed, so a caller
+        ;; that stops its executor on it stops no cleanup half-way — unless
+        ;; the session lives in the caller's scope, which quiesces only when
+        ;; the caller ends it, after the outcome
         finish! (fn [callback outcome]
                   (when-not (:finished? (first (swap-vals! state assoc :finished? true)))
-                    (callback outcome)
-                    (close!)))
+                    (if (:scope opts)
+                      (do (callback outcome) (close!))
+                      (close! #(callback outcome)))))
         fail! #(finish! on-error %)
         measure (fn [{:keys [parked streaming done log-z rejuvenation history]}]
                   (cond-> (assoc (m/empirical
