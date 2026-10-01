@@ -2,9 +2,14 @@
   "The particle cascade (Paige, Wood, Doucet & Teh 2014): asynchronous SMC
   without barriers. Each particle runs on its own; at an observation (or a
   barrier factor) it compares its weight W with the running mean W̄ of the
-  weights that have arrived there so far, itself included, and branches into
-  M ∈ {⌊r⌋, ⌈r⌉} copies with E[M] = r = W/W̄, each weighted W̄ — so no
-  particle ever waits for another. Copies are forks of the particle's world.
+  weights that have arrived there so far, itself included, and branches on
+  R = W/W̄ — so no particle ever waits for another (Eq. 14 of the paper):
+  below the mean it survives with probability R, as one copy weighted W̄;
+  at or above it takes ⌈R⌉ copies while the children produced at that stage
+  so far are at most min(K₀, the arrivals before it), ⌊R⌋ otherwise, each
+  weighted W/M. That feedback keeps the population near K₀; children drawn
+  independently of each other would let its variance grow without bound.
+  Copies are forks of the particle's world.
 
   The evidence estimate (1/K₀) Σ W over the particles that reach the end (K₀
   launched) is unbiased whatever order the particles arrive in, so slow and
@@ -83,7 +88,8 @@
                                     :seed seed
                                     :fork-opts {:systems :none}
                                     :retain-released? false})
-            ;; {stage [log Σ W·mult, Σ mult]} of the arrivals so far
+            ;; {stage [log Σ W·mult, Σ mult, Σ children·mult, decision]} of
+            ;; the arrivals so far
             means (atom {})
             state (atom {:alive 0 :peak 0 :collapsed 0 :spawned? false :done [] :finished? false
                          ;; first in, random out: particles ready to run wait
@@ -142,16 +148,25 @@
                         k (stage-of world)
                         w (weight-of world)
                         mult (multiplicity world)
-                        [log-total count] (get (swap! means update k
-                                                      (fn [[lt c]]
-                                                        [(log-sum-exp (or lt ##-Inf) (+ w (Math/log mult)))
-                                                         (+ (or c 0.0) mult)]))
-                                               k)
-                        log-mean (- log-total (Math/log count))
-                        ratio (if (= ##-Inf log-total) 1.0 (Math/exp (- w log-mean)))
                         u (random/in-world-stream world [::branch k] random/uniform01)
-                        ceiling (Math/ceil ratio)
-                        copies (long (if (< (- ceiling ratio) u) ceiling (dec ceiling)))]
+                        ;; the decision reads and counts the stage's children
+                        ;; in one step, so concurrent arrivals see each other's
+                        decide (fn [[lt c children]]
+                                 (let [lt' (log-sum-exp (or lt ##-Inf) (+ w (Math/log mult)))
+                                       arrived (or c 0.0)
+                                       children (or children 0.0)
+                                       log-mean (- lt' (Math/log (+ arrived mult)))
+                                       ratio (if (= ##-Inf lt') 1.0 (Math/exp (- w log-mean)))
+                                       copies (cond (< ratio 1.0) (if (< u ratio) 1 0)
+                                                    (> children (min n arrived)) (long (Math/floor ratio))
+                                                    :else (long (Math/ceil ratio)))]
+                                   [lt' (+ arrived mult) (+ children (* copies mult))
+                                    {:copies copies
+                                     ;; each copy's weight: W̄ below the mean, W/M above
+                                     :log-weight (cond (= ##-Inf lt') w
+                                                       (< ratio 1.0) log-mean
+                                                       :else (- w (Math/log copies)))}]))
+                        {:keys [copies log-weight]} (peek (get (swap! means update k decide) k))]
                     (if (zero? copies)
                       (do (sp/abandon sp)
                           (sp/release-world! session world)
@@ -169,8 +184,7 @@
                                                                (update :collapsed + (- extra forked))))))
                             forked (- (:alive after) (:alive before))
                             collapsed (- extra forked)]
-                        ;; every copy weighs W̄
-                        (rtp/swap-state! world [:inference :log-weight] (constantly (if (= ##-Inf log-total) w log-mean)))
+                        (rtp/swap-state! world [:inference :log-weight] (constantly log-weight))
                         ((forks sp forked)
                          (fn [children]
                            ;; the particle carries the copies that found no room

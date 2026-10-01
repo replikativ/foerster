@@ -112,8 +112,11 @@ executor runs are not reproducible from their seed. Not with stream sites,
 `(cascade/cascade model n opts)` (`org.replikativ.foerster.cascade`; Paige,
 Wood, Doucet & Teh 2014) runs every particle on its own. At an observation a
 particle compares its weight W with the running mean W̄ of the weights that
-arrived there so far and branches into ⌊W/W̄⌋ or ⌈W/W̄⌉ copies (forks of its
-world), each weighted W̄ — or dies. Nobody waits for anybody; the evidence
+arrived there so far. Below the mean it survives with probability W/W̄, as
+one copy weighted W̄; above it, it branches into ⌈W/W̄⌉ copies (forks of its
+world) while the stage has produced no more children than min(n, arrivals),
+⌊W/W̄⌋ otherwise, each weighted W/M — the paper's Eq. 14, whose feedback
+keeps the population near n. Nobody waits for anybody; the evidence
 estimate (1/n) Σ W over the particles that reach the end is unbiased
 whatever order they arrive in.
 
