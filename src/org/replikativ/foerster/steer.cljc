@@ -59,6 +59,9 @@
                 (default: none, 0)
     :reward     (fn [state]) → the final log potential (default 0)
     :max-steps  end after this many steps (default 100)
+    :record     (fn [state]) → what the trace keeps of each state (default
+                the state; a language model's state holding its KV cache
+                records its tokens instead)
 
   Each step records the state under `[:steer/state t]` and the end the
   reward under `:steer/reward` (`foerster.effects/deterministic`), so the
@@ -66,14 +69,14 @@
   The program's value is the final state. It starts at
   `smc/start-site`: the steps are random without a sample site, so every
   particle must take them itself rather than share a prefix."
-  [{:keys [init step done? value reward max-steps] :or {max-steps 100}}]
+  [{:keys [init step done? value reward max-steps record] :or {max-steps 100 record identity}}]
   (spin
    (savepoint smc/start-site nil)
    (loop [t 0 state init psi 0.0]
      (let [out (await (value-of (step state)))
            w (if (instance? Weighted out) (:log-weight out) 0.0)
            state' (if (instance? Weighted out) (:state out) out)
-           _ (deterministic state' :id [:steer/state t])
+           _ (deterministic (record state') :id [:steer/state t])
            end? (or (done? state') (>= (inc t) max-steps))
            psi' (if (and value (not end?)) (await (value-of (value state'))) 0.0)]
        (if end?

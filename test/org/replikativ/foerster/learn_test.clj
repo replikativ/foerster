@@ -37,3 +37,12 @@
         exact (* 5 (/ (Math/exp lambda) (+ 1 (Math/exp lambda))))]
     (is (= 4000 (count ds)))
     (is (< (Math/abs (- mean exact)) 0.1) (str mean " vs " exact))))
+
+(deftest a-trajectory-keeps-what-is-recorded
+  (let [measure (b/run-infer 53 #(smc/smc (steer/model {:init {:heads 0 :cache (range 100)}
+                                                        :step (fn [s] (spin (update s :heads + (if (< (random/uniform01) 0.5) 1 0))))
+                                                        :done? (constantly false)
+                                                        :max-steps 3
+                                                        :record :heads})
+                                          20 {}))]
+    (is (every? #(every? number? (:states %)) (learn/trajectories measure)))))
