@@ -227,6 +227,17 @@ without changing the final target (twisted SMC); without one, SMC is
 best-of-N weighted by the reward. The model starts at `smc/start-site`, so
 every particle takes every step itself.
 
+A step drawn from another proposal q — a smaller model whose tokens the
+large one only scores, a learned proposal — returns
+`(steer/weighted state log-w)` with log-w = log p − log q of the step; the
+weight joins the step's factor and the target is still p·exp(reward).
+
+Each particle's trace holds its states (`[:steer/state t]`) and reward
+(`:steer/reward`). `foerster.learn/trajectories` reads them back with the
+particles' normalized weights, and `learn/draws` resamples them into
+unweighted draws from the target: training data for the value estimates and
+proposals that make the next search cheaper.
+
 ## Conjugate parameters, never sampled
 
 When a static parameter is conjugate to its data, the program can carry its

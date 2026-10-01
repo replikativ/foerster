@@ -20,7 +20,12 @@
                                    :done? (fn [state] …)})
                      16 {:resampling :stratified})
 
-  `:step`, `:value` and `:reward` may return a spin or a plain value."
+  `:step`, `:value` and `:reward` may return a spin or a plain value.
+
+  A step drawn from a proposal q other than the process p — a learned
+  proposal, a smaller model — returns `(weighted state log-w)` with
+  log-w = log p(state | previous) − log q(state | previous); the weight joins
+  that step's factor and the target stays p · exp(reward)."
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.effects :refer [factor deterministic]]
             [org.replikativ.foerster.smc :as smc]
@@ -29,6 +34,14 @@
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
+
+(defrecord Weighted [state log-weight])
+
+(defn weighted
+  "A step's next `state` with the log importance weight `log-weight` of the
+  proposal it was drawn from (see the namespace)."
+  [state log-weight]
+  (->Weighted state log-weight))
 
 (defn- value-of
   "`x` or, when it is a spin, a spin resolving its value."
@@ -47,23 +60,27 @@
     :reward     (fn [state]) → the final log potential (default 0)
     :max-steps  end after this many steps (default 100)
 
-  Each step records the state under `[:steer/state t]`
-  (`foerster.effects/deterministic`), so the trajectory is in every
-  particle's trace. The program's value is the final state. It starts at
+  Each step records the state under `[:steer/state t]` and the end the
+  reward under `:steer/reward` (`foerster.effects/deterministic`), so the
+  trajectory is in every particle's trace (`foerster.learn/trajectories`).
+  The program's value is the final state. It starts at
   `smc/start-site`: the steps are random without a sample site, so every
   particle must take them itself rather than share a prefix."
   [{:keys [init step done? value reward max-steps] :or {max-steps 100}}]
   (spin
    (savepoint smc/start-site nil)
    (loop [t 0 state init psi 0.0]
-     (let [state' (await (value-of (step state)))
+     (let [out (await (value-of (step state)))
+           w (if (instance? Weighted out) (:log-weight out) 0.0)
+           state' (if (instance? Weighted out) (:state out) out)
            _ (deterministic state' :id [:steer/state t])
            end? (or (done? state') (>= (inc t) max-steps))
            psi' (if (and value (not end?)) (await (value-of (value state'))) 0.0)]
        (if end?
          (let [r (if reward (await (value-of (reward state'))) 0.0)]
+           (deterministic r :id :steer/reward)
            ;; untwist: the final target is the reward, whatever ψ said
-           (factor (- r psi))
+           (factor (+ w (- r psi)))
            state')
-         (do (factor (- psi' psi) :barrier true)
+         (do (factor (+ w (- psi' psi)) :barrier true)
              (recur (inc t) state' psi')))))))
