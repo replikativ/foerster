@@ -50,3 +50,24 @@
         [particle] (first (m/get-particles measure))]
     (is (= (m/get-value particle) (m/site-value particle [:steer/state (dec steps)])))
     (is (every? #(some? (m/site-value particle [:steer/state %])) (range steps)))))
+
+(defn- biased-step
+  "The fair coin step proposed by a coin with heads 0.8, weighted back to ½."
+  [heads]
+  (spin (if (< (random/uniform01) 0.8)
+          (steer/weighted (inc heads) (Math/log (/ 0.5 0.8)))
+          (steer/weighted heads (Math/log (/ 0.5 0.2))))))
+
+(deftest a-weighted-proposal-keeps-the-target
+  ;; the steps come from another coin; their weights restore the fair one
+  (let [measure (b/run-infer 43 #(smc/smc (steer/model {:init 0 :step biased-step :done? (constantly false)
+                                                        :max-steps steps
+                                                        :value (fn [heads] (* lambda heads))
+                                                        :reward (fn [heads] (* lambda heads))})
+                                          2000 {:resampling :stratified}))
+        mean (b/w-mean identity (b/weighted-values measure))
+        [particle] (first (m/get-particles measure))]
+    (is (< (Math/abs (- mean exact-mean)) 0.1) (str mean " vs " exact-mean))
+    (is (< (Math/abs (- (m/log-marginal measure) exact-log-evidence)) 0.05)
+        (str (m/log-marginal measure) " vs " exact-log-evidence))
+    (is (= (* lambda (m/get-value particle)) (m/site-value particle :steer/reward)))))
