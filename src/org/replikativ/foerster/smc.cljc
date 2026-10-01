@@ -211,8 +211,13 @@
   with the value, which turns them into an ordinary barrier. When all have
   returned, `on-done` gets the final measure; `on-error` any failure."
   [model n {:keys [resample-threshold policy executor retained ancestor-sampling? root copy?
-                   anchors rejuvenate resampling genealogy? smcp3] :as opts}
+                   anchors rejuvenate resampling genealogy? smcp3 adopt] :as opts}
    {:keys [on-idle on-done on-error]}]
+  (when (and adopt anchors)
+    ;; siblings would share anchors, which each one's reachability GC could
+    ;; abandon under the other
+    (throw (ex-info "A population with anchors cannot be forked"
+                    {:type ::fork-with-anchors})))
   (when (and copy? anchors)
     (throw (ex-info "Anchors in copied (canonical) worlds are not supported yet"
                     {:type ::anchors-in-copies})))
@@ -245,21 +250,27 @@
                       (fn [slot] (if (= 0 slot) rp policy)))
                     (constantly policy))
         root (cond
+               adopt (:root adopt)
                root root
                executor (ctx/create-execution-context :executor executor)
                :else (ctx/create-execution-context))
         ;; one draw from the process generator per run: the session's seed
         ;; keys every world's streams and every barrier's draws, so runs in
         ;; parallel (IPMCMC's nodes) do not depend on how they interleave
-        seed (or (:seed opts) (random/fresh-seed))
-        barriers (atom 0)
-        session (sp/open! root (merge {:purpose :smc
-                                       :seed seed
-                                       :fork-opts {:systems :none}
-                                       :retain-released? false}
-                                      (dissoc opts :resample-threshold :policy :executor :retained
-                                              :resampling :genealogy? :smcp3
-                                              :ancestor-sampling? :root :copy? :anchors :rejuvenate)))
+        seed (or (:seed adopt) (:seed opts) (random/fresh-seed))
+        barriers (atom (or (:barriers adopt) 0))
+        ;; controllers sharing the session (forks of a population): the
+        ;; last one to finish closes it
+        leases (or (:leases adopt) (atom 1))
+        forks (atom 0)
+        session (or (:session adopt)
+                    (sp/open! root (merge {:purpose :smc
+                                           :seed seed
+                                           :fork-opts {:systems :none}
+                                           :retain-released? false}
+                                          (dissoc opts :resample-threshold :policy :executor :retained
+                                                  :resampling :genealogy? :smcp3
+                                                  :ancestor-sampling? :root :copy? :anchors :rejuvenate :adopt))))
         ;; {:parked {slot {:sp sp :value v}}  at an observe (or a supplied stream
         ;;                                    site), resumed with v after the barrier
         ;;  :streaming {slot sp}               at a stream site, waiting for a value
@@ -268,10 +279,19 @@
         state (atom {:parked {} :streaming {} :done {} :log-z 0.0
                      :rejuvenation {:moves 0 :accepted 0}
                      :history []})
+        closed? (atom false)
         close! (fn []
-                 ((sp/close! session)
-                  (fn [_] nil)
-                  (fn [e] (log/warn :smc/close-failed {:error e}))))
+                 (when (compare-and-set! closed? false true)
+                   (if (zero? (swap! leases dec))
+                     ((sp/close! session)
+                      (fn [_] nil)
+                      (fn [e] (log/warn :smc/close-failed {:error e})))
+                   ;; a sibling still runs in the session: give back only
+                   ;; this population's worlds
+                     (let [{:keys [parked streaming]} @state]
+                       (doseq [sp (concat (map :sp (vals parked)) (vals streaming))
+                               :when (sp/pending? sp)]
+                         (sp/abandon sp))))))
         finish! (fn [callback outcome]
                   (when-not (:finished? (first (swap-vals! state assoc :finished? true)))
                     (callback outcome)
@@ -303,7 +323,10 @@
                   (let [{:keys [parked streaming]} after]
                     (cond
                       (seq parked) (barrier!)
-                      (seq streaming) (do (swap! state assoc :in-barrier? false)
+                      ;; the population stays claimed until `supply!` hands
+                      ;; it a value: a particle whose `arrived!` runs late
+                      ;; must not declare it idle a second time
+                      (seq streaming) (do (swap! state assoc :idle? true)
                                           (on-idle (measure after)))
                       :else (finish! on-done (measure after)))))))
 
@@ -643,14 +666,20 @@
               ;; every particle waiting at a stream site scores `value` there;
               ;; that is an ordinary barrier from here on
               (try
-                (let [{:keys [streaming]} @state
+                (let [;; the idle population is claimed once: a stale step's
+                      ;; push, or two at once, must not reopen a barrier
+                      [before _] (swap-vals! state #(if (:idle? %) (assoc % :idle? false) %))
+                      _ (when-not (:idle? before)
+                          (throw (ex-info "The population is not waiting for a value"
+                                          {:type ::not-waiting})))
+                      {:keys [streaming]} before
                       parked (into {} (map (fn [[slot sp]]
                                              (let [policy (itrace/policy
                                                            {:constraints {(:savepoint/address sp) value}})]
                                                (decide! policy sp)
                                                [slot {:sp sp :value value}])))
                                    streaming)]
-                  (swap! state assoc :streaming {} :parked parked)
+                  (swap! state assoc :streaming {} :parked parked :in-barrier? false)
                   (arrived!))
                 (catch #?(:clj Throwable :cljs :default) e (fail! e))))]
       (try
@@ -675,12 +704,46 @@
                   sp/error-site
                   (fn [{error :savepoint/payload}] (fail! error))
                   sp/abandoned-site (fn [_] nil)})
-        (sp/install-handlers! root @handler-table)
-        (sp/start! session model)
+        (if adopt
+          ;; a copy of another population at a stream barrier: every waiting
+          ;; particle's world is forked and continues under this controller
+          (let [{:keys [streaming done log-z history]} (:population adopt)
+                slots (vec (keys streaming))]
+            ((all-forked (mapv streaming slots))
+             (fn [children]
+               (doseq [[slot child] (map vector slots children)]
+                 (rtp/swap-state! (:savepoint/world child) [:inference :slot] (constantly slot))
+                 (sp/install-handlers! (:savepoint/world child) @handler-table))
+               (swap! state assoc
+                      :streaming (zipmap slots children)
+                      :done done :log-z log-z :history history
+                      :in-barrier? true :idle? true)
+               (on-idle (measure @state)))
+             fail!))
+          (do (sp/install-handlers! root @handler-table)
+              (sp/start! session model)))
         (catch #?(:clj Throwable :cljs :default) e
           (log/error :smc/start-failed {:error e})
           (fail! e)))
-      {:supply! supply! :close! close!})))
+      {:supply! supply!
+       :close! close!
+       ;; an independent copy of the population waiting at its stream sites:
+       ;; a controller of its own in the same session
+       ;; not with anchors (siblings would share them), a retained path (two
+       ;; conditional filters on one reference) or copied worlds
+       :fork (when-not (or anchors retained copy?)
+               (fn [callbacks]
+                 (let [{:keys [parked streaming] :as st} @state]
+                   (when-not (:idle? st)
+                     (throw (ex-info "Only a population waiting at stream sites can be forked"
+                                     {:type ::fork-while-running})))
+                   (swap! leases inc)
+                   (run-particles nil n
+                                  (assoc opts :adopt {:root root :session session :leases leases
+                                                      :seed (sp/derive-seed seed ::fork (swap! forks inc))
+                                                      :barriers @barriers
+                                                      :population st})
+                                  callbacks))))})))
 
 (defn smc
   "Run `model` (a spin) with `n` particles. Options: `:resample-threshold`
@@ -744,6 +807,41 @@
                                  (reject (ex-info "The model has stream sites; run it with smc/stream"
                                                   {:type ::stream-sites})))}))))
 
+(defn- stream-steps
+  "The step interface of a streaming controller made by `(start callbacks)`
+  (see `stream`). A controller may declare itself idle while it is being
+  made (the program runs to its first stream site at once); that step is
+  delivered once the controller is known, so a push from its callback finds
+  it."
+  [start]
+  (fn [resolve reject]
+    (let [waiting (atom (sp/in-callers-world resolve reject))
+          ;; {:controller c} once made; {:deferred thunk} a step that came first
+          cell (atom {})
+          controller #(:controller @cell)
+          step (fn [done? m]
+                 (let [deliver
+                       (fn []
+                         (let [[res _] @waiting]
+                           (res (cond-> {:measure m :done? done?
+                                         :close (fn [] ((:close! (controller))))}
+                                  (not done?)
+                                  (assoc :push (fn [y]
+                                                 (fn [res' rej']
+                                                   (reset! waiting (sp/in-callers-world res' rej'))
+                                                   ((:supply! (controller)) y)))
+                                         :fork (when (:fork (controller))
+                                                 (fn []
+                                                   (stream-steps (fn [callbacks]
+                                                                   ((:fork (controller)) callbacks))))))))))
+                       [before _] (swap-vals! cell (fn [c] (if (:controller c) c (assoc c :deferred deliver))))]
+                   (when (:controller before) (deliver))))
+          made (start {:on-idle #(step false %)
+                       :on-done #(step true %)
+                       :on-error (fn [e] ((second @waiting) e))})
+          [before _] (swap-vals! cell assoc :controller made)]
+      (when-let [deferred (:deferred before)] (deferred)))))
+
 (defn stream
   "Online SMC: `model` marks the sites whose values arrive from outside as
   stream sites — `(sample (normal x 1) :id [:y t] :stream true)` — and
@@ -754,28 +852,16 @@
                scored y at its stream site, the population was resampled as
                needed, and each ran on to its next stream site (or returned)
      :done?    true once every particle has returned (no :push then)
+     :fork     (fn []) -> CPS resolving the step of an independent copy of
+               the population: every waiting particle's world is forked, and
+               the copy is pushed, resampled and closed on its own (absent
+               with `:anchors`, `:retained` or copied worlds)
      :close    (fn []) giving the worlds back}
 
   Each push costs the particles' work up to their next stream site; nothing
   already seen is re-run. `opts` as for `smc`."
   [model n & [opts]]
-  (fn [resolve reject]
-    (let [waiting (atom (sp/in-callers-world resolve reject))
-          controller (atom nil)
-          step (fn [done? m]
-                 (let [[res _] @waiting]
-                   (res (cond-> {:measure m :done? done?
-                                 :close (fn [] ((:close! @controller)))}
-                          (not done?)
-                          (assoc :push (fn [y]
-                                         (fn [res' rej']
-                                           (reset! waiting (sp/in-callers-world res' rej'))
-                                           ((:supply! @controller) y))))))))]
-      (reset! controller
-              (run-particles model n opts
-                             {:on-idle #(step false %)
-                              :on-done #(step true %)
-                              :on-error (fn [e] ((second @waiting) e))})))))
+  (stream-steps (fn [callbacks] (run-particles model n opts callbacks))))
 
 ;; =============================================================================
 ;; Particle MCMC on savepoint SMC

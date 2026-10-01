@@ -174,6 +174,48 @@ without changing the final target (twisted SMC); without one, SMC is
 best-of-N weighted by the reward. The model starts at `smc/start-site`, so
 every particle takes every step itself.
 
+## Static parameters: PMMH and SMC²
+
+A state-space program with parameters θ — named sample sites — is filtered
+best by SMC once θ is known; `org.replikativ.foerster.smc2` infers θ by
+running SMC conditioned on it. With the parameter sites constrained, SMC's
+evidence estimate is p(θ)·p̂(y | θ), so two parameter values compare by the
+difference of their SMC log-evidences.
+
+```clojure
+;; a Markov chain over θ, each proposal scored by an SMC of 100 particles
+(smc2/pmmh (model) 100 2000 {:params #{:sigma} :scale 0.2 :burn 200})
+
+;; online, for a program whose data arrive at stream sites
+(smc2/smc2 (model) {:params #{:sigma} :n-theta 50 :n-x 100})
+;; → a step like smc/stream's: :push the next observation, :measure over θ
+```
+
+- **PMMH** (Andrieu, Doucet & Holenstein 2010) is exact for any number of
+  particles; its acceptance falls as the SMC's evidence estimates get
+  noisier, so give the inner SMC enough particles for a log-evidence
+  standard deviation around 1. Its measure holds one particle per iteration,
+  drawn from that iteration's SMC (θ and a state trajectory); `:thetas` is
+  the chain after burn-in, `:acceptance` the rate over every iteration.
+- **SMC²** (Chopin, Jacob & Papaspiliopoulos 2013) carries θ-particles, each
+  with an inner streaming SMC. A pushed observation reweights each by its
+  inner evidence increment; when the θ-particles' ESS falls below
+  `:ess-target`, they are resampled — a duplicate *forks* its inner
+  population's worlds (`smc/stream`'s `:fork`), so copies evolve
+  independently — and moved by PMMH steps that run a fresh inner filter on
+  the data so far. `m/log-marginal` of its measure is the evidence of the
+  data so far, observations the program makes before its first stream site
+  included.
+
+θ's prior is the program's own: a θ-particle starts from a simulation of the
+program. A proposal that leaves the support — a distribution refusing its
+parameters — has density zero and is rejected; one outside the prior's
+support is rejected too, after its SMC ran. The default random walk moves
+continuous parameters; give discrete ones a `:propose` of their own. The
+caller's `:policy` (proposals, other constraints) carries into every inner
+SMC. Correlated PMMH, which needs SMC driven by explicit noise, is not
+provided.
+
 ## Kernels
 
 `(kernel-infer model kernel n opts)` runs a kernel from
@@ -196,9 +238,11 @@ equally weighted.
 ## Streaming
 
 `(smc/stream model n opts)` (`org.replikativ.foerster.smc`) is a CPS
-operation resolving a step `{:measure :push :done? :close}` once every
+operation resolving a step `{:measure :push :fork :done? :close}` once every
 particle waits at its next `:stream` site; `((:push step) value)` scores the
 value and runs on ([streaming notebook](https://replikativ.github.io/foerster/foerster.streaming.html)).
+`((:fork step))` resolves an independent copy of the population — every
+waiting particle's world forked — to be pushed and closed on its own.
 
 ## Programmable inference and counterfactuals
 
