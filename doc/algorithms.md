@@ -107,6 +107,30 @@ batch. Batch membership follows arrival order, so on a multi-threaded
 executor runs are not reproducible from their seed. Not with stream sites,
 `:retained`, `:anchors` or `:smcp3`.
 
+## The particle cascade: no barriers at all
+
+`(cascade/cascade model n opts)` (`org.replikativ.foerster.cascade`; Paige,
+Wood, Doucet & Teh 2014) runs every particle on its own. At an observation a
+particle compares its weight W with the running mean W̄ of the weights that
+arrived there so far and branches into ⌊W/W̄⌋ or ⌈W/W̄⌉ copies (forks of its
+world), each weighted W̄ — or dies. Nobody waits for anybody; the evidence
+estimate (1/n) Σ W over the particles that reach the end is unbiased
+whatever order they arrive in.
+
+| Option | Default | |
+|---|---|---|
+| `:cap` | 4·n | most particles alive at once; copies beyond it fold into a multiplicity on the particle |
+| `:concurrency` | 32 | particles running between observations at once; the rest wait and resume in random order, which keeps the population stable (the paper's §4) |
+| `:policy`, `:executor` | | |
+
+It ends when every particle has finished, never by wall clock, which would
+favour the fast ones (Murray, Singh & Lee 2021). Each particle has one child
+per observation on average, so the number that reach the end varies a lot
+from run to run (a critical branching process); its `:cascade` reports
+`:launched`, `:finished`, `:peak` and `:collapsed`. Runs on a
+multi-threaded executor are not reproducible from their seed. Where the
+population should stay fixed, `:batch` (above) is the steadier choice.
+
 ## Resample-move
 
 SMC resamples by copying good particles and dropping bad ones, so after a few
