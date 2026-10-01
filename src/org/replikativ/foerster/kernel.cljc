@@ -7,6 +7,7 @@
   choice of kernel, not of engine. The Markov-chain kernels (single-site and
   random-walk MH, block Gibbs, HMC) are descriptions that `kernel-infer` runs
   as replay plus accept over traces."
+  (:refer-clojure :exclude [cycle])
   (:require [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.dist :as dist]))
 
@@ -214,3 +215,47 @@
          (fn? address-classifier)]}
   (chain-output (->BlockGibbsKernel num-iterations block-selector block-kernels address-classifier)
                 opts))
+
+;; =============================================================================
+;; Composing Markov-chain kernels
+;; =============================================================================
+
+(def ^:private chain-kernel-ids
+  #{:single-site-mh :random-walk-mh :block-gibbs :hmc :cycle :mixture})
+
+(defn- check-chain-kernels! [kernels]
+  (when-let [bad (seq (remove #(and (satisfies? PInferenceKernel %) (chain-kernel-ids (kernel-id %))) kernels))]
+    (throw (ex-info "Only Markov-chain kernels compose"
+                    {:type ::not-a-chain-kernel :kernels (mapv #(when (satisfies? PInferenceKernel %) (kernel-id %)) bad)}))))
+
+(defrecord CycleKernel [num-iterations kernels]
+  PInferenceKernel
+  (kernel-id [_] :cycle))
+
+(defn cycle
+  "A Markov-chain kernel that, `num-iterations` times, runs each of `kernels`
+  in turn — each for its own iterations: (cycle 100 [(hmc-kernel 1 …)
+  (single-site-mh-kernel 5)]) is a hundred rounds of one HMC move and five
+  single-site moves. A composition of kernels that leave the posterior
+  invariant leaves it invariant. Output options as for every chain kernel."
+  [num-iterations kernels & [opts]]
+  {:pre [(pos-int? num-iterations) (seq kernels)]}
+  (check-chain-kernels! kernels)
+  (chain-output (->CycleKernel num-iterations (vec kernels)) opts))
+
+(defrecord MixtureKernel [num-iterations weights kernels]
+  PInferenceKernel
+  (kernel-id [_] :mixture))
+
+(defn mixture
+  "A Markov-chain kernel that, `num-iterations` times, picks one of the
+  kernels in `weighted` ([[w kernel] …]) with probability ∝ w and runs it
+  for its own iterations. A mixture of kernels that leave the posterior
+  invariant leaves it invariant (with weights that do not depend on the
+  state). Output options as for every chain kernel."
+  [num-iterations weighted & [opts]]
+  {:pre [(pos-int? num-iterations) (seq weighted) (every? (comp pos? first) weighted)]}
+  (check-chain-kernels! (map second weighted))
+  (let [total (reduce + (map first weighted))]
+    (chain-output (->MixtureKernel num-iterations (mapv #(/ (first %) total) weighted) (mapv second weighted))
+                  opts)))

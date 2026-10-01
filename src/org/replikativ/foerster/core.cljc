@@ -76,11 +76,66 @@
          {:value (get proposed (:savepoint/address sp-value)) :symmetric? true}
          (itrace/prior-proposal sp-value old-entry)))}))
 
+(declare mh-options)
+
+(defn- span
+  "How many moves one iteration of a Markov-chain kernel makes at most: its
+  moves are numbered within that span, so every move of a chain has its own
+  number (`itrace/mh-chain`'s `:first-iteration`)."
+  [kernel]
+  (case (k/kernel-id kernel)
+    :cycle (reduce + (map #(* (:num-iterations %) (span %)) (:kernels kernel)))
+    :mixture (apply max (map #(* (:num-iterations %) (span %)) (:kernels kernel)))
+    1))
+
+(declare iteration-of)
+
+(defn- run-kernel
+  "CPS: `kernel`'s whole run from `trace`, its moves numbered from `base`;
+  resolves {:trace :moves :accepted-moves}."
+  [kernel trace base]
+  (fn [resolve reject]
+    (if (#{:cycle :mixture} (k/kernel-id kernel))
+      (letfn [(run [current i moves accepted]
+                (if (= i (:num-iterations kernel))
+                  (resolve {:trace current :moves moves :accepted-moves accepted})
+                  ((iteration-of kernel current (+ base (* i (span kernel))))
+                   (fn [r] (run (:trace r) (inc i) (+ moves (:moves r)) (+ accepted (:accepted-moves r))))
+                   reject)))]
+        (run trace 0 0 0))
+      (let [{:keys [iterations] :as opts} (mh-options kernel)]
+        ((itrace/mh-chain trace iterations (-> opts (dissoc :iterations) (assoc :first-iteration base)))
+         (fn [{:keys [trace moves accepted]}]
+           (resolve {:trace trace :moves moves :accepted-moves accepted}))
+         reject)))))
+
+(defn- iteration-of
+  "CPS: one iteration of a composed kernel from `trace`, its moves numbered
+  from `base`: every component in turn (cycle) or one picked by weight
+  (mixture)."
+  [kernel trace base]
+  (fn [resolve reject]
+    (let [ks (:kernels kernel)
+          offsets (reductions + 0 (map #(* (:num-iterations %) (span %)) ks))
+          parts (case (k/kernel-id kernel)
+                  :cycle (map vector ks offsets)
+                  :mixture [[(nth ks (m/sample-categorical (:weights kernel))) 0]])]
+      (letfn [(run [current [[component offset] & more] moves accepted]
+                (if-not component
+                  (resolve {:trace current :moves moves :accepted-moves accepted})
+                  ((run-kernel component current (+ base offset))
+                   (fn [r] (run (:trace r) more (+ moves (:moves r)) (+ accepted (:accepted-moves r))))
+                   reject)))]
+        (run trace parts 0 0)))))
+
 (defn- mh-options
   "`itrace/mh-step` options of a Markov-chain kernel, or nil for kernels
   that decide sites of savepoint SMC."
   [kernel]
   (case (k/kernel-id kernel)
+    (:cycle :mixture) {:iterations (:num-iterations kernel)
+                       :step (fn [trace {:keys [iteration]}]
+                               (iteration-of kernel trace (* iteration (span kernel))))}
     :single-site-mh {:iterations (:num-iterations kernel)}
     :random-walk-mh {:iterations (:num-iterations kernel)
                      :propose (itrace/random-walk-proposal (:step-size kernel))}

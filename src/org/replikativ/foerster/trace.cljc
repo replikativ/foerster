@@ -546,14 +546,16 @@
   step. `:step` (fn [trace opts]) -> CPS resolving a step result replaces
   `mh-step` (e.g. `foerster.hmc/within-gibbs`); a step that makes several
   moves reports `:moves` and `:accepted-moves`, otherwise it is one move,
-  accepted when `:accepted?`."
+  accepted when `:accepted?`. Moves are numbered from `:first-iteration`
+  (default 0): a move's randomness is keyed by its number, so the moves of
+  one chain need distinct numbers."
   ([trace n] (mh-chain trace n nil))
-  ([trace n {:keys [on-step] move :step :or {move mh-step} :as opts}]
+  ([trace n {:keys [on-step first-iteration] move :step :or {move mh-step first-iteration 0} :as opts}]
    (fn [resolve reject]
      (letfn [(step [current i moves accepted]
                (if (= i n)
                  (resolve {:trace current :moves moves :accepted accepted})
-                 ((move current (assoc opts :iteration i))
+                 ((move current (assoc opts :iteration (+ first-iteration i)))
                   (fn [{:keys [accepted?] next-trace :trace :as result}]
                     (when on-step (on-step result))
                     (step next-trace (inc i)

@@ -323,6 +323,14 @@ provided.
 | `(k/random-walk-mh-kernel iterations {:step-size 0.1})` | random-walk MH on continuous sites |
 | `(k/block-gibbs-kernel iterations selector block-kernels classifier opts)` | block Gibbs: `classifier` `(fn [address entry])` assigns sites to block ids, `selector` (`k/round-robin-selector`, `k/random-selector`) picks a block per iteration, `block-kernels` `{block-id kernel}` moves it (`k/prior-block-kernel`, `k/random-walk-block-kernel`) |
 | `(k/hmc-kernel iterations {:step-size 0.1 :steps 10})` | HMC-within-Gibbs on block sites ([blocks](https://replikativ.github.io/foerster/foerster.blocks.html)) |
+| `(k/cycle iterations [k₁ k₂ …])` | each iteration runs k₁'s moves, then k₂'s, … — the composition K₂∘K₁ |
+| `(k/mixture iterations [[w₁ k₁] [w₂ k₂] …])` | each iteration runs one kᵢ, picked with probability ∝ wᵢ |
+
+Kernels that leave the posterior invariant form a monoid under composition,
+and their mixtures with state-independent weights are invariant too: `cycle`
+and `mixture` build a sampler from parts — HMC for the continuous block,
+single-site moves for the discrete sites — and nest. Each part runs for its
+own iterations.
 
 The Markov-chain kernels run in fresh worlds only (they refuse `:fork`) and
 take output options: `:samples :final` (default) emits each chain's last
