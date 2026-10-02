@@ -91,6 +91,27 @@ includes the identity of its spin, and a spin created again in the same world
 gets a new one, so its random stream changes (see
 [reproducibility](distributions.md#reproducibility)).
 
+## Memoization and random processes
+
+`org.replikativ.foerster.process` keeps state in the particle's world, so
+it forks with the particle (Anglican's `mem` and Chinese restaurant
+process):
+
+```clojure
+(let [mean-of (process/mem (fn [k] (spin (sample (dist/normal 0 10) :id [:mean k]))))]
+  (spin
+   (let [k (await (process/crp-draw :clusters 1.0 :id [:z i]))   ; a table index
+         mu (await (mean-of k))]                                ; drawn once per table
+     (observe (dist/normal mu 1.0) y :id [:y i]))))
+```
+
+`mem` computes each argument list once per world: later calls, in the same
+particle and in particles forked after it, return the first value. Name the
+sites inside a memoized function by its arguments. `crp-draw` seats a
+customer at an existing table ∝ its customers or a new one ∝ α; it is an
+ordinary sample site over finitely many tables, so exact enumeration
+handles it too.
+
 ## Selectors
 
 Operations that act on a set of sites — `gfi/regenerate`, `gfi/mh`,
