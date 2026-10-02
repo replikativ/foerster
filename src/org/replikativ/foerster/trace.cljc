@@ -555,23 +555,28 @@
   step. `:step` (fn [trace opts]) -> CPS resolving a step result replaces
   `mh-step` (e.g. `foerster.hmc/within-gibbs`); a step that makes several
   moves reports `:moves` and `:accepted-moves`, otherwise it is one move,
-  accepted when `:accepted?`. Moves are numbered from `:first-iteration`
-  (default 0): a move's randomness is keyed by its number, so the moves of
-  one chain need distinct numbers."
+  accepted when `:accepted?`. A move's randomness is keyed by its number in
+  the trace's world, so the moves made from one world need distinct numbers:
+  they are numbered from `:first-iteration`, or — when it is not given —
+  from a counter the world keeps, so calling `mh-chain` again on the same
+  trace (after a rejection, the world is the same) draws afresh."
   ([trace n] (mh-chain trace n nil))
-  ([trace n {:keys [on-step first-iteration] move :step :or {move mh-step first-iteration 0} :as opts}]
+  ([trace n {:keys [on-step first-iteration] move :step :or {move mh-step} :as opts}]
    (fn [resolve reject]
-     (letfn [(step [current i moves accepted]
-               (if (= i n)
-                 (resolve {:trace current :moves moves :accepted accepted})
-                 ((move current (assoc opts :iteration (+ first-iteration i)))
-                  (fn [{:keys [accepted?] next-trace :trace :as result}]
-                    (when on-step (on-step result))
-                    (step next-trace (inc i)
-                          (+ moves (:moves result 1))
-                          (+ accepted (:accepted-moves result (if accepted? 1 0)))))
-                  reject)))]
-       (step trace 0 0 0)))))
+     (let [first-iteration (or first-iteration
+                               (- (rtp/swap-state! (:trace/world trace) [:inference ::chain-moves] #(+ (or % 0) n))
+                                  n))]
+       (letfn [(step [current i moves accepted]
+                 (if (= i n)
+                   (resolve {:trace current :moves moves :accepted accepted})
+                   ((move current (assoc opts :iteration (+ first-iteration i)))
+                    (fn [{:keys [accepted?] next-trace :trace :as result}]
+                      (when on-step (on-step result))
+                      (step next-trace (inc i)
+                            (+ moves (:moves result 1))
+                            (+ accepted (:accepted-moves result (if accepted? 1 0)))))
+                    reject)))]
+         (step trace 0 0 0))))))
 
 (defn legacy-trace
   "`trace` in the legacy shape of a particle's trace (`[:inference :trace]`):

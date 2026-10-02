@@ -64,7 +64,7 @@
                      (do (is (< 300 jumps) (str jumps " jumps")) out)
                      (let [{t1 :trace jumped? :accepted?} (await* (involutive/step t split-merge))
                            ;; and a within-model move of every continuous site
-                           {t2 :trace} (await* (itrace/mh-chain t1 2 {:propose (itrace/random-walk-proposal 0.8) :first-iteration (* 2 i)}))]
+                           {t2 :trace} (await* (itrace/mh-chain t1 2 {:propose (itrace/random-walk-proposal 0.8)}))]
                        (recur (inc i) t2 (if (>= i burn) (conj out (:trace/result t2)) out)
                               (if jumped? (inc jumps) jumps)))))
               p2 (/ (count (filter #(= 2 %) ks)) (double (count ks)))]
