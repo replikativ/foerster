@@ -43,6 +43,24 @@
       (is (close? tail (d/ess-tail cs)))
       (is (close? mcse (d/mcse cs))))))
 
+(deftest diagnostics-of-constant-or-discrete-draws
+  ;; ArviZ gives NaN where the draws carry no variation, not an error
+  (let [stuck [[1.0 1.0 1.0 1.0 1.0 1.0] [1.0 1.0 1.0 1.0 1.0 1.0]]
+        discrete (test-chains 4 4 400 0.0 0.0)
+        discrete (mapv (fn [c] (mapv #(if (pos? %) 1.0 0.0) c)) discrete)]
+    (is (Double/isNaN (d/rhat stuck)))
+    (is (Double/isNaN (d/ess-bulk stuck)))
+    (is (Double/isNaN (d/ess-tail stuck)))
+    (is (< (d/rhat discrete) 1.02))
+    (is (number? (d/ess-tail discrete)))))
+
+(deftest diagnostics-of-long-chains-are-quick
+  (let [cs (test-chains 5 4 3000 0.5 0.0)
+        t0 (System/nanoTime)
+        _ (doall [(d/rhat cs) (d/ess-bulk cs) (d/ess-tail cs) (d/mcse cs)])
+        ms (/ (- (System/nanoTime) t0) 1e6)]
+    (is (< ms 3000) (str ms " ms for 12000 draws"))))
+
 (defn- gaussian []
   (spin
    (let [mu (sample (dist/normal 0.0 1.0) :id :mu)]
