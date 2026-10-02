@@ -6,6 +6,33 @@ A reference for every inference entry point in `org.replikativ.foerster.core`
 `sp/with-context`, inside a spin `await` it. For which to use when, see the
 [algorithms notebook](https://replikativ.github.io/foerster/foerster.algorithms.html).
 
+## One call shape, and which method
+
+`infer/infer` runs any method by name, as Anglican's `doquery` did:
+
+```clojure
+(infer/infer (model) {:method :smc :particles 1000})
+(infer/infer (model) {:method :mh :iterations 4000 :chains 4 :burn 1000})
+(infer/infer (model) {:method :pmmh :particles 100 :iterations 2000 :params #{:sigma}})
+```
+
+Methods: `:importance`, `:smc`, `:tempered` (`:particles`); `:pimh`,
+`:pgibbs`, `:pgas`, `:ipmcmc`, `:bbvi` (`:particles`, `:iterations`); `:mh`,
+`:rmh` (`:iterations` per chain, `:chains`, `:burn`, `:step-size`); `:kernel`
+(`:kernel`, `:chains`); `:pmmh` (`:particles`, `:iterations`, `:params`).
+Other options go to the method's own function, described below.
+
+Which to start with:
+
+- **Observations spread through the program** (a time series, a sequence of
+  steps): `:smc` with as many particles as you can afford; it also
+  estimates the evidence.
+- **All observations at the end, continuous latents**: `:rmh` or HMC on a
+  block, several chains, and check R-hat and ESS
+  ([posteriors](posteriors.md#diagnostics)).
+- **Static parameters of a sequential model**: `:pmmh`, or SMC² online;
+  **a multimodal posterior**: `:tempered`.
+
 ## Options every particle method takes
 
 `smc-infer`, `importance-sampling`, `pimh-infer`, `pgibbs-infer`,

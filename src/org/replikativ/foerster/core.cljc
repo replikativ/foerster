@@ -19,6 +19,8 @@
             [org.replikativ.foerster.hmc :as hmc]
             [org.replikativ.foerster.kernel :as k]
             [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.smc2 :as smc2]
+            [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.foerster.tempering :as tempering]
             [org.replikativ.foerster.gradient :as grad]
             [org.replikativ.foerster.trace :as itrace]
@@ -285,7 +287,10 @@
                seeds (vec (repeatedly num-chains random/fresh-seed))
                chains (await (apply comb/parallel
                                     (mapv #(run-markov-chain model-task kernel executor %) seeds)))]
-           (m/empirical (into [] cat chains)))
+           ;; the draws in chain order, each chain's count kept: the
+           ;; convergence diagnostics need them by chain (`foerster.diagnostics`)
+           (assoc (m/empirical (into [] cat chains))
+                  :chain-lengths (mapv count chains)))
          (finally
            (when own-executor
              #?(:clj (.close ^java.lang.AutoCloseable own-executor)
@@ -574,6 +579,30 @@
   [measure pred-fn num-samples]
   (let [samples (m/sample-measure measure num-samples)]
     (mapv (fn [[ctx _]] (pred-fn ctx)) samples)))
+
+(defn predictive
+  "`n` posterior predictive draws: particles of `measure` drawn by weight,
+  each replayed through `model` with its latent choices held and its
+  observed sites drawing fresh values instead of scoring the data. A prior
+  predictive draw is the same with `model` simply run (`gfi/simulate`).
+
+  Returns a spin resolving a vector of {:value v :observations {address x}}:
+  the program's value and what each observed site drew."
+  [model measure n]
+  (spin
+   (loop [[[particle _] & more] (m/sample-measure measure n) out []]
+     (if-not particle
+       out
+       (let [trace (m/get-trace particle)
+             latents (into {} (keep (fn [[address {:keys [value observed? deterministic?]}]]
+                                      (when-not (or observed? deterministic?) [address value])))
+                           trace)
+             observed (into #{} (keep (fn [[address {:keys [observed?]}]] (when observed? address))) trace)
+             t (await (gfi/run-policy model (itrace/policy {:constraints latents :simulate-observed? true})))
+             drawn (into {} (keep (fn [[address {:keys [value]}]] (when (observed address) [address value])))
+                         (itrace/legacy-trace t))]
+         (await (gfi/close! t))
+         (recur more (conj out {:value (:trace/result t) :observations drawn})))))))
 
 ;; =============================================================================
 ;; Particle MCMC Methods
@@ -999,3 +1028,52 @@
   "The learned {address -> distribution} of a `bbvi-infer` result."
   [measure]
   (:variational-dists measure))
+
+;; =============================================================================
+;; One call shape
+;; =============================================================================
+
+(def ^:private infer-methods
+  #{:importance :smc :tempered :pimh :pgibbs :pgas :ipmcmc :bbvi :mh :rmh :kernel :pmmh})
+
+(defn infer
+  "Run `model` under the inference method `(:method opts)` — one call shape
+  for every method, as Anglican's `doquery`:
+
+    (infer/infer (model) {:method :smc :particles 1000})
+    (infer/infer (model) {:method :mh :iterations 4000 :chains 4 :burn 1000})
+    (infer/infer (model) {:method :pmmh :particles 100 :iterations 2000
+                          :params #{:drift}})
+
+  Methods and their sizes:
+    :importance :smc :tempered          :particles
+    :pimh :pgibbs :pgas :ipmcmc :bbvi   :particles :iterations
+    :mh :rmh                            :iterations per chain, :chains (default
+                                        4), :burn, :step-size (:rmh); every
+                                        draw after :burn is kept
+    :kernel                             :kernel (a `foerster.kernel` kernel)
+                                        and :chains or :particles
+    :pmmh                               :particles per SMC, :iterations,
+                                        :params (and `smc2/pmmh` options)
+  The other options go to the method (see its function). Returns a spin
+  resolving the measure."
+  [model {:keys [method particles iterations chains burn step-size kernel] :as opts}]
+  (when-not (infer-methods method)
+    (throw (ex-info (str "Unknown inference method " method)
+                    {:type ::unknown-method :method method :methods infer-methods})))
+  (let [rest-opts (dissoc opts :method :particles :iterations :chains :burn :step-size :kernel)
+        chain-output {:samples :all :burn (or burn 0)}]
+    (case method
+      :importance (importance-sampling model particles rest-opts)
+      :smc (smc-infer model particles rest-opts)
+      :tempered (tempered-infer model particles rest-opts)
+      :pimh (pimh-infer model particles iterations rest-opts)
+      :pgibbs (pgibbs-infer model particles iterations rest-opts)
+      :pgas (pgas-infer model particles iterations rest-opts)
+      :ipmcmc (ipmcmc-infer model particles iterations rest-opts)
+      :bbvi (bbvi-infer model particles iterations rest-opts)
+      :mh (kernel-infer model (k/single-site-mh-kernel iterations chain-output) (or chains 4) rest-opts)
+      :rmh (kernel-infer model (k/random-walk-mh-kernel iterations (merge chain-output (when step-size {:step-size step-size})))
+                         (or chains 4) rest-opts)
+      :kernel (kernel-infer model kernel (or chains particles 4) rest-opts)
+      :pmmh (on-savepoints (smc2/pmmh model particles iterations (cond-> rest-opts burn (assoc :burn burn)))))))

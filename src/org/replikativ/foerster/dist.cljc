@@ -406,6 +406,91 @@
     (let [t (reduce + alpha)]
       (mapv #(/ (* % (- t %)) (* t t (+ t 1.0))) alpha))))
 
+;; =============================================================================
+;; Binomial, LogNormal, HalfNormal, Cauchy, HalfCauchy, UniformDiscrete
+;; =============================================================================
+
+(defrecord Binomial [n p]
+  ;; successes in n trials of success probability p
+  Distribution
+  (-draw [_] (loop [i 0 k 0] (if (= i n) k (recur (inc i) (if (< (u01) p) (inc k) k)))))
+  (-logpdf [_ k]
+    (if (and (whole? k) (<= 0 k n))
+      (+ (- (lgamma (+ n 1.0)) (lgamma (+ k 1.0)) (lgamma (+ (- n k) 1.0)))
+         (xlogy k p) (xlogy (- n k) (- 1.0 p)))
+      ##-Inf))
+  Moments
+  (-mean [_] (* n p))
+  (-variance [_] (* n p (- 1.0 p))))
+
+(defrecord LogNormal [mu sigma]
+  ;; exp of a Normal(μ, σ)
+  Distribution
+  (-draw [_] (Math/exp (+ mu (* sigma (standard-normal)))))
+  (-logpdf [_ x]
+    (if (pos? x)
+      (let [z (/ (- (Math/log x) mu) sigma)]
+        (- (* -0.5 z z) (Math/log sigma) log-sqrt-2pi (Math/log x)))
+      ##-Inf))
+  Univariate
+  (-cdf [_ x] (if (pos? x) (normal-cdf (/ (- (Math/log x) mu) sigma)) 0.0))
+  (-quantile [_ p] (Math/exp (+ mu (* sigma (normal-quantile p)))))
+  Moments
+  (-mean [_] (Math/exp (+ mu (* 0.5 sigma sigma))))
+  (-variance [_] (* (- (Math/exp (* sigma sigma)) 1.0) (Math/exp (+ (* 2.0 mu) (* sigma sigma))))))
+
+(defrecord HalfNormal [sigma]
+  ;; |Normal(0, σ)|
+  Distribution
+  (-draw [_] (Math/abs (* sigma (standard-normal))))
+  (-logpdf [_ x]
+    (if (neg? x)
+      ##-Inf
+      (let [z (/ x sigma)]
+        (- (Math/log 2.0) (* 0.5 z z) (Math/log sigma) log-sqrt-2pi))))
+  Univariate
+  (-cdf [_ x] (if (neg? x) 0.0 (- (* 2.0 (normal-cdf (/ x sigma))) 1.0)))
+  (-quantile [_ p] (* sigma (normal-quantile (* 0.5 (+ 1.0 p)))))
+  Moments
+  (-mean [_] (* sigma (Math/sqrt (/ 2.0 Math/PI))))
+  (-variance [_] (* sigma sigma (- 1.0 (/ 2.0 Math/PI)))))
+
+(defrecord Cauchy [location scale]
+  Distribution
+  (-draw [_] (+ location (* scale (Math/tan (* Math/PI (- (u01) 0.5))))))
+  (-logpdf [_ x]
+    (let [z (/ (- x location) scale)]
+      (- (+ (Math/log (* Math/PI scale)) (Math/log (+ 1.0 (* z z)))))))
+  Univariate
+  (-cdf [_ x] (+ 0.5 (/ (Math/atan (/ (- x location) scale)) Math/PI)))
+  (-quantile [_ p] (+ location (* scale (Math/tan (* Math/PI (- p 0.5)))))))
+
+(defrecord HalfCauchy [scale]
+  ;; |Cauchy(0, γ)|
+  Distribution
+  (-draw [_] (Math/abs (* scale (Math/tan (* Math/PI (- (u01) 0.5))))))
+  (-logpdf [_ x]
+    (if (neg? x)
+      ##-Inf
+      (let [z (/ x scale)]
+        (- (Math/log 2.0) (Math/log (* Math/PI scale)) (Math/log (+ 1.0 (* z z)))))))
+  Univariate
+  (-cdf [_ x] (if (neg? x) 0.0 (/ (* 2.0 (Math/atan (/ x scale))) Math/PI)))
+  (-quantile [_ p] (* scale (Math/tan (* 0.5 Math/PI p)))))
+
+(defrecord UniformDiscrete [a b]
+  ;; the integers a, a+1, …, b−1, each with probability 1/(b−a)
+  Distribution
+  (-draw [_] (+ a (long (Math/floor (* (u01) (- b a))))))
+  (-logpdf [_ k]
+    (if (and (whole? k) (<= a k) (< k b)) (- (Math/log (- b a))) ##-Inf))
+  Univariate
+  (-cdf [_ x] (cond (< x a) 0.0 (>= x b) 1.0 :else (/ (- (+ (Math/floor x) 1.0) a) (- b a))))
+  (-quantile [_ p] (min (dec b) (+ a (long (Math/floor (* p (- b a)))))))
+  Moments
+  (-mean [_] (* 0.5 (+ a b -1)))
+  (-variance [_] (/ (- (* (- b a) (- b a)) 1.0) 12.0)))
+
 (defn- finite? [x]
   (and (number? x) #?(:clj (Double/isFinite (double x)) :cljs (js/isFinite x))))
 
@@ -586,6 +671,30 @@
   (check! (positive? k) :chi-squared {:k k})
   (->ChiSquared (double k)))
 
+(defn binomial "Successes in n ≥ 0 trials of success probability p ∈ [0, 1]." [n p]
+  (check! (and (whole? n) (>= n 0) (finite? p) (<= 0.0 p 1.0)) :binomial {:n n :p p})
+  (->Binomial (long n) (double p)))
+
+(defn log-normal "exp of Normal(μ, σ), σ > 0." [mu sigma]
+  (check! (and (finite? mu) (positive? sigma)) :log-normal {:mu mu :sigma sigma})
+  (->LogNormal (double mu) (double sigma)))
+
+(defn half-normal "|Normal(0, σ)|, σ > 0: a prior for a scale." [sigma]
+  (check! (positive? sigma) :half-normal {:sigma sigma})
+  (->HalfNormal (double sigma)))
+
+(defn cauchy "Cauchy with location x₀ and scale γ > 0." [location scale]
+  (check! (and (finite? location) (positive? scale)) :cauchy {:location location :scale scale})
+  (->Cauchy (double location) (double scale)))
+
+(defn half-cauchy "|Cauchy(0, γ)|, γ > 0: a heavy-tailed prior for a scale." [scale]
+  (check! (positive? scale) :half-cauchy {:scale scale})
+  (->HalfCauchy (double scale)))
+
+(defn uniform-discrete "The integers a, a+1, …, b−1, equally likely (a < b)." [a b]
+  (check! (and (whole? a) (whole? b) (< a b)) :uniform-discrete {:a a :b b})
+  (->UniformDiscrete (long a) (long b)))
+
 (defn mvn
   "Multivariate normal with `mean` (a vector) and covariance `cov` (vectors of
   rows, symmetric positive definite)."
@@ -613,7 +722,11 @@
   Gamma (-continuous? [_] true)
   Beta (-continuous? [_] true)
   StudentT (-continuous? [_] true)
-  ChiSquared (-continuous? [_] true))
+  ChiSquared (-continuous? [_] true)
+  LogNormal (-continuous? [_] true)
+  HalfNormal (-continuous? [_] true)
+  Cauchy (-continuous? [_] true)
+  HalfCauchy (-continuous? [_] true))
 
 (defn continuous?
   "Whether `d` is a law on (an interval of) the reals: a scalar site a

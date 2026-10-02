@@ -27,6 +27,12 @@ the exponential takes a rate and `discrete` counts from 0.)
 | `(mvn mean cov)` | vectors | mean vector, covariance matrix |
 | `(student-t nu)`, `(student-t nu mu sigma)` | reals | degrees of freedom, location, scale |
 | `(chi-squared k)` | x > 0 | degrees of freedom |
+| `(binomial n p)` | 0 … n | trials, success probability |
+| `(uniform-discrete a b)` | a, a+1, …, b−1 | bounds (upper exclusive) |
+| `(log-normal mu sigma)` | x > 0 | mean and sd of log x |
+| `(half-normal sigma)` | x ≥ 0 | scale of the normal it folds |
+| `(cauchy x0 gamma)` | reals | location, scale |
+| `(half-cauchy gamma)` | x ≥ 0 | scale |
 
 Note the gamma's second parameter: it is the **scale**, as in raster,
 Distributions.jl, NumPy and SciPy — not the rate, as in Anglican and PyTorch.
@@ -47,6 +53,9 @@ and some of
 | Distribution | `cdf` | `quantile` | `mean`, `variance` |
 |---|---|---|---|
 | normal, uniform, exponential, Poisson | ✓ | ✓ | ✓ |
+| log-normal, half-normal, uniform-discrete | ✓ | ✓ | ✓ |
+| Cauchy, half-Cauchy | ✓ | ✓ | — (no moments) |
+| binomial | — | — | ✓ |
 | gamma, χ² | ✓ | — (throws) | ✓ |
 | discrete | ✓ | ✓ | — |
 | beta, Bernoulli, Dirichlet, Student-t | — | — | ✓ |

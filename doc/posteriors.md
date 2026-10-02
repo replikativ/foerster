@@ -45,6 +45,24 @@ resamples by weight and passes each drawn particle to its function.
 
 ## Diagnostics
 
+**Markov chains** — `kernel-infer` keeps each chain's draws together (the
+measure's `:chain-lengths`), and `org.replikativ.foerster.diagnostics`
+computes the convergence diagnostics of Vehtari et al. (2021) exactly as
+Stan and ArviZ do (checked against ArviZ to 10⁻⁹): rank-normalized split
+R-hat, bulk and tail effective sample sizes, and the Monte Carlo standard
+error of the mean.
+
+```clojure
+(diagnostics/summary measure :mu)   ; a site, a map key, or a function of the value
+;; => {:mean 0.71 :sd 0.33 :quantiles {…} :rhat 1.002 :ess-bulk 1830.0
+;;     :ess-tail 1590.0 :mcse 0.008 :chains 4 :draws 4800}
+```
+
+Run several chains (`:chains 4` with `infer/infer`); R-hat above 1.01 or a
+bulk or tail ESS below about 100 per chain means the chains have not
+mixed: run longer, start elsewhere, or change the kernel. `chains` gives the
+draws by chain for plots.
+
 **Effective sample size** — `(m/effective-sample-size measure)` =
 (Σw)² / Σw² over the normalized weights: how many equally weighted samples
 the weighted ones are worth. It is meaningful for importance sampling and
@@ -62,6 +80,26 @@ population degenerated and to trace lineages.
 normalizer of the posterior, for importance sampling and the SMC methods
 (tempered and batched SMC, the cascade, SMC²): compare models by it. For
 pooled particle-MCMC output it is not an evidence estimate.
+
+**Surviving histories** — `(diagnostics/distinct-count measure [:x 0])`:
+how many distinct values an early site still takes after SMC resampled —
+the number of histories the particles descend from, which the weight-based
+ESS does not show.
+
+## Checking the model
+
+**Predictive draws** — `(infer/predictive model measure n)` replays `n`
+posterior draws (particles drawn by weight) with their latent choices held
+and every observed site drawing a fresh value from its distribution
+instead of scoring the data; it resolves `[{:value v :observations {address
+x}} …]`. Compare the drawn observations with the data (a posterior
+predictive check). For a prior predictive check, simulate the model
+(`gfi/simulate`).
+
+**Pointwise log-likelihood** — `(diagnostics/pointwise-log-likelihood
+measure)`: one map `{address log-p}` of the observations per draw, the
+input of PSIS-LOO and WAIC (equally weighted draws, as Markov chains give;
+resample a weighted measure first).
 
 ## Training data
 

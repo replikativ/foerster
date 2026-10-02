@@ -164,6 +164,12 @@
       (let [v (mech/push dist (get (:noise opts) address))]
         {:value v :note {:dist dist :log-prob (dist/logpdf dist v) :counterfactual? true}})
 
+      ;; a predictive run: the observed site draws a fresh value from its
+      ;; law instead of scoring the data, and adds nothing to the weight
+      (and observed? (:simulate-observed? opts))
+      (let [v (dist/draw dist)]
+        {:value v :note {:dist dist :log-prob (dist/logpdf dist v) :simulated? true}})
+
       observed?
       (let [lp (dist/logpdf dist value)
             tp (tempered opts lp)]
@@ -246,6 +252,9 @@
                  (`foerster.mechanism`), observed sites included — a
                  counterfactual world. Sites without noise are marked
                  `:unaligned?`
+    :simulate-observed? true: observed sites draw a fresh value from their
+                 distribution instead of scoring the data (predictive runs:
+                 with `:constraints` holding a posterior draw's latents)
     :temperature β in [0, 1]: observations and factors count β·log p — the
                  target p(x)·L(x)^β of tempered SMC (`foerster.tempering`).
                  Their notes keep `:log-lik`, the untempered log p
