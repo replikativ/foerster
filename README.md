@@ -73,9 +73,13 @@ Inside another spin, `await` it instead of dereferencing
 - **Tutorials** — runnable notebooks, rendered at
   [replikativ.github.io/foerster](https://replikativ.github.io/foerster/):
   getting started, choosing an algorithm, models in worlds, blocks and HMC,
-  streaming SMC, programmable inference, interventions and counterfactuals.
-- **Guides** — [doc/](doc/README.md): the language, worlds, distributions
-  and reproducibility, the design, the literature.
+  streaming SMC, programmable inference, interventions and counterfactuals,
+  steering a process.
+- **Guides** — [doc/](doc/README.md): the language, the algorithms,
+  posteriors, [checking a model and its inference](doc/workflow.md),
+  [coming from Stan, PyMC, Turing, Gen, Anglican or WebPPL](doc/coming-from.md),
+  extending, worlds, distributions and reproducibility, the design, the
+  literature.
 - **API reference** — [cljdoc](https://cljdoc.org/d/org.replikativ/foerster).
 
 ## Worlds

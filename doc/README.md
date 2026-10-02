@@ -17,6 +17,7 @@ Each runs as it renders, in CI on every pull request.
 | [Streaming SMC](../notebooks/foerster/streaming.clj) | online filtering against the Kalman filter |
 | [Programmable Inference](../notebooks/foerster/programmable.clj) | the generative function interface, MH by selection, involutive MCMC |
 | [Interventions and Counterfactuals](../notebooks/foerster/counterfactuals.clj) | seeing and doing, interventions by selector, twin-world counterfactuals |
+| [Steering a Process](../notebooks/foerster/steering.clj) | SMC over scored steps of a process without a density, value estimates as twists, trajectories as training data |
 
 ## Guides
 
@@ -25,6 +26,8 @@ Each runs as it renders, in CI on every pull request.
 | [Language](language.md) | sites and their options, addresses, selectors, the rules of the spin macro |
 | [Algorithms](algorithms.md) | every inference entry point and its options |
 | [Posteriors](posteriors.md) | reading a measure: particles, traces, summaries, ESS, evidence, training data |
+| [Checking a Model and its Inference](workflow.md) | prior predictive simulation, several methods, R-hat/ESS/MCSE and SMC diagnostics, posterior predictive checks, model comparison, simulation-based calibration |
+| [Coming from Other PPLs](coming-from.md) | Stan, PyMC, Turing, Gen, Anglican and WebPPL concepts in foerster, and what foerster does not have yet |
 | [Extending](extending.md) | your own distributions, policies, proposals, MH moves and kernels; learned twists and proposals |
 | [Worlds](worlds.md) | canonical worlds, their lifecycle, failure and recovery, resources |
 | [Distributions and Reproducibility](distributions.md) | `foerster.dist`, writing a distribution, seeds and streams |

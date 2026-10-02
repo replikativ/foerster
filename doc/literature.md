@@ -17,6 +17,31 @@ The systems and papers foerster builds on.
   Inference.* PLDI 2019. [gen.dev](https://www.gen.dev/)
 - **Church** — N. Goodman, V. Mansinghka, D. Roy, K. Bonawitz, J. Tenenbaum.
   *Church: a language for generative models.* UAI 2008.
+- **WebPPL** — N. D. Goodman, A. Stuhlmüller. *The Design and
+  Implementation of Probabilistic Programming Languages.* 2014.
+  [dippl.org](https://dippl.org) · [webppl.org](https://webppl.org) —
+  JavaScript with `sample`, `factor` and `Infer`, implemented by CPS
+  transformation. Its sources include an asynchronous particle filter
+  (`asyncpf`) and particle MCMC (`pmcmc`): prior art for foerster's
+  particle cascade and particle-MCMC methods.
+- **Stan** — B. Carpenter, A. Gelman, M. D. Hoffman, D. Lee, B. Goodrich,
+  M. Betancourt, M. Brubaker, J. Guo, P. Li, A. Riddell. *Stan: A
+  Probabilistic Programming Language.* Journal of Statistical Software 76(1),
+  2017.
+- **PyMC** — O. Abril-Pla, V. Andreani, C. Carroll, L. Dong,
+  C. J. Fonnesbeck, M. Kochurov, R. Kumar, J. Lao, C. C. Luhmann,
+  O. A. Martin, M. Osthege, R. Vieira, T. Wiecki, R. Zinkov. *PyMC: a
+  modern, and comprehensive probabilistic programming framework in Python.*
+  PeerJ Computer Science 9:e1516, 2023.
+- **Pyro** — E. Bingham, J. P. Chen, M. Jankowiak, F. Obermeyer,
+  N. Pradhan, T. Karaletsos, R. Singh, P. Szerlip, P. Horsfall,
+  N. D. Goodman. *Pyro: Deep Universal Probabilistic Programming.* JMLR
+  20(28), 2019.
+- **NumPyro** — D. Phan, N. Pradhan, M. Jankowiak. *Composable Effects for
+  Flexible and Accelerated Probabilistic Programming in NumPyro.* 2019.
+  [arXiv:1912.11554](https://arxiv.org/abs/1912.11554)
+- **Turing** — H. Ge, K. Xu, Z. Ghahramani. *Turing: A Language for
+  Flexible Probabilistic Inference.* AISTATS 2018.
 - C. Weilbach. *Structured Amortized Variational Inference.* PhD thesis,
   University of British Columbia, 2025 — structured continuous normalizing
   flows, graphically structured diffusion models, and Daphne.
@@ -85,6 +110,12 @@ The systems and papers foerster builds on.
   *Sequential Monte Carlo Steering of Large Language Models using
   Probabilistic Programs.* 2023.
   [arXiv:2306.03081](https://arxiv.org/abs/2306.03081)
+- **Controlled generation by SMC (genlm)** — J. Loula, B. LeBrun, L. Du,
+  B. Lipkin, C. Pasti, G. Grand, T. Liu, Y. Emara, M. Freedman, J. Eisner,
+  R. Cotterell, V. Mansinghka, A. K. Lew, T. Vieira, T. J. O'Donnell.
+  *Syntactic and Semantic Control of Large Language Models via Sequential
+  Monte Carlo.* ICLR 2025. [arXiv:2504.13139](https://arxiv.org/abs/2504.13139) ·
+  [genlm-control](https://github.com/genlm/genlm-control)
 - **The reward as a tilt** — T. Korbak, E. Perez, C. L. Buckley. *RL with
   KL penalties is better viewed as Bayesian inference.* Findings of EMNLP
   2022.
@@ -95,8 +126,20 @@ The systems and papers foerster builds on.
   interventions, the three-step counterfactual (abduction, action,
   prediction), the probability of necessity.
 
-## Checking samplers
+## Checking models and samplers
 
+- **Bayesian workflow** — A. Gelman, A. Vehtari, D. Simpson, C. C. Margossian,
+  B. Carpenter, Y. Yao, L. Kennedy, J. Gabry, P.-C. Bürkner, M. Modrák.
+  *Bayesian Workflow.* 2020. [arXiv:2011.01808](https://arxiv.org/abs/2011.01808)
+  — the outline of the [workflow guide](workflow.md).
+- **R-hat, ESS, MCSE** — A. Vehtari, A. Gelman, D. Simpson, B. Carpenter,
+  P.-C. Bürkner. *Rank-normalization, folding, and localization: an improved
+  R̂ for assessing convergence of MCMC.* Bayesian Analysis 16(2), 2021 — the
+  diagnostics `foerster.diagnostics` computes.
+- **PSIS-LOO and WAIC** — A. Vehtari, A. Gelman, J. Gabry. *Practical
+  Bayesian model evaluation using leave-one-out cross-validation and WAIC.*
+  Statistics and Computing 27, 2017 — what `pointwise-log-likelihood` is the
+  input of.
 - **Simulation-based calibration** — S. Talts, M. Betancourt, D. Simpson,
   A. Vehtari, A. Gelman. *Validating Bayesian Inference Algorithms with
   Simulation-Based Calibration.* 2018.
