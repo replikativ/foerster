@@ -17,6 +17,7 @@
   (:require [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.hmc :as hmc]
+            [org.replikativ.foerster.nuts :as nuts]
             [org.replikativ.foerster.kernel :as k]
             [org.replikativ.foerster.smc :as smc]
             [org.replikativ.foerster.smc2 :as smc2]
@@ -146,6 +147,10 @@
                         :iterations (:num-iterations kernel))
     :hmc {:iterations (:num-iterations kernel)
           :step (hmc/within-gibbs (select-keys kernel [:step-size :steps]))}
+    :nuts {:iterations (:num-iterations kernel)
+           :step (nuts/within-gibbs {:burn (:burn kernel 0)
+                                     :target-accept (:target-accept kernel)
+                                     :max-depth (:max-depth kernel)})}
     nil))
 
 (defn- project-posterior-context
@@ -1035,7 +1040,7 @@
 ;; =============================================================================
 
 (def ^:private infer-methods
-  #{:enumerate :importance :smc :tempered :pimh :pgibbs :pgas :ipmcmc :bbvi :mh :rmh :kernel :pmmh})
+  #{:enumerate :importance :smc :tempered :pimh :pgibbs :pgas :ipmcmc :bbvi :mh :rmh :nuts :kernel :pmmh})
 
 (defn infer
   "Run `model` under the inference method `(:method opts)` — one call shape
@@ -1051,9 +1056,10 @@
                                         :max-branches)
     :importance :smc :tempered          :particles
     :pimh :pgibbs :pgas :ipmcmc :bbvi   :particles :iterations
-    :mh :rmh                            :iterations per chain, :chains (default
+    :mh :rmh :nuts                      :iterations per chain, :chains (default
                                         4), :burn, :step-size (:rmh); every
-                                        draw after :burn is kept
+                                        draw after :burn is kept; :nuts adapts
+                                        during :burn (block sites)
     :kernel                             :kernel (a `foerster.kernel` kernel)
                                         and :chains or :particles
     :pmmh                               :particles per SMC, :iterations,
@@ -1079,6 +1085,8 @@
       :mh (kernel-infer model (k/single-site-mh-kernel iterations chain-output) (or chains 4) rest-opts)
       :rmh (kernel-infer model (k/random-walk-mh-kernel iterations (merge chain-output (when step-size {:step-size step-size})))
                          (or chains 4) rest-opts)
+      :nuts (kernel-infer model (k/nuts-kernel iterations (merge chain-output (select-keys rest-opts [:target-accept :max-depth])))
+                          (or chains 4) (dissoc rest-opts :target-accept :max-depth))
       :kernel (kernel-infer model kernel (or chains particles 4) rest-opts)
       :pmmh (on-savepoints (smc2/pmmh model particles iterations (cond-> rest-opts burn (assoc :burn burn)))))))
 

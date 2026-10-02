@@ -26,9 +26,14 @@
   density of what `:sample` draws, which weighs the draw:
   log target(θ) − log sample-density(θ).
 
-  Draft 0 supports unconstrained real latents only; transforms of constrained
-  ones (`:constrain`, `:unconstrain` with their Jacobians) come with raster's
-  bijectors."
+  Constrained latents (`:support :positive` or `[:interval a b]`) need the
+  block to declare `:block/coordinates :constrained` and give its
+  capabilities in those natural coordinates (σ itself, p itself): `block`
+  then works in unconstrained θ — log σ, logit of p — adding each
+  transform's log-Jacobian to the density and the chain rule to the
+  gradient, so HMC and NUTS move freely. θ is what the trace holds;
+  `constrain` maps it back. Without the declaration, a block's capabilities
+  are in unconstrained coordinates already and every latent must be `:real`."
   (:require [org.replikativ.foerster.dist :as dist]))
 
 (def ^:private required-capabilities #{:log-density :value+grad})
@@ -36,6 +41,61 @@
 (defn- size [shape] (reduce * 1 shape))
 
 (defrecord Block [description capabilities offsets dimension])
+
+;; Transforms: θ (unconstrained) → x (the latent), with log |dx/dθ| and its
+;; derivative in θ, per coordinate.
+
+(defn- sigmoid [t] (/ 1.0 (+ 1.0 (Math/exp (- t)))))
+
+(defn- to-x [support t]
+  (cond (= :real support) t
+        (= :positive support) (Math/exp t)
+        :else (let [[_ a b] support] (+ a (* (- b a) (sigmoid t))))))
+
+(defn- to-theta [support x]
+  (cond (= :real support) x
+        (= :positive support) (Math/log x)
+        :else (let [[_ a b] support u (/ (- x a) (- b a))] (Math/log (/ u (- 1.0 u))))))
+
+(defn- dx-dtheta [support t]
+  (cond (= :real support) 1.0
+        (= :positive support) (Math/exp t)
+        :else (let [[_ a b] support s (sigmoid t)] (* (- b a) s (- 1.0 s)))))
+
+(defn- log-jacobian [support t]
+  (cond (= :real support) 0.0
+        (= :positive support) t
+        :else (let [[_ a b] support s (sigmoid t)] (+ (Math/log (- b a)) (Math/log s) (Math/log (- 1.0 s))))))
+
+(defn- dlog-jacobian [support t]
+  (cond (= :real support) 0.0
+        (= :positive support) 1.0
+        :else (- 1.0 (* 2.0 (sigmoid t)))))
+
+(defn- transformed
+  "Capabilities over θ from capabilities over the constrained latents
+  `supports` (one per coordinate)."
+  [{:keys [log-density value+grad sample sample-log-density] :as caps} supports]
+  (let [xs (fn [^doubles th] (double-array (map to-x supports th)))
+        log-j (fn [^doubles th] (reduce + 0.0 (map log-jacobian supports th)))]
+    (cond-> (assoc caps
+                   :log-density (fn [th inputs] (+ (double (log-density (xs th) inputs)) (log-j th)))
+                   :value+grad (fn [th inputs]
+                                 (let [[lp g] (value+grad (xs th) inputs)]
+                                   [(+ (double lp) (log-j th))
+                                    (double-array (map (fn [gi su t] (+ (* gi (dx-dtheta su t)) (dlog-jacobian su t)))
+                                                       (seq g) supports th))])))
+      sample (assoc :sample (fn [inputs] (mapv to-theta supports (sample inputs))))
+      sample-log-density (assoc :sample-log-density
+                                (fn [th inputs] (+ (double (sample-log-density (xs th) inputs)) (log-j th)))))))
+
+(defn constrain
+  "The latents' values at θ: θ mapped back through each latent's transform
+  (identity for `:real`), as a vector in θ's order."
+  [b theta]
+  (let [latents (:block/latents (:description b))
+        supports (vec (mapcat (fn [l] (repeat (size (:shape l)) (:support l :real))) latents))]
+    (mapv to-x supports theta)))
 
 (defn block
   "A block from its `description` and `capabilities` (see the namespace)."
@@ -46,12 +106,17 @@
       (throw (ex-info "A block lacks required capabilities"
                       {:type ::missing-capabilities :block (:block/id description)
                        :missing (vec missing)})))
-    (when-let [constrained (seq (remove #(= :real (:support % :real)) latents))]
-      (throw (ex-info "Constrained latents need transforms, not in draft 0"
+    (when-let [constrained (and (not= :constrained (:block/coordinates description))
+                                (seq (remove #(= :real (:support % :real)) latents)))]
+      (throw (ex-info "Constrained latents need :block/coordinates :constrained"
                       {:type ::unsupported-support :block (:block/id description)
                        :latents (mapv :name constrained)})))
     (let [sizes (mapv #(size (:shape %)) latents)
-          offsets (zipmap (map :name latents) (reductions + 0 sizes))]
+          offsets (zipmap (map :name latents) (reductions + 0 sizes))
+          supports (vec (mapcat (fn [l n] (repeat n (:support l :real))) latents sizes))
+          capabilities (if (= :constrained (:block/coordinates description))
+                         (transformed capabilities supports)
+                         capabilities)]
       (->Block description capabilities offsets (reduce + 0 sizes)))))
 
 (defn dimension "The length of θ." [b] (:dimension b))

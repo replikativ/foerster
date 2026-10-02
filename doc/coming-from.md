@@ -32,17 +32,19 @@ Three differences hold for all of them:
 | `transformed parameters`, `generated quantities` | ordinary `let` bindings; `(deterministic v :id :a)` records a value in the trace |
 | `log_lik` in `generated quantities` | `(diagnostics/pointwise-log-likelihood measure)` |
 | `y_rep` in `generated quantities` | `(infer/predictive model measure n)` |
-| `sample(chains=4)` (NUTS) | `(infer/infer model {:method :rmh :iterations … :chains 4 :burn …})`, or HMC on a block (`k/hmc-kernel`) |
+| `sample(chains=4)` (NUTS) | `(infer/infer model {:method :nuts :iterations … :chains 4 :burn …})` on a block site, or `:rmh` on ordinary sites |
 | R-hat, ESS, MCSE in the summary | `(diagnostics/summary measure :mu)` — the same rank-normalized split R-hat and bulk/tail ESS |
 | bridge sampling (evidence) | `(m/log-marginal measure)` of an SMC or importance-sampling run |
 | ADVI | `{:method :bbvi}`: mean-field, score-function gradients |
 
 Not in foerster yet:
 
-- NUTS, step-size and mass-matrix adaptation, and gradients derived from the
-  model. HMC needs a hand-written or raster-compiled gradient, a fixed step
-  size and number of steps, and runs on unconstrained real block latents
-  only: no automatic transforms of constrained parameters.
+- Gradients derived from the model. NUTS (`{:method :nuts}`, with Stan's
+  step-size and diagonal-metric adaptation) and HMC run on numerical blocks
+  whose gradient is hand-written or compiled by raster; constrained
+  latents (`:positive`, `[:interval a b]`) are transformed automatically
+  when the block is written in natural coordinates, but there is no
+  simplex or correlation-matrix transform yet.
 - Optimization (`optimize`, MAP estimates) and Laplace approximations.
 - Stan's speed on the models it is built for. A model with all observations
   at the end and smooth continuous latents fits in Stan in seconds; in
@@ -65,8 +67,8 @@ Not in foerster yet:
 | `pm.compute_log_likelihood`, `az.loo` | `diagnostics/pointwise-log-likelihood`, then ArviZ or R's `loo` |
 | `pm.do(model, {"x": 1})` | `{:policy (trace/policy {:interventions {:x {:do 1}}})}` on a particle method |
 
-Not in foerster yet: NUTS and automatic gradients (as for Stan), automatic
-transforms, ADVI with reparameterization gradients, Gaussian-process and
+Not in foerster yet: automatic gradients (NUTS runs on blocks with a
+supplied or raster-compiled gradient), simplex and other matrix transforms, ADVI with reparameterization gradients, Gaussian-process and
 other random-process building blocks, and vectorized distributions over
 arrays. PSIS-LOO and WAIC are computed outside foerster.
 
@@ -88,8 +90,8 @@ arrays. PSIS-LOO and WAIC are computed outside foerster.
 | `pointwise_loglikelihoods` | `diagnostics/pointwise-log-likelihood` |
 | MCMCChains summary | `diagnostics/summary` |
 
-Not in foerster yet: NUTS and automatic differentiation, automatic
-transforms (Bijectors), particle Gibbs as a component of a Gibbs sampler
+Not in foerster yet: automatic differentiation of the model (NUTS runs on
+blocks), Bijectors beyond log and interval transforms, particle Gibbs as a component of a Gibbs sampler
 (`k/cycle` and `k/mixture` compose Markov-chain kernels only: MH, block
 Gibbs and HMC), and
 MAP/MLE optimization. Conditioning from
@@ -164,9 +166,9 @@ resolves one finite measure.
 
 Not in foerster yet:
 
-- `mem`, and the random processes built on it (CRP, Dirichlet process,
-  Gaussian process).
-- Nested inference: `conditional` and queries used as distributions.
+- Random processes beyond the Chinese restaurant process (`process/mem`
+  and `process/crp-draw` exist; Dirichlet and Gaussian processes are built
+  on them by hand). Nested inference is `infer/conditional`.
 - Higher-order functions with sites inside them. Anglican transformed
   `map` and `reduce` inside a query; in foerster an `observe` inside a
   closure passed to `map` is not seen by the macro — use `loop`/`recur`.
