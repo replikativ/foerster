@@ -132,7 +132,9 @@ Not in foerster yet:
   spin is built; `update` and `regenerate` cannot change them, and there
   are no argdiffs for incremental re-execution.
 - **Combinators** (`Map`, `Unfold`, `Recurse`, `Switch`) and the static
-  modeling language. Replay restarts from the earliest changed site.
+  modeling language. Replay restarts from the earliest changed site; the
+  design for incremental re-execution through spindel's spin reuse is in
+  [design](design.md#incremental-re-execution-gens-combinators-and-argdiffs).
 - Moves that add or remove sites (reversible jump) are not supported.
   (`mh(tr, proposal, args)` with a proposal program is `gfi/mh-proposal`.)
 - **Trainable parameters** (`@param`, `train!`) and amortized training.
