@@ -1,8 +1,7 @@
 (ns org.replikativ.foerster.kernel-algebra-test
   "Composed Markov-chain kernels against an exact posterior: z ~ Bernoulli(0.3),
-  mu ~ N(2z, 1), y = 1.5 ~ N(mu, 0.5). A random walk alone cannot change z
-  (it moves continuous sites); cycled or mixed with single-site moves it
-  reaches the posterior of both."
+  mu ~ N(2z, 1), y = 1.5 ~ N(mu, 0.5). Cycled or mixed with single-site
+  moves, and nested, the random walk reaches the posterior of both sites."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.core :as infer]
