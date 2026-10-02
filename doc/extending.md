@@ -40,6 +40,12 @@ from options, and every particle method takes it as `:policy`:
                          {:value v :log-proposal (dist/logpdf q v)})))})})
 ```
 
+A policy's `:draw` is a proposal chosen from outside the program, per
+inference call. A proposal the program itself computes — from its data, or
+an amortized guide — is a sample site's `:proposal` option instead
+([language](language.md#sites)); it is weighed the same way, and a `:draw`
+that answers for a site takes precedence over it.
+
 ## An MH move
 
 `(trace/mh-step trace opts)` is one Metropolis–Hastings move over a trace;
@@ -51,6 +57,7 @@ from options, and every particle method takes it as `:policy`:
 | `:propose` `(fn [savepoint old-entry])` | the proposal at a target (default: the prior; `trace/random-walk-proposal` for a random walk) — the reverse move is scored under the prior, so a custom proposal must be the prior or symmetric |
 | `:step` | for `mh-chain`: a step function replacing `mh-step` (e.g. `hmc/within-gibbs`) |
 | `:on-step` | for `mh-chain`: `(fn [{:keys [trace accepted?]}])` called after every step |
+| `:first-iteration` | for `mh-chain`: the number of its first move (default 0); a move's randomness is keyed by its number, so a chain continued by another `mh-chain` call starts where the first stopped |
 
 For moves that are not "redraw these sites" — scaling, swapping, splitting —
 use involutive MCMC (`foerster.involutive/step`) and the generative function
@@ -75,6 +82,24 @@ A `PInferenceKernel` (`foerster.kernel`) decides latent sites of SMC:
 `step` returns the site's `:value` and optionally `:log-weight-delta`, what
 the value adds to the particle's weight (default 0: a draw from the site's
 distribution, which cancels against its density).
+
+A custom `PInferenceKernel` is an SMC kernel. The Markov-chain kernels of
+`foerster.kernel` are combined with `k/cycle` and `k/mixture`
+([algorithms](algorithms.md#kernels)); a move of your own over traces is an
+`mh-chain` `:step`.
+
+## Learned twists and proposals
+
+A steered program (`foerster.steer/model`) records each step's state and its
+reward in the trace, and `foerster.learn` reads them back as training data:
+`(learn/trajectories measure)` gives every particle's
+`{:states :reward :weight :log-weight}`, and `(learn/draws measure n)`
+resamples `n` of them by weight into unweighted draws from the target. A
+value estimate trained on them is the next run's `:value`; a proposal
+trained on them returns its steps as `(steer/weighted state log-w)`, with
+log-w = log p − log q of the step, so the target does not change
+([algorithms](algorithms.md#steering-a-process-scored-steps)). Training
+itself is outside foerster.
 
 ## An algorithm
 

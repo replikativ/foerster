@@ -59,5 +59,23 @@ barrier's factor of the evidence) and, with `:genealogy? true`, the
 population degenerated and to trace lineages.
 
 **Evidence** — `(m/log-marginal measure)` estimates log p(data), the
-normalizer of the posterior, for importance sampling and SMC: compare models
-by it. For pooled particle-MCMC output it is not an evidence estimate.
+normalizer of the posterior, for importance sampling and the SMC methods
+(tempered and batched SMC, the cascade, SMC²): compare models by it. For
+pooled particle-MCMC output it is not an evidence estimate.
+
+## Training data
+
+The particles' traces are also training data. For a steered program
+(`foerster.steer/model`), which records its states under `[:steer/state t]`
+and its reward under `:steer/reward`, `org.replikativ.foerster.learn` reads
+them back:
+
+```clojure
+(learn/trajectory particle)   ; {:states [s₀ s₁ …] :reward r}
+(learn/trajectories measure)  ; every particle's, with :weight and :log-weight
+(learn/draws measure 256)     ; 256 resampled by weight: unweighted draws from the target
+```
+
+`draws` is what a model trained on plain examples needs; `trajectories`
+keeps the weights for weighted losses (see
+[extending](extending.md#learned-twists-and-proposals)).

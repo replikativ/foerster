@@ -26,11 +26,20 @@ A probabilistic program is a spindel `spin` with `sample`, `observe` and
 `factor` sites. Every site is a spindel *savepoint*, so an inference algorithm
 is a handler that decides, scores, forks, copies or abandons those savepoints:
 
-- **SMC** and streaming SMC, importance sampling
-- **particle MCMC**: PIMH, particle Gibbs, PGAS, IPMCMC
+- **SMC** and streaming SMC, importance sampling, tempered SMC,
+  resample-move and SMCP3; arrival-batched SMC and the **particle cascade**,
+  which do not wait for the slowest particle
+- **particle MCMC**: PIMH, particle Gibbs, PGAS, IPMCMC; **PMMH** and
+  **SMC²** for static parameters
 - **MCMC over traces**: single-site and random-walk Metropolis–Hastings,
-  block Gibbs, involutive MCMC, **HMC** on numerical blocks
+  block Gibbs, involutive MCMC, **HMC** on numerical blocks; kernels
+  composed by `k/cycle` and `k/mixture`
 - **BBVI** (black-box variational inference)
+- **steering** a process — a language model's turns, a simulator — by SMC
+  over scored steps, twisted by a value estimate (`foerster.steer`), with
+  the trajectories as training data (`foerster.learn`)
+- **guides**: a sample site's `:proposal` draws from a distribution the
+  program computes, weighted by log p − log q
 - **counterfactuals** and interventions (Pearl's `do`), selectors over sites
 - a Gen-style generative function interface
 
