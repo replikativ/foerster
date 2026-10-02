@@ -135,9 +135,10 @@ Not in foerster yet:
   modeling language. Replay restarts from the earliest changed site.
 - Moves that add or remove sites (reversible jump) are not supported.
   (`mh(tr, proposal, args)` with a proposal program is `gfi/mh-proposal`.)
-- **Trainable parameters** (`@param`, `train!`) and amortized training.
-  `foerster.learn` exports trajectories as training data; training happens
-  elsewhere.
+- Gradient-trained parameters (`@param`, `train!`) and amortized training
+  of guides. A model's few parameters fit by maximum marginal likelihood
+  (`learn/maximize-evidence`); `foerster.learn` exports trajectories as
+  training data for guides, which train elsewhere (finetune-rstr).
 - `propose`, `project`, trace translators, and enumeration.
 
 ## Anglican

@@ -46,3 +46,31 @@
                                                         :record :heads})
                                           20 {}))]
     (is (every? #(every? number? (:states %)) (learn/trajectories measure)))))
+
+(defn- noisy-mean
+  "mu ~ N(0, 1), y ~ N(mu, σ) with σ = exp(:log-sigma) a parameter."
+  [{:keys [log-sigma]}]
+  (spin
+   (let [mu (org.replikativ.foerster.effects/sample (org.replikativ.foerster.dist/normal 0.0 1.0) :id :mu)
+         s (Math/exp log-sigma)]
+     (loop [[y & more] [0.5 2.1 -0.3 1.7 1.2 0.9 2.6 -0.8] i 0]
+       (when y
+         (org.replikativ.foerster.effects/observe (org.replikativ.foerster.dist/normal mu s) y :id [:y i])
+         (recur more (inc i))))
+     mu)))
+
+(deftest maximum-marginal-likelihood
+  ;; the exact evidence: y ~ N(0, σ²I + 11ᵀ); its maximizer by a fine grid
+  (let [ys [0.5 2.1 -0.3 1.7 1.2 0.9 2.6 -0.8]
+        n (count ys) sy (reduce + ys) syy (reduce + (map * ys ys))
+        ;; Σ = σ²I + J: det = σ^(2(n-1))·(σ² + n), quadratic form via Sherman–Morrison
+        log-z (fn [s] (let [s2 (* s s)]
+                        (- (* -0.5 n (Math/log (* 2 Math/PI)))
+                           (* 0.5 (+ (* 2 (dec n) (Math/log s)) (Math/log (+ s2 n))))
+                           (* 0.5 (- (/ syy s2) (/ (* sy sy) (* s2 (+ s2 n))))))))
+        best (apply max-key log-z (range 0.3 4.0 0.0005))
+        fit (b/run-infer 54 #(learn/maximize-evidence noisy-mean {:log-sigma (Math/log 0.4)}
+                                                      {:method :smc :particles 300}
+                                                      {:steps 120 :rate 0.05}))]
+    (is (< (Math/abs (- (Math/exp (:log-sigma (:params fit))) best)) 0.06)
+        (str (Math/exp (:log-sigma (:params fit))) " vs " best))))
