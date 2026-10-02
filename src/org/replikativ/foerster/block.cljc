@@ -170,3 +170,28 @@
   [dist theta]
   (let [[lp g] ((capability (:block dist) :value+grad) (theta-array theta) (:inputs dist))]
     [(double lp) (vec g)]))
+
+(defn with-numeric-gradient
+  "`capabilities` with a `:value+grad` computed from `:log-density` by
+  central differences of step `h` (default 1e-6 times the coordinate's
+  scale): 2n evaluations per gradient, accurate to about 1e-8 relative on a
+  smooth density. An explicit opt-in for small blocks written in plain
+  Clojure — foerster never differentiates numerically behind your back; for
+  a compiled gradient, write the block with foerster-raster."
+  ([capabilities] (with-numeric-gradient capabilities nil))
+  ([{:keys [log-density] :as capabilities} {:keys [h] :or {h 1e-6}}]
+   (assoc capabilities
+          :value+grad
+          (fn [^doubles th inputs]
+            (let [n (alength th)
+                  v (double (log-density th inputs))
+                  g (double-array n)]
+              (dotimes [i n]
+                (let [x (aget th i)
+                      step (* h (max 1.0 (Math/abs x)))
+                      up (aclone th) down (aclone th)]
+                  (aset up i (+ x step))
+                  (aset down i (- x step))
+                  (aset g i (/ (- (double (log-density up inputs)) (double (log-density down inputs)))
+                               (* 2.0 step)))))
+              [v g])))))
