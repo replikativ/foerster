@@ -131,11 +131,8 @@ Not in foerster yet:
   are no argdiffs for incremental re-execution.
 - **Combinators** (`Map`, `Unfold`, `Recurse`, `Switch`) and the static
   modeling language. Replay restarts from the earliest changed site.
-- **`mh` with a custom proposal program** (`mh(tr, proposal, args)`):
-  `gfi/mh` regenerates from the prior; a custom move is an involutive move,
-  whose Jacobian the caller supplies (`involutive/fd-log-jacobian` computes
-  it numerically). Moves that add or remove sites (reversible jump) are not
-  supported.
+- Moves that add or remove sites (reversible jump) are not supported.
+  (`mh(tr, proposal, args)` with a proposal program is `gfi/mh-proposal`.)
 - **Trainable parameters** (`@param`, `train!`) and amortized training.
   `foerster.learn` exports trajectories as training data; training happens
   elsewhere.
