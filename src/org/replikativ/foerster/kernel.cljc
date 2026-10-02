@@ -216,12 +216,26 @@
   (chain-output (->BlockGibbsKernel num-iterations block-selector block-kernels address-classifier)
                 opts))
 
+(defrecord NUTSKernel [num-iterations target-accept max-depth]
+  PInferenceKernel
+  (kernel-id [_] :nuts))
+
+(defn nuts-kernel
+  "The No-U-Turn sampler on block sites (`foerster.nuts`), within Gibbs: the
+  first `:burn` iterations adapt the step size (to `:target-accept`, default
+  0.8) and a diagonal metric, and are dropped; `:max-depth` (10) bounds a
+  trajectory at 2^depth leapfrog steps. A block's target must be its
+  complete conditional. Output options as for every chain kernel."
+  [num-iterations & [{:keys [target-accept max-depth] :or {target-accept 0.8 max-depth 10} :as opts}]]
+  {:pre [(pos-int? num-iterations)]}
+  (chain-output (->NUTSKernel num-iterations target-accept max-depth) (select-keys opts [:samples :burn])))
+
 ;; =============================================================================
 ;; Composing Markov-chain kernels
 ;; =============================================================================
 
 (def ^:private chain-kernel-ids
-  #{:single-site-mh :random-walk-mh :block-gibbs :hmc :cycle :mixture})
+  #{:single-site-mh :random-walk-mh :block-gibbs :hmc :nuts :cycle :mixture})
 
 (defn- check-chain-kernels! [kernels]
   (when-let [bad (seq (remove #(and (satisfies? PInferenceKernel %) (chain-kernel-ids (kernel-id %))) kernels))]

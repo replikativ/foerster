@@ -18,7 +18,7 @@ A reference for every inference entry point in `org.replikativ.foerster.core`
 
 Methods: `:enumerate` (exact, see below); `:importance`, `:smc`, `:tempered` (`:particles`); `:pimh`,
 `:pgibbs`, `:pgas`, `:ipmcmc`, `:bbvi` (`:particles`, `:iterations`); `:mh`,
-`:rmh` (`:iterations` per chain, `:chains`, `:burn`, `:step-size`); `:kernel`
+`:rmh`, `:nuts` (`:iterations` per chain, `:chains`, `:burn`, `:step-size`); `:kernel`
 (`:kernel`, `:chains`); `:pmmh` (`:particles`, `:iterations`, `:params`).
 Other options go to the method's own function, described below.
 
@@ -27,8 +27,9 @@ Which to start with:
 - **Observations spread through the program** (a time series, a sequence of
   steps): `:smc` with as many particles as you can afford; it also
   estimates the evidence.
-- **All observations at the end, continuous latents**: `:rmh` or HMC on a
-  block, several chains, and check R-hat and ESS
+- **All observations at the end, continuous latents**: `:nuts` on a
+  numerical block (`:rmh` on ordinary sites), several chains, and check
+  R-hat and ESS
   ([posteriors](posteriors.md#diagnostics)).
 - **Static parameters of a sequential model**: `:pmmh`, or SMC² online;
   **a multimodal posterior**: `:tempered`.
@@ -365,6 +366,7 @@ provided.
 | `(k/random-walk-mh-kernel iterations {:step-size 0.1})` | random-walk MH on continuous sites |
 | `(k/block-gibbs-kernel iterations selector block-kernels classifier opts)` | block Gibbs: `classifier` `(fn [address entry])` assigns sites to block ids, `selector` (`k/round-robin-selector`, `k/random-selector`) picks a block per iteration, `block-kernels` `{block-id kernel}` moves it (`k/prior-block-kernel`, `k/random-walk-block-kernel`) |
 | `(k/hmc-kernel iterations {:step-size 0.1 :steps 10})` | HMC-within-Gibbs on block sites ([blocks](https://replikativ.github.io/foerster/foerster.blocks.html)) |
+| `(k/nuts-kernel iterations {:burn … :target-accept 0.8 :max-depth 10})` | the No-U-Turn sampler on block sites, Stan's algorithm: multinomial trajectories, the generalized U-turn criterion, divergences, and during `:burn` dual-averaging step size and windowed diagonal-metric adaptation; the block's target must be its complete conditional ([nuts](https://cljdoc.org/d/org.replikativ/foerster/CURRENT/api/org.replikativ.foerster.nuts)) |
 | `(k/cycle iterations [k₁ k₂ …])` | each iteration runs k₁'s moves, then k₂'s, … — the composition K₂∘K₁ |
 | `(k/mixture iterations [[w₁ k₁] [w₂ k₂] …])` | each iteration runs one kᵢ, picked with probability ∝ wᵢ |
 
