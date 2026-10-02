@@ -3,6 +3,8 @@
   ["Language" {:file "doc/language.md"}]
   ["Algorithms" {:file "doc/algorithms.md"}]
   ["Posteriors" {:file "doc/posteriors.md"}]
+  ["Checking a Model and its Inference" {:file "doc/workflow.md"}]
+  ["Coming from Other PPLs" {:file "doc/coming-from.md"}]
   ["Extending" {:file "doc/extending.md"}]
   ["Worlds" {:file "doc/worlds.md"}]
   ["Distributions and Reproducibility" {:file "doc/distributions.md"}]
