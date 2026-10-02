@@ -240,7 +240,9 @@ large one only scores, a learned proposal — returns
 weight joins the step's factor and the target is still p·exp(reward).
 
 Each particle's trace holds its states (`[:steer/state t]`) and reward
-(`:steer/reward`). `foerster.learn/trajectories` reads them back with the
+(`:steer/reward`); `:record` (`(fn [state])`, default the state) chooses
+what is kept of a state — a language model's tokens rather than its KV
+cache. `foerster.learn/trajectories` reads them back with the
 particles' normalized weights, and `learn/draws` resamples them into
 unweighted draws from the target: training data for the value estimates and
 proposals that make the next search cheaper.

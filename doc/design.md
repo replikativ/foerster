@@ -54,12 +54,23 @@ run a program under a policy.
   forked (or copied, in canonical worlds) into the next generation, the
   others abandoned. No coordinator and no barrier thread: the barrier is the
   arrival of the last particle. **Streaming** SMC parks particles at
-  `:stream` sites until a value is pushed.
+  `:stream` sites until a value is pushed. In fresh worlds the session is
+  closed before the measure is delivered, so a caller that stops its
+  executor on the result cuts no cleanup short; in canonical worlds every
+  world is discarded first (below).
 - **Importance sampling** is the same with `:resample-threshold` 0: particles
   still park at each observation, but the population is never resampled.
 - **A `PInferenceKernel`** (`kernel-infer`) runs as SMC whose latent sites
   take the value the kernel's `step` gives, its `:log-weight-delta` added to
   the weight; the prior kernel draws from the prior.
+- **The particle cascade** (`foerster.cascade`) has no barrier: each
+  savepoint arriving at an observation is decided on its own, against the
+  running mean weight of those that arrived there so far, itself included —
+  abandoned, continued, or forked into several children (Paige et al. 2014,
+  Eq. 14).
+- **Steering** (`foerster.steer`) is SMC over a program whose steps are
+  random without a sample site and whose value estimates are barrier
+  factors: twisted SMC, with the telescoping correction as the last factor.
 - **Conditional SMC** keeps one particle on a retained trajectory: particle
   Gibbs, and with **ancestor sampling** (PGAS) the retained particle redraws
   its past, each candidate's future scored by forking its parked savepoint
@@ -89,6 +100,8 @@ run a program under a policy.
   supports) is refused. Limits: the reverse move is scored under the prior,
   so a custom proposal must be the prior or symmetric, and a block's
   membership must not depend on the move.
+  Chain kernels compose: `k/cycle` runs several in turn, `k/mixture` one
+  picked at random per iteration; both are kernels again and nest.
 - **HMC-within-Gibbs** moves block sites along the gradient of the block's
   density — plus one other latent site by single-site MH per iteration — and
   accepts on the **full** trace's log joint, so an incomplete block density
@@ -138,7 +151,5 @@ split), and every world is discarded before the result is delivered. See
 
 | Method | How |
 |---|---|
-| asynchronous SMC, particle cascade | no barrier: decide per arriving savepoint whether to fork, continue or abandon |
-| twisted SMC, process rewards | `factor` with a value estimate; the telescoping correction is a second factor |
 | reweighted wake-sleep, inference compilation | per-site `:log-prob` and `:log-proposal` in the trace; gradients by the embedding |
 | nested inference | an inner world with its own handler table; nesting is by world |

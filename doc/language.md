@@ -33,7 +33,7 @@ A `deterministic` site makes a derived quantity part of every particle's
 trace, so its posterior can be read without returning it from the model:
 `(m/measure-stats measure #(m/site-value % :bmi))` (see
 [posteriors](posteriors.md)). Traces that carry what a model computed are also
-the training data of learned proposals.
+the training data of learned proposals (`foerster.learn`).
 
 Options of `sample` and `observe`:
 
@@ -41,7 +41,18 @@ Options of `sample` and `observe`:
 |---|---|
 | `:id` | the site's name, its address (see below) |
 | `:init v` | the first state of a Markov chain starts the site at `v` (a block that cannot be drawn from needs it) |
+| `:proposal q` | `sample` only: under inference a fresh value is drawn from the distribution `q` instead of `d`, and the weight takes log d(v) − log q(v) |
 | `:stream true` | the site's value arrives from outside, pushed by `smc/stream` |
+
+A `:proposal` is a guide the program names: a distribution it computes, from
+its data for instance, which is how an amortized guide plugs in. The target
+stays the program's posterior; a good guide only raises the effective sample
+size. It applies to fresh draws: a replayed or kept value, a Markov chain's
+move, a constraint, `:init` and a policy's `:draw` take precedence.
+
+```clojure
+(sample (dist/normal 0.0 1.0) :id :mu :proposal (dist/normal 0.8 0.6))
+```
 
 To draw from the prior, run a model under `gfi/simulate` (see the
 [programmable inference notebook](https://replikativ.github.io/foerster/foerster.programmable.html))
