@@ -72,7 +72,7 @@
 (defn- ranks
   "Average ranks (1-based) of the pooled draws, ties shared."
   [xs]
-  (let [order (sort-by #(nth xs %) (range (count xs)))
+  (let [order (vec (sort-by #(nth xs %) (range (count xs))))
         r (double-array (count xs))]
     (loop [i 0]
       (when (< i (count order))
@@ -110,18 +110,20 @@
         w (mean (map variance cs))
         b (* n (variance (map mean cs)))
         var+ (+ (* (/ (dec n) n) w) (/ b n))]
-    (Math/sqrt (/ var+ w))))
+    (if (pos? w) (Math/sqrt (/ var+ w)) ##NaN)))
 
 (defn- autocovariance
-  "Autocovariances of `xs` at lags 0 … n−1, normalized by n."
+  "(fn [t]) → the autocovariance of `xs` at lag t, normalized by n: computed
+  per lag when asked, as Geyer's sum stops long before the last lag."
   [xs]
   (let [n (count xs)
         mu (mean xs)
         d (double-array (map #(- % mu) xs))]
-    (vec (for [t (range n)]
-           (/ (loop [i 0 acc 0.0]
-                (if (< (+ i t) n) (recur (inc i) (+ acc (* (aget d i) (aget d (+ i t))))) acc))
-              n)))))
+    (memoize
+     (fn [t]
+       (/ (loop [i 0 acc 0.0]
+            (if (< (+ i t) n) (recur (inc i) (+ acc (* (aget d i) (aget d (+ i t))))) acc))
+          n)))))
 
 (defn- ess*
   "Effective sample size of chains of equal length (ArviZ's `_ess`): the
@@ -132,39 +134,41 @@
     (if (< n 4)
       ##NaN
       (let [acovs (mapv autocovariance cs)
-            mean-acov (fn [t] (mean (map #(nth % t) acovs)))
+            mean-acov (fn [t] (mean (map #(% t) acovs)))
             mean-var (* (mean-acov 0) (/ n (dec n)))
             var+ (+ (* mean-var (/ (dec n) n))
                     (if (> m 1) (variance (map mean cs)) 0.0))
-            rho (fn [t] (- 1.0 (/ (- mean-var (mean-acov t)) var+)))
-            r (double-array n)
-            _ (aset r 0 1.0)
-            _ (aset r 1 (rho 1))
+            rho (fn [t] (- 1.0 (/ (- mean-var (mean-acov t)) var+)))]
+        (if-not (pos? var+)
+          ##NaN                              ; constant draws: no information
+          (let [r (double-array n)
+                _ (aset r 0 1.0)
+                _ (aset r 1 (rho 1))
             ;; initial positive sequence
-            [t even] (loop [t 1 even 1.0 odd (aget r 1)]
-                       (if (and (< t (- n 3)) (> (+ even odd) 0.0))
-                         (let [even' (rho (inc t)) odd' (rho (+ t 2))]
-                           (when (>= (+ even' odd') 0.0)
-                             (aset r (inc t) even')
-                             (aset r (+ t 2) odd'))
-                           (recur (+ t 2) even' odd'))
-                         [t even]))
-            max-t (- t 2)
-            _ (when (> even 0.0) (aset r (inc max-t) even))
+                [t even] (loop [t 1 even 1.0 odd (aget r 1)]
+                           (if (and (< t (- n 3)) (> (+ even odd) 0.0))
+                             (let [even' (rho (inc t)) odd' (rho (+ t 2))]
+                               (when (>= (+ even' odd') 0.0)
+                                 (aset r (inc t) even')
+                                 (aset r (+ t 2) odd'))
+                               (recur (+ t 2) even' odd'))
+                             [t even]))
+                max-t (- t 2)
+                _ (when (> even 0.0) (aset r (inc max-t) even))
             ;; initial monotone sequence
-            _ (loop [t 1]
-                (when (<= t (- max-t 2))
-                  (when (> (+ (aget r (inc t)) (aget r (+ t 2)))
-                           (+ (aget r (dec t)) (aget r t)))
-                    (let [v (/ (+ (aget r (dec t)) (aget r t)) 2.0)]
-                      (aset r (inc t) v)
-                      (aset r (+ t 2) v)))
-                  (recur (+ t 2))))
-            tau (+ -1.0
-                   (* 2.0 (reduce + (map #(aget r %) (range (inc max-t)))))
-                   (aget r (inc max-t)))
-            tau (max tau (/ 1.0 (Math/log10 (* m n))))]
-        (/ (* m n) tau)))))
+                _ (loop [t 1]
+                    (when (<= t (- max-t 2))
+                      (when (> (+ (aget r (inc t)) (aget r (+ t 2)))
+                               (+ (aget r (dec t)) (aget r t)))
+                        (let [v (/ (+ (aget r (dec t)) (aget r t)) 2.0)]
+                          (aset r (inc t) v)
+                          (aset r (+ t 2) v)))
+                      (recur (+ t 2))))
+                tau (+ -1.0
+                       (* 2.0 (reduce + (map #(aget r %) (range (inc max-t)))))
+                       (aget r (inc max-t)))
+                tau (max tau (/ 1.0 (Math/log10 (* m n))))]
+            (/ (* m n) tau)))))))
 
 (defn rhat
   "Rank-normalized split R-hat of `cs` (draws by chain): the larger of the
