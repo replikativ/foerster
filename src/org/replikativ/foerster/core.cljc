@@ -1081,3 +1081,30 @@
                          (or chains 4) rest-opts)
       :kernel (kernel-infer model kernel (or chains particles 4) rest-opts)
       :pmmh (on-savepoints (smc2/pmmh model particles iterations (cond-> rest-opts burn (assoc :burn burn)))))))
+
+;; =============================================================================
+;; Nested inference
+;; =============================================================================
+
+(defn conditional
+  "Nested inference: a spin resolving the posterior of `model`'s value under
+  `opts` (as for `infer`) as a distribution — a categorical over the values
+  the inner inference found, weighted (Anglican's `conditional`). The outer
+  program samples from it, or observes against it:
+
+    (let [guess (await (infer/conditional (inner-model x) {:method :enumerate}))]
+      (sample guess :id :their-guess))
+
+  The inner inference runs in fresh worlds of its own. Under exact
+  enumeration the distribution is exact; otherwise it is the inner measure,
+  so it has as many atoms as distinct values. Memoize it (`process/mem`) when
+  the outer program asks the same question repeatedly."
+  [model opts]
+  (spin
+   (let [measure (await (infer model opts))
+         ps (m/get-particles measure)
+         ws (m/normalize-log-weights (mapv second ps))
+         by-value (reduce (fn [acc [[particle _] w]]
+                            (update acc (m/get-value particle) (fnil + 0.0) w))
+                          {} (map vector ps ws))]
+     (dist/categorical (vec (filter (comp pos? second) by-value))))))

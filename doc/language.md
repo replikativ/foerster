@@ -112,6 +112,24 @@ customer at an existing table ∝ its customers or a new one ∝ α; it is an
 ordinary sample site over finitely many tables, so exact enumeration
 handles it too.
 
+## Nested inference
+
+`(infer/conditional model opts)` runs an inner inference (any `infer/infer`
+method) in fresh worlds and resolves its posterior over the inner
+program's value as a distribution, which the outer program samples from or
+observes against — reasoning about another agent's reasoning, as Anglican's
+`conditional` did:
+
+```clojure
+(let [their-belief (await (infer/conditional (inner-model evidence) {:method :enumerate}))
+      x (sample their-belief :id :their-guess)]
+  …)
+```
+
+Under exact enumeration the inner distribution is exact, and so the whole
+nested model can be enumerated exactly; otherwise it is the inner measure's
+weighted atoms. Wrap it in `process/mem` when the same question recurs.
+
 ## Selectors
 
 Operations that act on a set of sites — `gfi/regenerate`, `gfi/mh`,
