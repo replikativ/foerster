@@ -95,3 +95,14 @@
                   (loop [e e] (cond (nil? e) nil
                                     (= ::nuts/incomplete-target (:type (ex-data e))) ::nuts/incomplete-target
                                     :else (recur (ex-cause e))))))))))
+
+(deftest a-numeric-gradient-is-an-explicit-opt-in
+  ;; the μ/σ block from its density alone, gradient by central differences
+  (let [b (block/block {:block/id :ms-numeric :block/coordinates :constrained :block/target :complete-conditional
+                        :block/latents [{:name :mu :shape [] :support :real}
+                                        {:name :sigma :shape [] :support :positive}]}
+                       (block/with-numeric-gradient {:log-density (fn [x _] (first (normal-lp+grad x)))}))
+        x (double-array [2.3 -0.4])
+        [_ g] ((block/capability b :value+grad) x nil)
+        [_ g'] ((block/capability mean-and-scale :value+grad) x nil)]
+    (is (every? #(< (Math/abs %) 1e-5) (map - g g')))))
