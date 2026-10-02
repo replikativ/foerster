@@ -81,6 +81,11 @@ For moves that are not "redraw these sites" — scaling, swapping, splitting —
 use involutive MCMC (`foerster.involutive/step`) and the generative function
 interface (`foerster.gfi`), shown in the
 [programmable inference notebook](https://replikativ.github.io/foerster/foerster.programmable.html).
+An involution may change the model's dimension (reversible jump): it sets
+the new sites through `:choices` and names under `:removed` the sites whose
+values it moved into the auxiliary variables, as in a split of one
+component into two and the matching merge
+(`test/…/reversible_jump_test.clj`).
 
 ## A kernel
 
