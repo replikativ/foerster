@@ -216,3 +216,43 @@
               accept? (trace/release! trace t')
               :else (trace/release! t' trace))
             {:trace (if accept? t' trace) :accepted? accept?}))))
+
+(defn mh-proposal
+  "One Metropolis-Hastings move with a custom proposal: `proposal` is a
+  function `(fn [choices & args])` of the current choices ({address value})
+  returning a spin whose sample sites are named by the MODEL addresses they
+  propose — any number of them jointly, correlated as the proposal program
+  likes (Gen's `metropolis_hastings(trace, proposal, args)`).
+
+  The proposal runs forward on the current choices (its log density
+  log q(c' | t)), the model is updated with what it proposed (`update`), and
+  the proposal is assessed on the reverse move, the values it replaced
+  given the new choices (log q(c | t')). Accepted on
+    log α = w(update) + log q(c | t') − log q(c' | t).
+  The proposal must be able to propose the reverse move (it reaches the same
+  addresses from t'). The loser's worlds are given back. Resolves
+  {:trace t :accepted? b}."
+  [trace proposal & args]
+  (fn [resolve reject]
+    ((simulate (apply proposal (itrace/choices trace) args))
+     (fn [fwd]
+       (let [proposed (itrace/choices fwd)
+             fwd-score (itrace/log-joint fwd)]
+         ((close! fwd)
+          (fn [_]
+            ((update trace proposed)
+             (fn [{t' :trace w :weight discard :discard}]
+               ((assess (apply proposal (itrace/choices t') args) discard)
+                (fn [{bwd-score :weight}]
+                  (let [log-alpha (+ w (- bwd-score fwd-score))
+                        accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) log-alpha))
+                                     (or (>= log-alpha 0.0)
+                                         (< (Math/log (random/in-world-stream (:trace/world t') ::accept
+                                                                              m/uniform01))
+                                            log-alpha)))]
+                    (if accept? (trace/release! trace t') (trace/release! t' trace))
+                    (resolve {:trace (if accept? t' trace) :accepted? accept?})))
+                (fn [e] (trace/release! t' trace) (reject e))))
+             reject))
+          reject)))
+     reject)))

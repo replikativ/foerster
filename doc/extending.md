@@ -59,6 +59,24 @@ that answers for a site takes precedence over it.
 | `:on-step` | for `mh-chain`: `(fn [{:keys [trace accepted?]}])` called after every step |
 | `:first-iteration` | for `mh-chain`: the number of its first move (default 0); a move's randomness is keyed by its number, so a chain continued by another `mh-chain` call starts where the first stopped |
 
+**A proposal program** — `(gfi/mh-proposal trace proposal & args)` is
+Gen's `metropolis_hastings(trace, proposal, args)`: `proposal` is
+`(fn [choices & args])` returning a spin whose sample sites are named by
+the model addresses it proposes, any number of them, jointly and correlated
+as the program likes. The move runs the proposal forward, updates the model
+with what it drew, and scores the reverse move by assessing the proposal on
+the replaced values under the new choices; accepted on
+w(update) + log q(old | new) − log q(new | old). The proposal must be able
+to propose the reverse move.
+
+```clojure
+(defn along-the-ridge [{:keys [x y]}]          ; x and y move together
+  (spin (let [x' (sample (dist/normal x 0.6) :id :x)]
+          (sample (dist/normal (- y (- x' x)) 0.15) :id :y))))
+
+((gfi/mh-proposal trace along-the-ridge) on-step on-error)  ; {:trace :accepted?}
+```
+
 For moves that are not "redraw these sites" — scaling, swapping, splitting —
 use involutive MCMC (`foerster.involutive/step`) and the generative function
 interface (`foerster.gfi`), shown in the
