@@ -5,11 +5,12 @@
 
 (def notebooks
   [["getting_started" "Getting Started" "a first model, sample and observe, SMC, the posterior"]
-   ["algorithms" "Choosing an Inference Algorithm" "importance sampling, SMC, particle MCMC, MCMC, BBVI on known posteriors"]
+   ["algorithms" "Choosing an Inference Algorithm" "importance sampling, SMC, particle MCMC, MCMC, BBVI on known posteriors; guides; composed kernels"]
    ["worlds" "Models in Worlds" "canonical forks, budgets, what cannot be copied"]
    ["blocks" "Blocks and HMC" "numerical blocks, HMC-within-Gibbs, checking gradients"]
    ["streaming" "Streaming SMC" "online filtering against the Kalman filter"]
    ["programmable" "Programmable Inference" "the generative function interface, MH by selection, involutive MCMC"]
+   ["steering" "Steering a Process" "tilting a process by a reward with SMC; trajectories as training data"]
    ["counterfactuals" "Interventions and Counterfactuals" "seeing, doing, and what would have been"]])
 
 (def guides

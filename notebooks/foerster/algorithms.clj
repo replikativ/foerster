@@ -3,8 +3,9 @@
 ;; Every algorithm in foerster runs the same kind of program: a spin with
 ;; `sample` and `observe` sites. What differs is what an algorithm does at
 ;; those sites — weigh, resample, move — and so what it is good at. This
-;; notebook runs them all on two models whose posteriors are known exactly,
-;; and closes with advice on which to use when.
+;; notebook runs them on models whose posteriors are known exactly, shows
+;; how a guide improves a proposal and how Markov-chain kernels compose, and
+;; closes with advice on which to use when.
 
 (ns foerster.algorithms
   (:require [org.replikativ.foerster.core :as infer]
@@ -178,6 +179,105 @@
 ;; parameters shared by all time steps — and where its MCMC guarantees
 ;; matter (more sweeps converge to the exact posterior).
 
+;; ## A guide at a sample site
+;;
+;; Importance sampling is only as good as its proposal, and the prior is
+;; often a poor one. A sample site can name its own proposal: with
+;; `:proposal q`, the particle methods draw the site's value from q and weigh
+;; it by p(x)/q(x), so the posterior stays the same. Take mu ~ N(0, 1) and
+;; one observation 1 ~ N(mu, 0.5); the posterior is N(0.8, 0.2) and the
+;; evidence N(1; 0, √1.25).
+
+(defn guided [proposal]
+  (spin
+   (let [mu (if proposal
+              (sample (dist/normal 0.0 1.0) :id :mu :proposal proposal)
+              (sample (dist/normal 0.0 1.0) :id :mu))]
+     (observe (dist/normal mu 0.5) 1.0 :id :y)
+     mu)))
+
+(def guide-runs
+  (array-map
+   "prior" (:measure (run 61 #(infer/importance-sampling (guided nil) 1000)))
+   "guide N(0.8, 0.6)" (:measure (run 61 #(infer/importance-sampling (guided (dist/normal 0.8 0.6)) 1000)))))
+
+(kind/table {:column-names ["proposal" "mean" "sd" "log evidence" "ESS"]
+             :row-vectors (into [["exact" 0.8 (Math/sqrt 0.2) (dist/logpdf (dist/normal 0.0 (Math/sqrt 1.25)) 1.0) "–"]]
+                                (for [[label measure] guide-runs]
+                                  (let [[mu sd] (mean-sd measure identity)]
+                                    [label mu sd (m/log-marginal measure) (m/effective-sample-size measure)])))})
+
+;; Both estimate the same posterior and evidence; the guide, close to the
+;; posterior, does it with several times the effective samples. A guide
+;; fitted by BBVI, or computed from the data (amortized inference), goes
+;; here. It applies to fresh draws only: replays and MH moves take
+;; precedence, so a Markov chain over a guided site targets the same
+;; posterior.
+
+;; ## Composing kernels
+;;
+;; Markov-chain kernels compose: `k/cycle` runs each kernel in turn, and
+;; `k/mixture` picks one at random by weight; each leaves the posterior
+;; invariant, so the composition does. This matters when no single move
+;; suits every latent. A model with a discrete and a continuous latent —
+;; z ~ Bernoulli(0.3), mu ~ N(2z, 1), and 1.5 ~ N(mu, 0.5):
+
+(defn mixed []
+  (spin
+   (let [z (sample (dist/bernoulli 0.3) :id :z)
+         mu (sample (dist/normal (* 2.0 z) 1.0) :id :mu)]
+     (observe (dist/normal mu 0.5) 1.5 :id :y)
+     [z mu])))
+
+;; Its posterior is exact: p(z | y) ∝ p(z)·N(1.5; 2z, √1.25), and given z,
+;; E[mu | z, y] = (2z + 4·1.5)/5.
+
+(def mixed-truth
+  (let [lik (fn [z] (Math/exp (dist/logpdf (dist/normal (* 2.0 z) (Math/sqrt 1.25)) 1.5)))
+        w1 (* 0.3 (lik 1))
+        w0 (* 0.7 (lik 0))
+        p1 (/ w1 (+ w0 w1))]
+    {:p-z p1 :mean-mu (+ (* p1 (/ 8.0 5)) (* (- 1 p1) (/ 6.0 5)))}))
+
+;; A random walk with a small step explores mu carefully but slowly; z
+;; changes (by a prior proposal) only where mu fits the other z, and mu
+;; takes many small steps to get there. Within the same budget each chain
+;; stays near where it started, and the four chains disagree. Cycled or
+;; mixed with single-site moves, which redraw a site from its prior, the
+;; chains jump between the two modes and reach the posterior of both.
+
+(def kernel-runs
+  (array-map
+   "random walk" #(infer/kernel-infer (mixed) (k/random-walk-mh-kernel 1500 {:step-size 0.05 :samples :all :burn 200}) 4)
+   "cycle" #(infer/kernel-infer (mixed) (k/cycle 750 [(k/random-walk-mh-kernel 2 {:step-size 0.05})
+                                                      (k/single-site-mh-kernel 1)]
+                                                 {:samples :all :burn 100})
+                                4)
+   "mixture" #(infer/kernel-infer (mixed) (k/mixture 1500 [[2 (k/random-walk-mh-kernel 1 {:step-size 0.05})]
+                                                           [1 (k/single-site-mh-kernel 1)]]
+                                                     {:samples :all :burn 200})
+                                  4)))
+
+(defn chain-p-z
+  "P(z = 1) within each of the four chains (`:samples :all` emits them in
+  order, chain after chain)."
+  [measure]
+  (let [zs (mapv (comp first m/get-value first) (m/get-particles measure))]
+    (mapv #(/ (reduce + %) (double (count %))) (partition-all (quot (count zs) 4) zs))))
+
+(kind/table {:column-names ["kernel" "P(z = 1)" "E[mu]" "P(z = 1) per chain" "ms"]
+             :row-vectors (into [["exact" (:p-z mixed-truth) (:mean-mu mixed-truth) "–" "–"]]
+                                (for [[label make] kernel-runs]
+                                  (let [{:keys [measure ms]} (run 71 make)]
+                                    [label (first (mean-sd measure first)) (first (mean-sd measure second))
+                                     (chain-p-z measure) ms])))})
+
+;; The budgets are comparable — 1500 moves per chain for the random walk and
+;; the mixture, 2250 for the cycle — and the composed kernels are no slower
+;; per move. A cycle of an HMC move with single-site moves is the
+;; same pattern for models with many continuous latents and a few discrete
+;; ones.
+
 ;; ## Which one to use
 ;;
 ;; - **SMC** (`smc-infer`) is the default for most models, and the only
@@ -196,7 +296,8 @@
 ;; - **MCMC over traces** (`kernel-infer` with `single-site-mh-kernel`,
 ;;   `random-walk-mh-kernel` or `block-gibbs-kernel`) when a model has many
 ;;   latent variables and few observations each, or structure that changes
-;;   between runs. Random-walk MH for continuous latents.
+;;   between runs. Random-walk MH for continuous latents; `k/cycle` or
+;;   `k/mixture` to combine it with moves for the discrete ones.
 ;; - **HMC** on numerical blocks (`hmc-kernel`) when many continuous latents
 ;;   are correlated: see [Blocks and HMC](foerster.blocks.html).
 ;; - **BBVI** (`bbvi-infer`) when you need a fitted approximation q — for
