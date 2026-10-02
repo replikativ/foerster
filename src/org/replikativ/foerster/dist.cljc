@@ -710,6 +710,26 @@
 ;; Support
 ;; =============================================================================
 
+(defprotocol Finite
+  (-support [d] "The values of a distribution with finite support, in order;
+  nil when its support is infinite or continuous."))
+
+(extend-protocol Finite
+  #?(:clj Object :cljs default)
+  (-support [_] nil)
+  Bernoulli (-support [_] [0 1])
+  Flip (-support [_] [true false])
+  Discrete (-support [d] (vec (range (count (:weights d)))))
+  Categorical (-support [d] (:values d))
+  Binomial (-support [d] (vec (range (inc (:n d)))))
+  UniformDiscrete (-support [d] (vec (range (:a d) (:b d)))))
+
+(defn support
+  "The values `d` can take, when finitely many (exact enumeration walks
+  them); nil otherwise."
+  [d]
+  (-support d))
+
 (defprotocol Continuous
   (-continuous? [d] "Whether `d` is a law on (an interval of) the reals."))
 

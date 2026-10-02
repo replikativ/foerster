@@ -20,6 +20,7 @@
             [org.replikativ.foerster.kernel :as k]
             [org.replikativ.foerster.smc :as smc]
             [org.replikativ.foerster.smc2 :as smc2]
+            [org.replikativ.foerster.enumerate :as enumerate]
             [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.foerster.tempering :as tempering]
             [org.replikativ.foerster.gradient :as grad]
@@ -1034,7 +1035,7 @@
 ;; =============================================================================
 
 (def ^:private infer-methods
-  #{:importance :smc :tempered :pimh :pgibbs :pgas :ipmcmc :bbvi :mh :rmh :kernel :pmmh})
+  #{:enumerate :importance :smc :tempered :pimh :pgibbs :pgas :ipmcmc :bbvi :mh :rmh :kernel :pmmh})
 
 (defn infer
   "Run `model` under the inference method `(:method opts)` — one call shape
@@ -1046,6 +1047,8 @@
                           :params #{:drift}})
 
   Methods and their sizes:
+    :enumerate                          (exact; finite supports only,
+                                        :max-branches)
     :importance :smc :tempered          :particles
     :pimh :pgibbs :pgas :ipmcmc :bbvi   :particles :iterations
     :mh :rmh                            :iterations per chain, :chains (default
@@ -1064,6 +1067,7 @@
   (let [rest-opts (dissoc opts :method :particles :iterations :chains :burn :step-size :kernel)
         chain-output {:samples :all :burn (or burn 0)}]
     (case method
+      :enumerate (on-savepoints (enumerate/enumerate model rest-opts))
       :importance (importance-sampling model particles rest-opts)
       :smc (smc-infer model particles rest-opts)
       :tempered (tempered-infer model particles rest-opts)

@@ -16,7 +16,7 @@ A reference for every inference entry point in `org.replikativ.foerster.core`
 (infer/infer (model) {:method :pmmh :particles 100 :iterations 2000 :params #{:sigma}})
 ```
 
-Methods: `:importance`, `:smc`, `:tempered` (`:particles`); `:pimh`,
+Methods: `:enumerate` (exact, see below); `:importance`, `:smc`, `:tempered` (`:particles`); `:pimh`,
 `:pgibbs`, `:pgas`, `:ipmcmc`, `:bbvi` (`:particles`, `:iterations`); `:mh`,
 `:rmh` (`:iterations` per chain, `:chains`, `:burn`, `:step-size`); `:kernel`
 (`:kernel`, `:chains`); `:pmmh` (`:particles`, `:iterations`, `:params`).
@@ -32,6 +32,19 @@ Which to start with:
   ([posteriors](posteriors.md#diagnostics)).
 - **Static parameters of a sequential model**: `:pmmh`, or SMC² online;
   **a multimodal posterior**: `:tempered`.
+
+## Exact enumeration
+
+`{:method :enumerate}` (`org.replikativ.foerster.enumerate`) computes the
+exact posterior of a program whose latent choices all have finite support
+(`dist/support`: Bernoulli, flip, discrete, categorical, binomial,
+uniform-discrete): at every latent site the particle's world forks once per
+value, each branch weighted by that value's probability. Branches share the
+program up to where they part, so the cost is the number of complete
+assignments (`:max-branches`, default 100 000, bounds it). Its measure has
+one particle per assignment and its `m/log-marginal` is the exact evidence:
+the reference for checking the other methods on small discrete models. A
+latent site with infinite or continuous support is refused.
 
 ## Options every particle method takes
 
