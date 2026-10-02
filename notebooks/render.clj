@@ -11,7 +11,8 @@
    ["streaming" "Streaming SMC" "online filtering against the Kalman filter"]
    ["programmable" "Programmable Inference" "the generative function interface, MH by selection, involutive MCMC"]
    ["steering" "Steering a Process" "tilting a process by a reward with SMC; trajectories as training data"]
-   ["counterfactuals" "Interventions and Counterfactuals" "seeing, doing, and what would have been"]])
+   ["counterfactuals" "Interventions and Counterfactuals" "seeing, doing, and what would have been"]
+   ["gallery" "A Gallery of Classic Models" "pencils, regression, seven scientists, label switching, branching, coal-mining disasters and eight schools, each against an exact answer"]])
 
 (def guides
   [["language" "Language" "sites, addresses, and the rules of the spin macro"]
