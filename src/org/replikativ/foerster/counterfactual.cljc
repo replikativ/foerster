@@ -44,15 +44,27 @@
                             (catch #?(:clj Throwable :cljs :default) e (reject e))))
                reject)))
 
+(defn- close-all
+  "Close the sessions of `traces` in turn, then call `k` — also when a close
+  fails, so a failure is reported with its own error."
+  [traces k]
+  (if-let [[t & more] (seq traces)]
+    ((gfi/close! t) (fn [_] (close-all more k)) (fn [_] (close-all more k)))
+    (k)))
+
 (defn- twin
-  "One factual world and its counterfactual twin."
+  "One factual world and its counterfactual twin. Both sessions are closed
+  however it ends."
   [model evidence interventions opts]
   (then (gfi/generate model evidence opts)
         (fn [{t :trace w :weight} resolve reject]
-          (let [[noise unsupported] (noise-of t)
-                factual (:trace/result t)]
-            ((then (gfi/run-policy model (itrace/policy {:interventions interventions :noise noise}) opts)
-                   (fn [t' resolve reject]
+          (let [fail (fn [opened e] (close-all opened #(reject e)))]
+            (try
+              (let [[noise unsupported] (noise-of t)
+                    factual (:trace/result t)]
+                ((gfi/run-policy model (itrace/policy {:interventions interventions :noise noise}) opts)
+                 (fn [t']
+                   (try
                      (let [unaligned (into (vec unsupported)
                                            (comp (filter (comp :unaligned? :note)) (map :address))
                                            (itrace/entries t'))
@@ -60,8 +72,10 @@
                                 :counterfactual (:trace/result t')
                                 :weight w
                                 :unaligned unaligned}]
-                       ((gfi/close! t') (fn [_] ((gfi/close! t) (fn [_] (resolve out)) reject)) reject))))
-             resolve reject)))))
+                       (close-all [t' t] #(resolve out)))
+                     (catch #?(:clj Throwable :cljs :default) e (fail [t' t] e))))
+                 #(fail [t] %)))
+              (catch #?(:clj Throwable :cljs :default) e (fail [t] e)))))))
 
 (defn counterfactual
   "Pairs of factual and counterfactual results of `model` (a spin, as for
