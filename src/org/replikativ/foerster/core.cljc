@@ -14,7 +14,8 @@
 
   All functions return Spin<EmpiricalMeasure> for composability;
   post-processing is measure-centric (query, predict)."
-  (:require [org.replikativ.foerster.measure :as m]
+  (:require [org.replikativ.foerster.block :as block]
+            [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.hmc :as hmc]
             [org.replikativ.foerster.nuts :as nuts]
@@ -628,7 +629,14 @@
              t (await (gfi/run-policy model (itrace/policy {:constraints latents
                                                             :interventions interventions
                                                             :simulate-observed? true})))
-             drawn (into {} (keep (fn [[address {:keys [value note]}]] (when (:simulated? note) [address value])))
+             drawn (into {} (mapcat (fn [[address {:keys [value note]}]]
+                                      (cond
+                                        (:simulated? note) [[address value]]
+                                        ;; a block's own observations, when it can draw them
+                                        (block/block-dist? (:dist note))
+                                        (when-let [simulate (block/capability (:block (:dist note)) :simulate)]
+                                          (map (fn [[k v]] [[address k] v])
+                                               (simulate (double-array value) (:inputs (:dist note))))))))
                          (:trace/entries t))]
          (await (gfi/close! t))
          (recur more (conj out {:value (:trace/result t) :observations drawn})))))))

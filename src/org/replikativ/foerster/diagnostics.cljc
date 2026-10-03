@@ -24,7 +24,8 @@
   of each observation, the input of PSIS-LOO and WAIC; particle methods also
   estimate the evidence (`measure/log-marginal`)."
   (:refer-clojure :exclude [compare])
-  (:require [org.replikativ.foerster.dist :as dist]
+  (:require [org.replikativ.foerster.block :as block]
+            [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]))
 
 ;; =============================================================================
@@ -255,8 +256,14 @@
   resample a weighted measure first)."
   [measure]
   (mapv (fn [[particle _]]
-          (into {} (keep (fn [[address {:keys [observed? log-prob]}]]
-                           (when observed? [address log-prob])))
+          (into {} (mapcat (fn [[address {:keys [observed? log-prob distribution value]}]]
+                             (cond
+                               observed? [[address log-prob]]
+                               ;; a block's own observations, when it shows them
+                               (block/block-dist? distribution)
+                               (when-let [pointwise (block/capability (:block distribution) :pointwise)]
+                                 (map (fn [[k l]] [[address k] (double l)])
+                                      (pointwise (double-array value) (:inputs distribution)))))))
                 (m/get-trace particle)))
         (m/get-particles measure)))
 
