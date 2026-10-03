@@ -142,7 +142,8 @@ Not in foerster yet:
   of guides. A model's few parameters fit by maximum marginal likelihood
   (`learn/maximize-evidence`); `foerster.learn` exports trajectories as
   training data for guides, which train elsewhere (finetune-rstr).
-- `propose`, `project`, trace translators, and enumeration.
+- `propose`, `project` and trace translators (enumeration is
+  `{:method :enumerate}`).
 
 ## Anglican
 
@@ -197,11 +198,11 @@ WebPPL's sources include an asynchronous particle filter and particle MCMC,
 prior art for foerster's cascade and particle-MCMC methods
 ([literature](literature.md)).
 
-Not in foerster yet: exact enumeration (`'enumerate'`), rejection sampling,
-incremental MH, `mem`, nested `Infer` (a posterior used as a distribution
-inside another model), and variational inference with guide programs and
-trainable parameters (`'optimize'`); foerster's BBVI learns a mean-field
-guide only.
+`'enumerate'` is `{:method :enumerate}`, `mem` is `process/mem`, and a
+nested `Infer` (a posterior used as a distribution inside another model) is
+`infer/conditional`. Not in foerster yet: rejection sampling, incremental
+MH, and variational inference with guide programs and trainable parameters
+(`'optimize'`); foerster's BBVI learns a mean-field guide only.
 
 ## What foerster has that these do not all have
 
