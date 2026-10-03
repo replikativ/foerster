@@ -188,6 +188,9 @@
     (spin
      (let [;; per chain: a block Gibbs description closes over its own state
            {:keys [iterations] :as step-opts} (mh-options kernel)
+           _ (when (and (= :all (:samples kernel)) (>= (:burn kernel 0) iterations))
+               (throw (ex-info ":burn leaves no draws: it must be below :iterations"
+                               {:type ::burn-exceeds-iterations :burn (:burn kernel) :iterations iterations})))
            root (ctx/create-execution-context :executor executor)
            session (sp/open! root {:purpose :mcmc :seed seed :fork-opts {:systems :none}
                                    :retain-released? false})]
@@ -656,15 +659,16 @@
   (if (on-savepoints? opts)
     (on-savepoints (smc/pimh model-task num-particles num-iterations opts))
     (spin
-     (let [seed (random/fresh-seed)
-           initial (await (particles model-task num-particles opts))]
+     (let [seed (or (:seed opts) (random/fresh-seed))
+           sweep-opts #(assoc opts :seed (sp/derive-seed seed ::sweep %))
+           initial (await (particles model-task num-particles (sweep-opts :initial)))]
        (loop [current (normalized-samples initial)
               current-log-Z (m/log-marginal initial)
               iteration 0
               all-samples []]
          (if (>= iteration num-iterations)
            (m/empirical all-samples)
-           (let [proposed (await (particles model-task num-particles opts))
+           (let [proposed (await (particles model-task num-particles (sweep-opts iteration)))
                  proposed-log-Z (m/log-marginal proposed)
                  log-alpha (- proposed-log-Z current-log-Z)
                  u (random/with-stream* seed [::pimh-accept iteration] m/uniform01)
@@ -682,19 +686,22 @@
    particles are emitted normalized."
   [model-task num-particles num-iterations opts]
   (spin
-   (let [initial (await (particles model-task num-particles opts))
-         pick (fn [measure]
+   (let [seed (or (:seed opts) (random/fresh-seed))
+         sweep-opts #(assoc opts :seed (sp/derive-seed seed ::sweep %))
+         initial (await (particles model-task num-particles (sweep-opts :initial)))
+         pick (fn [measure k]
                 (let [ps (m/get-particles measure)]
-                  (m/get-trace (first (nth ps (m/sample-categorical
-                                               (m/normalize-log-weights (mapv second ps))))))))]
-     (loop [retained-trace (pick initial)
+                  (random/with-stream* seed [::pick k]
+                    #(m/get-trace (first (nth ps (m/sample-categorical
+                                                  (m/normalize-log-weights (mapv second ps)))))))))]
+     (loop [retained-trace (pick initial :initial)
             iteration 0
             all-samples []]
        (if (>= iteration num-iterations)
          (m/empirical all-samples)
          (let [sweep (await (particles model-task num-particles
-                                       (assoc opts :retained (smc/retained-choices retained-trace))))]
-           (recur (pick sweep) (inc iteration) (into all-samples (normalized-samples sweep)))))))))
+                                       (assoc (sweep-opts iteration) :retained (smc/retained-choices retained-trace))))]
+           (recur (pick sweep iteration) (inc iteration) (into all-samples (normalized-samples sweep)))))))))
 
 (defn pgibbs-infer
   "Particle Gibbs (conditional SMC, Andrieu et al. 2010).
@@ -814,12 +821,12 @@
    Returns: Spin<Vector<Measure>> - A spin that completes with all sweep measures"
   [model-task num-particles retained-traces opts]
   ;; Create individual sweep spins for each node
-  ;; each node's seed is drawn here, in program order, so the nodes do not
-  ;; depend on the order in which they run
-  (let [sweep-spins (mapv (fn [retained-trace]
-                            (run-sweep model-task num-particles retained-trace
-                                       (assoc opts :seed (random/fresh-seed))))
-                          retained-traces)]
+  ;; each node's seed derives from the sweep's (`:seed`) and its index, so
+  ;; the nodes do not depend on the order in which they run
+  (let [sweep-spins (vec (map-indexed (fn [i retained-trace]
+                                        (run-sweep model-task num-particles retained-trace
+                                                   (assoc opts :seed (sp/derive-seed (:seed opts) ::node i))))
+                                      retained-traces))]
     ;; Use parallel combinator to run all sweeps concurrently
     (apply comb/parallel sweep-spins)))
 
@@ -863,42 +870,50 @@
    (let [num-nodes (or (:num-nodes opts) 8)
          num-csmc-nodes (or (:num-csmc-nodes opts) (quot num-nodes 2))
          num-smc-nodes (- num-nodes num-csmc-nodes)
-         all-particles? (get opts :all-particles? true)]
+         all-particles? (get opts :all-particles? true)
+         seed (or (:seed opts) (random/fresh-seed))
+         sweep-opts #(assoc opts :seed (sp/derive-seed seed ::sweep %))]
      (assert (> num-csmc-nodes 0) ":num-csmc-nodes must be > 0")
      (assert (< num-csmc-nodes num-nodes) ":num-csmc-nodes must be < :num-nodes")
      (loop [iteration 0
             ;; iteration 0 runs plain SMC on every node
             measures (await (run-parallel-sweeps model-task num-particles
-                                                 (vec (repeat num-nodes nil)) opts))
+                                                 (vec (repeat num-nodes nil)) (sweep-opts :initial)))
             all-samples []]
        (if (>= iteration num-iterations)
          (m/empirical all-samples)
          (let [log-Zs (mapv m/log-marginal measures)
-               [csmc-indices zeta-sums] (gibbs-update-csmc-indices log-Zs num-csmc-nodes)
-               ;; emit THESE sweeps, each node weighted by its Rao-Blackwellized
-               ;; probability of being a conditional node (ζ_j), particles
-               ;; normalized within the node
-               samples (vec (mapcat
-                             (fn [node-idx]
-                               (let [zeta (nth zeta-sums node-idx)
-                                     node (normalized-samples (nth measures node-idx))]
-                                 (when (pos? zeta)
-                                   (if all-particles?
-                                     (map (fn [[smp lw]] [smp (+ lw (Math/log zeta))]) node)
-                                     [[(first (nth node (m/sample-categorical
-                                                         (m/normalize-log-weights (mapv second node)))))
-                                       (Math/log zeta)]]))))
-                             (range num-nodes)))
-               retained-traces (vec (concat
-                                     (map (fn [node-idx]
-                                            (let [ps (m/get-particles (nth measures node-idx))]
-                                              (m/get-trace (first (nth ps (m/sample-categorical
-                                                                           (m/normalize-log-weights (mapv second ps))))))))
-                                          csmc-indices)
-                                     (repeat num-smc-nodes nil)))]
+               ;; the iteration's Gibbs draws from its own stream of the run's seed
+               [csmc-indices zeta-sums samples retained-traces]
+               (random/with-stream*
+                 seed [::gibbs iteration]
+                 (fn []
+                   (let [[csmc-indices zeta-sums] (gibbs-update-csmc-indices log-Zs num-csmc-nodes)
+                   ;; emit THESE sweeps, each node weighted by its Rao-Blackwellized
+                   ;; probability of being a conditional node (ζ_j), particles
+                   ;; normalized within the node
+                         samples (vec (mapcat
+                                       (fn [node-idx]
+                                         (let [zeta (nth zeta-sums node-idx)
+                                               node (normalized-samples (nth measures node-idx))]
+                                           (when (pos? zeta)
+                                             (if all-particles?
+                                               (map (fn [[smp lw]] [smp (+ lw (Math/log zeta))]) node)
+                                               [[(first (nth node (m/sample-categorical
+                                                                   (m/normalize-log-weights (mapv second node)))))
+                                                 (Math/log zeta)]]))))
+                                       (range num-nodes)))
+                         retained-traces (vec (concat
+                                               (map (fn [node-idx]
+                                                      (let [ps (m/get-particles (nth measures node-idx))]
+                                                        (m/get-trace (first (nth ps (m/sample-categorical
+                                                                                     (m/normalize-log-weights (mapv second ps))))))))
+                                                    csmc-indices)
+                                               (repeat num-smc-nodes nil)))]
+                     [csmc-indices zeta-sums samples retained-traces])))]
            (log/trace :ipmcmc/gibbs-update {:iteration iteration :csmc-indices csmc-indices})
            (recur (inc iteration)
-                  (await (run-parallel-sweeps model-task num-particles retained-traces opts))
+                  (await (run-parallel-sweeps model-task num-particles retained-traces (sweep-opts iteration)))
                   (into all-samples samples))))))))
 
 (defn pgas-infer

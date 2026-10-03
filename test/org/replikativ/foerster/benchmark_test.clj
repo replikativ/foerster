@@ -285,7 +285,10 @@
             ;; KL was ≤ 0.31, above 0.1 in about one run of eight; PGAS's over
             ;; 12 seeds ≤ 0.144 (barrier streams keyed by run seed), ≤ 0.6
             ;; before (one seed; two others above 0.1)
-            limit (get {:pgibbs 0.35 :pgas 0.35} algo 0.1)]
+            ;; PIMH (20 particles, 300 sweeps): over 36 seeds KL ≤ 0.163, above
+            ;; 0.1 in two or three — with sweep seeds drawn from the process
+            ;; generator (2/36) or derived from the run's :seed (3/36) alike
+            limit (get {:pgibbs 0.35 :pgas 0.35 :pimh 0.2} algo 0.1)]
         (is (< kl limit) (str algo " KL " kl))))))
 
 (deftest hierarchical-latents

@@ -229,6 +229,8 @@
   [model n {:keys [resample-threshold policy executor retained ancestor-sampling? root copy?
                    anchors rejuvenate resampling genealogy? smcp3 adopt batch] :as opts}
    {:keys [on-idle on-done on-error]}]
+  (when-not (pos-int? n)
+    (throw (ex-info "SMC needs at least one particle" {:type ::invalid-particles :particles n})))
   (when (and batch (or retained anchors smcp3 (not (pos-int? batch))))
     (throw (ex-info ":batch is a positive count, not combined with :retained, :anchors or :smcp3"
                     {:type ::invalid-batch :batch batch})))
@@ -326,6 +328,13 @@
                       (do (callback outcome) (close!))
                       (close! #(callback outcome)))))
         fail! #(finish! on-error %)
+        ;; without `on-idle` the caller takes no stream: waiting at a
+        ;; stream site is a failure, and the session closes with it
+        idle! (fn [m]
+                (if on-idle
+                  (on-idle m)
+                  (fail! (ex-info "The model has stream sites; run it with smc/stream"
+                                  {:type ::stream-sites}))))
         measure (fn [{:keys [parked streaming done log-z rejuvenation history]}]
                   (cond-> (assoc (m/empirical
                                   (mapv (fn [slot]
@@ -356,7 +365,7 @@
                       ;; it a value: a particle whose `arrived!` runs late
                       ;; must not declare it idle a second time
                       (seq streaming) (do (swap! state assoc :idle? true)
-                                          (on-idle (measure after)))
+                                          (idle! (measure after)))
                       :else (finish! on-done (measure after)))))))
 
             (run-site! [sp]
@@ -831,7 +840,7 @@
                       :streaming (zipmap slots children)
                       :done done :log-z log-z :history history
                       :in-barrier? true :idle? true)
-               (on-idle (measure @state)))
+               (idle! (measure @state)))
              fail!))
           (do (sp/install-handlers! root @handler-table)
               (sp/start! session model)))
@@ -915,10 +924,7 @@
     (let [[resolve reject] (sp/in-callers-world resolve reject)]
       (run-particles model n opts
                      {:on-done resolve
-                      :on-error reject
-                      :on-idle (fn [_]
-                                 (reject (ex-info "The model has stream sites; run it with smc/stream"
-                                                  {:type ::stream-sites})))}))))
+                      :on-error reject}))))
 
 (defn- stream-steps
   "The step interface of a streaming controller made by `(start callbacks)`
@@ -1008,26 +1014,37 @@
                    reject)))]
       (go 0 init []))))
 
+(defn- sweep-seeds
+  "[seed (fn [key] opts)]: the run's seed — `opts`' `:seed`, or a fresh one
+  — and the options of its sweep `key`, whose seed derives from it, so
+  every sweep draws afresh and `:seed` fixes them all."
+  [opts]
+  (let [seed (or (:seed opts) (random/fresh-seed))]
+    [seed (fn [key] (assoc opts :seed (sp/derive-seed seed ::sweep key)))]))
+
 (defn pgibbs
   "Particle Gibbs (Andrieu et al. 2010) as iterated conditional SMC: each
   sweep keeps the trajectory drawn from the previous one, and every sweep's
   particles are pooled, normalized per sweep. `opts` as for `smc`."
   [model n iterations & [opts]]
   (fn [resolve reject]
-    ((smc model n opts)
-     (fn [initial]
-       (let [pick (fn [measure]
-                    (let [ps (m/get-particles measure)]
-                      (choices-of (first (nth ps (m/sample-categorical
-                                                  (m/normalize-log-weights (mapv second ps))))))))]
+    (let [[seed sweep-opts] (sweep-seeds opts)
+          k (volatile! 0)
+          pick (fn [measure]
+                 (let [ps (m/get-particles measure)]
+                   (random/with-stream* seed [::pick (vswap! k inc)]
+                     #(choices-of (first (nth ps (m/sample-categorical
+                                                  (m/normalize-log-weights (mapv second ps)))))))))]
+      ((smc model n (sweep-opts :initial))
+       (fn [initial]
          ((sweeps iterations (pick initial)
                   (fn [retained]
                     (fn [res rej]
-                      ((smc model n (assoc opts :retained retained))
+                      ((smc model n (assoc (sweep-opts @k) :retained retained))
                        (fn [sweep] (res [(pick sweep) (normalized sweep)]))
                        rej))))
-          resolve reject)))
-     reject)))
+          resolve reject))
+       reject))))
 
 (defn pgas
   "Particle Gibbs with ancestor sampling (Lindsten et al. 2014): `pgibbs`
@@ -1045,14 +1062,14 @@
   [model n iterations & [opts]]
   (fn [resolve reject]
     ;; each iteration's accept draws from its own stream of the chain's seed
-    (let [seed (random/fresh-seed)
+    (let [[seed sweep-opts] (sweep-seeds opts)
           iteration (volatile! 0)]
-      ((smc model n opts)
+      ((smc model n (sweep-opts :initial))
        (fn [initial]
          ((sweeps iterations [(normalized initial) (m/log-marginal initial)]
                   (fn [[current log-z]]
                     (fn [res rej]
-                      ((smc model n opts)
+                      ((smc model n (sweep-opts (inc @iteration)))
                        (fn [proposed]
                          (let [log-z' (m/log-marginal proposed)
                                ratio (- log-z' log-z)
