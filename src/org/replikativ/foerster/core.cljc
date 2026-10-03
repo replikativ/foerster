@@ -592,21 +592,28 @@
   observed sites drawing fresh values instead of scoring the data. A prior
   predictive draw is the same with `model` simply run (`gfi/simulate`).
 
+  `model` need not be the program that was conditioned: the same program on
+  new inputs (more weeks, other covariates) predicts them, its latent sites
+  held where the posterior has them and drawn from their prior where it
+  does not (a new group's effect). `:interventions` ({selector transform},
+  as `foerster.trace/policy` takes them) sets sites by the do-operator
+  first — a scenario under the posterior.
+
   Returns a spin resolving a vector of {:value v :observations {address x}}:
   the program's value and what each observed site drew."
-  [model measure n]
+  [model measure n & [{:keys [interventions]}]]
   (spin
    (loop [[[particle _] & more] (m/sample-measure measure n) out []]
      (if-not particle
        out
-       (let [trace (m/get-trace particle)
-             latents (into {} (keep (fn [[address {:keys [value observed? deterministic?]}]]
+       (let [latents (into {} (keep (fn [[address {:keys [value observed? deterministic?]}]]
                                       (when-not (or observed? deterministic?) [address value])))
-                           trace)
-             observed (into #{} (keep (fn [[address {:keys [observed?]}]] (when observed? address))) trace)
-             t (await (gfi/run-policy model (itrace/policy {:constraints latents :simulate-observed? true})))
-             drawn (into {} (keep (fn [[address {:keys [value]}]] (when (observed address) [address value])))
-                         (itrace/legacy-trace t))]
+                           (m/get-trace particle))
+             t (await (gfi/run-policy model (itrace/policy {:constraints latents
+                                                            :interventions interventions
+                                                            :simulate-observed? true})))
+             drawn (into {} (keep (fn [[address {:keys [value note]}]] (when (:simulated? note) [address value])))
+                         (:trace/entries t))]
          (await (gfi/close! t))
          (recur more (conj out {:value (:trace/result t) :observations drawn})))))))
 
