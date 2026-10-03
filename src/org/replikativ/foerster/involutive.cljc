@@ -72,7 +72,7 @@
             move (rtp/swap-state! world [:inference ::moves] (fnil inc 0))
             {u :aux lq-fwd :log-q} (random/in-world-stream world [::aux move] #(propose x))
             {x' :choices u' :aux lj :log-jacobian removed :removed} (involution x u)
-            changed (into {} (filter (fn [[a v]] (not= v (get x a)))) x')
+            changed (into {} (filter (fn [[a v]] (or (not (contains? x a)) (not= v (get x a))))) x')
             from (trace/earliest trace (keys changed))]
         (if-not from
           (resolve {:trace trace :accepted? false :log-ratio 0.0})

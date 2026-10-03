@@ -181,17 +181,33 @@
       (catch #?(:clj Throwable :cljs :default) e (reject e)))))
 
 (defn- retained-policy
-  "The policy of the retained particle: a sample site whose address `retained`
-  holds takes that value, drawn — for the weight — with its own density as the
-  proposal, so it contributes nothing to the weight; any other site is drawn
-  from its prior."
-  [retained]
-  (itrace/policy
-   {:draw (fn [sp _]
-            (let [address (:savepoint/address sp)]
-              (when (contains? retained address)
-                (let [v (get retained address)]
-                  {:value v :log-proposal (dist/logpdf (:dist (:savepoint/payload sp)) v)}))))}))
+  "The policy of the retained particle: the caller's `policy` (its
+  constraints, interventions, temperature), except that a sample site whose
+  address `retained` holds takes that value, weighed by the density an
+  ordinary particle draws it with — the site's `:proposal`, a block's
+  `:sample`, or its prior — so the retained particle is weighted as the
+  others are. A policy with its own `:draw` cannot be, and is refused."
+  [retained policy]
+  (let [opts (if policy
+               (or (itrace/policy-options policy)
+                   (throw (ex-info "Conditional SMC (:retained) needs a policy made by foerster.trace/policy"
+                                   {:type ::opaque-policy})))
+               {})]
+    (when (:draw opts)
+      (throw (ex-info "Conditional SMC (:retained) cannot weigh the retained particle under a policy's :draw"
+                      {:type ::draw-with-retained})))
+    (itrace/policy
+     (assoc opts :draw
+            (fn [sp _]
+              (let [address (:savepoint/address sp)]
+                (when (contains? retained address)
+                  (let [v (get retained address)
+                        {:keys [dist options]} (:savepoint/payload sp)
+                        proposal (:proposal options)]
+                    {:value v
+                     :log-proposal (if proposal
+                                     (dist/logpdf proposal v)
+                                     (dist/draw-logpdf dist v))}))))))))
 
 (defn- stream-site?
   "A sample site whose value arrives from outside (`(sample d :stream true)`),
@@ -247,11 +263,11 @@
         ;; {anchor-id anchor}: every anchor that may still be pending
         registry (atom {})
         handler-table (volatile! nil)
-        policy (or policy (itrace/policy))
         policy-of (if retained
-                    (let [rp (retained-policy retained)]
+                    (let [rp (retained-policy retained policy)
+                          policy (or policy (itrace/policy))]
                       (fn [slot] (if (= 0 slot) rp policy)))
-                    (constantly policy))
+                    (constantly (or policy (itrace/policy))))
         root (cond
                adopt (:root adopt)
                root root

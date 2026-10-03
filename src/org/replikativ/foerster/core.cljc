@@ -107,7 +107,7 @@
                    (fn [r] (run (:trace r) (inc i) (+ moves (:moves r)) (+ accepted (:accepted-moves r))))
                    reject)))]
         (run trace 0 0 0))
-      (let [{:keys [iterations] :as opts} (mh-options kernel)]
+      (let [{:keys [iterations] :as opts} (or (::options kernel) (mh-options kernel))]
         ((itrace/mh-chain trace iterations (-> opts (dissoc :iterations) (assoc :first-iteration base)))
          (fn [{:keys [trace moves accepted]}]
            (resolve {:trace trace :moves moves :accepted-moves accepted}))
@@ -132,14 +132,24 @@
                    reject)))]
         (run trace parts 0 0)))))
 
+(defn- compiled
+  "A composed kernel with each component's options made once (`::options`):
+  a component that adapts as it runs (NUTS) keeps its state from one of the
+  composition's iterations to the next."
+  [kernel]
+  (if (#{:cycle :mixture} (k/kernel-id kernel))
+    (update kernel :kernels #(mapv compiled %))
+    (assoc kernel ::options (mh-options kernel))))
+
 (defn- mh-options
   "`itrace/mh-step` options of a Markov-chain kernel, or nil for kernels
   that decide sites of savepoint SMC."
   [kernel]
   (case (k/kernel-id kernel)
-    (:cycle :mixture) {:iterations (:num-iterations kernel)
-                       :step (fn [trace {:keys [iteration]}]
-                               (iteration-of kernel trace (* iteration (span kernel))))}
+    (:cycle :mixture) (let [kernel (compiled kernel)]
+                        {:iterations (:num-iterations kernel)
+                         :step (fn [trace {:keys [iteration]}]
+                                 (iteration-of kernel trace (* iteration (span kernel))))})
     :single-site-mh {:iterations (:num-iterations kernel)}
     :random-walk-mh {:iterations (:num-iterations kernel)
                      :propose (itrace/random-walk-proposal (:step-size kernel))}

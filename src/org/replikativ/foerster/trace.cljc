@@ -145,7 +145,18 @@
       (cond (zero? beta) 0.0 :else (* beta l))
       (:log-prob note))))
 
+(declare decide-choose*)
+
 (defn- decide-choose
+  "A choose site's decision; the note keeps the site's own `:proposal`, the
+  law a replay draws it from afresh (see `mh-log-ratio`)."
+  [opts sp old-entry]
+  (let [decision (decide-choose* opts sp old-entry)]
+    (if-let [q (:proposal (:options (:savepoint/payload sp)))]
+      (assoc-in decision [:note :proposal] q)
+      decision)))
+
+(defn- decide-choose*
   [{:keys [constraints keep? draw init?] :as opts} sp old-entry]
   (let [{:keys [dist observed? value]} (:savepoint/payload sp)
         world (:savepoint/world sp)
@@ -200,7 +211,8 @@
               (add-weight! world (- lp (:log-proposal drawn))))
             {:value (:value drawn)
              :note (cond-> {:dist dist :log-prob lp
-                            :log-proposal (:log-proposal drawn)}
+                            :log-proposal (:log-proposal drawn)
+                            :moved? true}
                      (:symmetric? drawn) (assoc :symmetric? true))})
 
           ;; A kept value outside the new distribution's support is drawn
@@ -417,9 +429,15 @@
                          (remove #(same? % (get new-by-address (:address %))))
                          (remove #(:kept? (:note (get new-by-address (:address %)))))
                          (remove #(:symmetric? (:note (get new-by-address (:address %)))))
-                        ;; the reverse move draws as the prior proposal does
-                         (map (fn [{:keys [note value]}]
-                                (or (dist/-draw-logpdf (:dist note) value) (:log-prob note)))))
+                         ;; the reverse move draws its own target as the prior
+                         ;; proposal does, and any other site it reaches
+                         ;; afresh as a replay does: from the site's
+                         ;; `:proposal`, if it has one
+                         (map (fn [{:keys [address note value]}]
+                                (let [moved? (:moved? (:note (get new-by-address address)))]
+                                  (if (and (:proposal note) (not moved?))
+                                    (dist/logpdf (:proposal note) value)
+                                    (or (dist/-draw-logpdf (:dist note) value) (:log-prob note)))))))
                    + 0.0 old-entries)
          irreversible? (some (fn [entry]
                                (and (:redrawn? (:note entry))
