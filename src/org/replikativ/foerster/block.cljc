@@ -33,7 +33,14 @@
   transform's log-Jacobian to the density and the chain rule to the
   gradient, so HMC and NUTS move freely. θ is what the trace holds;
   `constrain` maps it back. Without the declaration, a block's capabilities
-  are in unconstrained coordinates already and every latent must be `:real`."
+  are in unconstrained coordinates already and every latent must be `:real`.
+
+  The observations inside a block's target are invisible to the trace. Two
+  optional capabilities show them: `:pointwise` (fn [theta inputs]) →
+  {key log-lik}, each observation's log density, and `:simulate` (fn [theta
+  inputs]) → {key value}, a fresh draw of each from its law. With them
+  `diagnostics/pointwise-log-likelihood` (hence LOO and WAIC) and
+  `infer/predictive` see the block's observations, at [site-address key]."
   (:require [org.replikativ.foerster.dist :as dist]))
 
 (def ^:private required-capabilities #{:log-density :value+grad})
@@ -82,7 +89,7 @@
 (defn- transformed
   "Capabilities over θ from capabilities over the constrained latents
   `supports` (one per coordinate)."
-  [{:keys [log-density value+grad sample sample-log-density] :as caps} supports]
+  [{:keys [log-density value+grad sample sample-log-density pointwise simulate] :as caps} supports]
   (let [xs (fn [^doubles th] (double-array (map to-x supports th)))
         log-j (fn [^doubles th] (reduce + 0.0 (map log-jacobian supports th)))]
     (cond-> (assoc caps
@@ -93,6 +100,8 @@
                                     (double-array (map (fn [gi su t] (+ (* gi (dx-dtheta su t)) (dlog-jacobian su t)))
                                                        (seq g) supports th))])))
       sample (assoc :sample (fn [inputs] (mapv to-theta supports (sample inputs))))
+      pointwise (assoc :pointwise (fn [th inputs] (pointwise (xs th) inputs)))
+      simulate (assoc :simulate (fn [th inputs] (simulate (xs th) inputs)))
       sample-log-density (assoc :sample-log-density
                                 (fn [th inputs] (+ (double (sample-log-density (xs th) inputs)) (log-j th)))))))
 
