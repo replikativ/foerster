@@ -67,17 +67,24 @@
   "`x` with its numbers in one form: a JVM long 7 and a JavaScript 7 hash
   differently, so whole numbers become their decimal string."
   [x]
-  (walk/postwalk (fn [v]
-                   (if (and (number? v) (== v (Math/floor v)))
-                     (str #?(:clj (long v) :cljs v))
-                     v))
-                 x))
+  (cond
+    (number? x) (if (== x (Math/floor x))
+                  (str #?(:clj (long x) :cljs x))
+                  x)
+    (vector? x) (mapv canonical x)
+    (coll? x) (walk/walk canonical identity x)
+    :else x))
 
 (defn- state-of
   "A generator state from any value: its content hash, as four words."
   [x]
-  (let [hex (str/replace (str (h/content-hash [::stream (canonical x)])) "-" "")
-        words (mapv #(parse-hex (subs hex (* 8 %) (* 8 (inc %)))) (range 4))]
+  (let [uuid (h/content-hash [::stream (canonical x)])
+        words #?(:clj (let [hi (.getMostSignificantBits ^java.util.UUID uuid)
+                            lo (.getLeastSignificantBits ^java.util.UUID uuid)]
+                        [(u32 (unsigned-bit-shift-right hi 32)) (u32 hi)
+                         (u32 (unsigned-bit-shift-right lo 32)) (u32 lo)])
+                 :cljs (let [hex (str/replace (str uuid) "-" "")]
+                         (mapv #(parse-hex (subs hex (* 8 %) (* 8 (inc %)))) (range 4))))]
     ;; the all-zero state is a fixed point
     (if (every? zero? words) [1 0 0 0] words)))
 
@@ -90,7 +97,9 @@
   "The next unsigned 32-bit word of `g`."
   [g]
   (let [[before _] (swap-vals! g (comp second step))]
-    (first (step before))))
+    ;; Only the output word is needed here; swap-vals! already advanced the
+    ;; state. Computing step again allocated a second discarded state vector.
+    (mul (rotl (mul (nth before 1) 5) 7) 9)))
 
 (defn next-double!
   "The next double in [0, 1) of `g`: 53 random bits."
