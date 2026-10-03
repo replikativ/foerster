@@ -89,13 +89,24 @@
       sample-log-density (assoc :sample-log-density
                                 (fn [th inputs] (+ (double (sample-log-density (xs th) inputs)) (log-j th)))))))
 
+(defn- supports-of [b]
+  (vec (mapcat (fn [l] (repeat (size (:shape l)) (:support l :real))) (:block/latents (:description b)))))
+
 (defn constrain
   "The latents' values at θ: θ mapped back through each latent's transform
   (identity for `:real`), as a vector in θ's order."
   [b theta]
-  (let [latents (:block/latents (:description b))
-        supports (vec (mapcat (fn [l] (repeat (size (:shape l)) (:support l :real))) latents))]
-    (mapv to-x supports theta)))
+  (mapv to-x (supports-of b) theta))
+
+(defn jacobian
+  "[log |dx/dθ|, its gradient in θ] of block `b`'s transforms at θ: the term
+  a constrained block adds to its density (0 for an unconstrained block).
+  Subtract it for the mode in the latents' own coordinates."
+  [b theta]
+  (if (= :constrained (:block/coordinates (:description b)))
+    (let [supports (supports-of b)]
+      [(reduce + 0.0 (map log-jacobian supports theta)) (mapv dlog-jacobian supports theta)])
+    [0.0 (vec (repeat (count theta) 0.0))]))
 
 (defn block
   "A block from its `description` and `capabilities` (see the namespace)."

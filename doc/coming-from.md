@@ -36,6 +36,7 @@ Three differences hold for all of them:
 | R-hat, ESS, MCSE in the summary | `(diagnostics/summary measure :mu)` — the same rank-normalized split R-hat and bulk/tail ESS |
 | bridge sampling (evidence) | `(m/log-marginal measure)` of an SMC or importance-sampling run |
 | ADVI | `{:method :bbvi}`: mean-field, score-function gradients |
+| `optimize()`, `laplace()` | `optimize/map-estimate`, `optimize/laplace` on a block site |
 
 Not in foerster yet:
 
@@ -45,7 +46,6 @@ Not in foerster yet:
   latents (`:positive`, `[:interval a b]`) are transformed automatically
   when the block is written in natural coordinates, but there is no
   simplex or correlation-matrix transform yet.
-- Optimization (`optimize`, MAP estimates) and Laplace approximations.
 - Stan's speed on the models it is built for. A model with all observations
   at the end and smooth continuous latents fits in Stan in seconds; in
   foerster it takes a random walk or a hand-supplied gradient.
@@ -64,13 +64,14 @@ Not in foerster yet:
 | `pm.sample_prior_predictive()` | `(gfi/run-policy model (trace/policy {:simulate-observed? true}))` ([workflow](workflow.md#1-simulate-from-the-prior)) |
 | `pm.sample_posterior_predictive(idata)` | `(infer/predictive model measure n)` |
 | `az.summary`, `az.rhat`, `az.ess` | `diagnostics/summary`, `rhat`, `ess-bulk`, `ess-tail`, `mcse` |
-| `pm.compute_log_likelihood`, `az.loo` | `diagnostics/pointwise-log-likelihood`, then ArviZ or R's `loo` |
+| `az.loo`, `az.waic`, `az.compare` | `diagnostics/loo`, `waic`, `compare` |
+| `pm.find_MAP()` | `optimize/map-estimate` on a block site; `optimize/laplace` for the Gaussian around it |
 | `pm.do(model, {"x": 1})` | `{:policy (trace/policy {:interventions {:x {:do 1}}})}` on a particle method |
 
 Not in foerster yet: automatic gradients (NUTS runs on blocks with a
 supplied or raster-compiled gradient), simplex and other matrix transforms, ADVI with reparameterization gradients, Gaussian-process and
 other random-process building blocks, and vectorized distributions over
-arrays. PSIS-LOO and WAIC are computed outside foerster.
+arrays.
 
 ## Turing
 
@@ -89,12 +90,12 @@ arrays. PSIS-LOO and WAIC are computed outside foerster.
 | `generated_quantities` | `deterministic` sites, or `infer/query` with a function of the value |
 | `pointwise_loglikelihoods` | `diagnostics/pointwise-log-likelihood` |
 | MCMCChains summary | `diagnostics/summary` |
+| `maximum_a_posteriori(m)` | `optimize/map-estimate` on a block site |
 
 Not in foerster yet: automatic differentiation of the model (NUTS runs on
 blocks), Bijectors beyond log and interval transforms, particle Gibbs as a component of a Gibbs sampler
 (`k/cycle` and `k/mixture` compose Markov-chain kernels only: MH, block
-Gibbs and HMC), and
-MAP/MLE optimization. Conditioning from
+Gibbs and HMC). Conditioning from
 outside (`|`) works for the particle methods and the generative function
 interface; the Markov-chain methods take no `:policy`, so write the
 observation into the model.
