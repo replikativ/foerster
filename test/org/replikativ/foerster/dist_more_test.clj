@@ -81,3 +81,22 @@
   (is (= [0 1 2] (dist/support (dist/zero-inflated 0.2 (dist/binomial 2 0.5)))))
   (let [d (dist/truncated (dist/binomial 6 0.5) 2 4)]
     (is (close? 1.0 (reduce + (map #(Math/exp (dist/logpdf d %)) (dist/support d)))))))
+
+(deftest edge-cases-from-the-review
+  (testing "cdfs at infinity"
+    (is (= 1.0 (dist/cdf (dist/normal 0.0 1.0) ##Inf)))
+    (is (= 0.0 (dist/cdf (dist/normal 0.0 1.0) ##-Inf)))
+    (is (= 1.0 (dist/cdf (dist/gamma 2.0 1.0) ##Inf))))
+  (testing "small concentrations draw without 0/0"
+    (random/set-seed! 1)
+    (is (every? #(<= 0.0 % 1.0) (repeatedly 200 #(dist/draw (dist/beta 0.001 0.001)))))
+    (is (every? #(< (Math/abs (- 1.0 (reduce + %))) 1e-9)
+                (repeatedly 100 #(dist/draw (dist/dirichlet [0.001 0.001 0.001]))))))
+  (testing "huge finite weights"
+    (is (close? (dist/logpdf (dist/discrete [1e308 1e308]) 0) (Math/log 0.5)))
+    (is (close? (dist/logpdf (dist/categorical {:a 1e308 :b 1e308}) :a) (Math/log 0.5))))
+  (testing "uniform-discrete quantiles invert the cdf"
+    (is (= [0 0 1 3 3] (mapv #(dist/quantile (dist/uniform-discrete 0 4) %) [0.0 0.25 0.3 0.99 1.0]))))
+  (testing "mvn refuses an asymmetric covariance and a value of the wrong dimension"
+    (is (thrown? clojure.lang.ExceptionInfo (dist/mvn [0.0 0.0] [[1.0 100.0] [0.0 1.0]])))
+    (is (= ##-Inf (dist/logpdf (dist/mvn [0.0 0.0] [[1.0 0.0] [0.0 1.0]]) [0.0 0.0 999.0])))))

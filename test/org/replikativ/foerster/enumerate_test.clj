@@ -69,3 +69,8 @@
                                                      :ok))
                                              {:method :enumerate}))]
     (is (= [:ok] (mapv (comp m/get-value first) (m/get-particles measure))))))
+
+(deftest nil-is-an-observable-outcome
+  (let [measure (b/run-infer 2 #(infer/infer (spin (observe (dist/categorical {nil 1.0 :a 3.0}) nil :id :y) :done)
+                                             {:method :enumerate}))]
+    (is (< (Math/abs (- (m/log-marginal measure) (Math/log 0.25))) 1e-12))))

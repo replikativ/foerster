@@ -87,8 +87,8 @@
       (contains? interventions address)
       (spin-core/resume resolve (get interventions address))
 
-      ;; observe can be boolean false
-      (some? observe)
+      ;; observe can be boolean false, or nil (an outcome of a categorical)
+      (contains? options :observe)
       (do (rtp/swap-state! ctx [:inference :log-weight]
                            (fn [w] (+ (or w 0.0) (dist/logpdf source observe))))
           (spin-core/resume resolve observe))
@@ -108,7 +108,7 @@
         (sp/publish! ctx
                      {:site :inference/choose
                       :payload {:dist source
-                                :observed? (some? observe)
+                                :observed? (contains? options :observe)
                                 :value observe
                                 :options (dissoc options :id :observe)}
                       :opts (when id {:id id})

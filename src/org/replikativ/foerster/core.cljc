@@ -538,7 +538,9 @@
     (sp/with-context world @(smc-infer (model) 1000))   ; at the REPL
     (spin (query (await (smc-infer (model) 1000)) identity))"
   [model-task num-particles & [opts]]
-  (check-options! opts (into particle-options smc-options))
+  (check-options! opts (conj (into particle-options smc-options) :batch))
+  (when (and (:batch opts) (not (on-savepoints? opts)))
+    (throw (ex-info ":batch runs in fresh worlds" {:type ::invalid-world-policy :batch (:batch opts)})))
   (particles model-task num-particles opts))
 
 (defn tempered-infer
@@ -603,7 +605,8 @@
   "`n` posterior predictive draws: particles of `measure` drawn by weight,
   each replayed through `model` with its latent choices held and its
   observed sites drawing fresh values instead of scoring the data. A prior
-  predictive draw is the same with `model` simply run (`gfi/simulate`).
+  predictive draw runs `model` with `(itrace/policy {:simulate-observed?
+  true})` (`gfi/run-policy`); `gfi/simulate` would score the data instead.
 
   `model` need not be the program that was conditioned: the same program on
   new inputs (more weeks, other covariates) predicts them, its latent sites
@@ -1074,6 +1077,21 @@
 (def ^:private infer-methods
   #{:enumerate :importance :smc :tempered :pimh :pgibbs :pgas :ipmcmc :bbvi :mh :rmh :nuts :kernel :pmmh})
 
+(def ^:private sizes-of-every-method
+  {:particles true :iterations true :chains true :burn true :step-size true :kernel true})
+
+(def ^:private method-sizes
+  "The size options each method of `infer` takes; a kernel's `:burn` and
+  output belong to the kernel itself."
+  (let [particles #{:particles}
+        sweeps #{:particles :iterations}
+        chains #{:iterations :chains :burn}]
+    {:enumerate #{} :importance particles :smc particles :tempered particles
+     :pimh sweeps :pgibbs sweeps :pgas sweeps :ipmcmc sweeps :bbvi sweeps
+     :mh chains :rmh (conj chains :step-size) :nuts chains
+     :kernel #{:kernel :chains :particles}
+     :pmmh #{:particles :iterations :burn}}))
+
 (defn infer
   "Run `model` under the inference method `(:method opts)` — one call shape
   for every method, as Anglican's `doquery`:
@@ -1102,6 +1120,12 @@
   (when-not (infer-methods method)
     (throw (ex-info (str "Unknown inference method " method)
                     {:type ::unknown-method :method method :methods infer-methods})))
+  (let [allowed (method-sizes method)
+        misplaced (remove allowed (filter #(contains? opts %) (keys sizes-of-every-method)))]
+    (when (seq misplaced)
+      (throw (ex-info (str "Options " (vec misplaced) " do not apply to " method)
+                      {:type ::unknown-options :method method :options (vec misplaced)
+                       :supported allowed}))))
   (let [rest-opts (dissoc opts :method :particles :iterations :chains :burn :step-size :kernel)
         chain-output {:samples :all :burn (or burn 0)}]
     (case method

@@ -18,12 +18,13 @@ and, for compiled densities,
 ## A policy
 
 A **policy** decides every site of a run. `foerster.trace/policy` builds one
-from options, and every particle method takes it as `:policy`:
+from options, and the particle methods take it as `:policy` (all but BBVI,
+whose guide decides the latent sites):
 
 | Option | Effect |
 |---|---|
 | `:constraints` `{address value}` | fix those sites; their density enters the weight (conditioning) |
-| `:interventions` `{selector-or-address transform}` | replace a site's mechanism: `{:do v}`, `{:dist d}`, `{:shift δ}`, or `{:policy (fn [choices])}`; nothing is scored |
+| `:interventions` `{selector-or-address transform}` | replace a site's mechanism: `{:do v}` and `{:policy (fn [choices])}` fix the value and score nothing; `{:dist d}` and `{:shift δ}` replace the law, and the site is then decided and scored under it like any other |
 | `:draw` `(fn [savepoint old-entry])` | a custom proposal for latent sites: return `nil` (not my site), `{:value v :log-proposal lq}`, or `{:value v :symmetric? true}`; the weight gets `log p(v) − lq` |
 | `:keep?` | reuse the values of the replayed trace, rescored |
 | `:noise` `{address u}` | counterfactual noise for mechanisms |

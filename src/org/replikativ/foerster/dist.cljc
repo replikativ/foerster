@@ -158,6 +158,7 @@
   "P(a, x) = γ(a, x)/Γ(a), the regularized lower incomplete gamma function."
   [a x]
   (cond (<= x 0.0) 0.0
+        (= x ##Inf) 1.0
         (< x (+ a 1.0)) (gamma-series a x)
         :else (- 1.0 (gamma-fraction a x))))
 
@@ -165,6 +166,7 @@
   "Q(a, x) = 1 − P(a, x), computed directly in the upper tail."
   [a x]
   (cond (<= x 0.0) 1.0
+        (= x ##Inf) 0.0
         (< x (+ a 1.0)) (- 1.0 (gamma-series a x))
         :else (gamma-fraction a x)))
 
@@ -207,6 +209,14 @@
                       (< (Math/log u) (+ (* 0.5 x x) (* d (+ (- 1.0 v) (Math/log v))))))
                 (* d v)
                 (recur)))))))))
+
+(defn- log-standard-gamma
+  "log of a Gamma(shape, 1) draw, without underflow for a small shape:
+  log G(shape + 1) + log(U)/shape."
+  [shape]
+  (if (< shape 1.0)
+    (+ (Math/log (standard-gamma (+ shape 1.0))) (/ (Math/log (- 1.0 (u01))) shape))
+    (Math/log (standard-gamma shape))))
 
 (defn- poisson-draw
   "Poisson(λ): Knuth's multiplication below 10, Hörmann's PTRS (1993) above."
@@ -303,9 +313,11 @@
 (defrecord Beta [alpha beta]
   Distribution
   (-draw [_]
-    (let [x (standard-gamma alpha)
-          y (standard-gamma beta)]
-      (/ x (+ x y))))
+    ;; X/(X + Y) = σ(log X − log Y): in log space, as a small α or β draws
+    ;; gammas that underflow to 0
+    (let [lx (log-standard-gamma alpha)
+          ly (log-standard-gamma beta)]
+      (/ 1.0 (+ 1.0 (Math/exp (- ly lx))))))
   (-logpdf [_ x]
     (if (in? 0.0 x 1.0)
       (- (+ (xlogy (- alpha 1.0) x) (xlogy (- beta 1.0) (- 1.0 x)))
@@ -390,7 +402,11 @@
 (defrecord Dirichlet [alpha]
   Distribution
   (-draw [_]
-    (let [gs (mapv standard-gamma alpha)
+    ;; normalized in log space, as small concentrations draw gammas that
+    ;; underflow to 0
+    (let [lgs (mapv log-standard-gamma alpha)
+          top (reduce max lgs)
+          gs (mapv #(Math/exp (- % top)) lgs)
           total (reduce + gs)]
       (mapv #(/ % total) gs)))
   (-logpdf [_ x]
@@ -501,7 +517,8 @@
     (if (and (whole? k) (<= a k) (< k b)) (- (Math/log (- b a))) ##-Inf))
   Univariate
   (-cdf [_ x] (cond (< x a) 0.0 (>= x b) 1.0 :else (/ (- (+ (Math/floor x) 1.0) a) (- b a))))
-  (-quantile [_ p] (min (dec b) (+ a (long (Math/floor (* p (- b a)))))))
+  ;; the smallest k whose cdf reaches p
+  (-quantile [_ p] (max a (min (dec b) (+ a -1 (long (Math/ceil (* p (- b a))))))))
   Moments
   (-mean [_] (* 0.5 (+ a b -1)))
   (-variance [_] (/ (- (* (- b a) (- b a)) 1.0) 12.0)))
@@ -565,7 +582,10 @@
 
 (defn discrete "An index i with probability weights[i] / Σ weights; weights ≥ 0." [weights]
   (check! (weights? weights) :discrete {:weights weights})
-  (let [ws (mapv double weights)] (->Discrete ws (reduce + ws))))
+  ;; scaled by the largest, so finite weights cannot overflow their total
+  (let [top (double (reduce max weights))
+        ws (mapv #(/ (double %) top) weights)]
+    (->Discrete ws (reduce + ws))))
 
 (defn dirichlet "Dirichlet(α) over the simplex, every αᵢ > 0." [alpha]
   (check! (and (seq alpha) (every? positive? alpha)) :dirichlet {:alpha alpha})
@@ -642,22 +662,27 @@
      (vec (repeat n (vec (repeat n 0.0))))
      (for [i (range n) j (range (inc i))] [i j]))))
 
+(defn- mvn-logpdf
+  "Solve L y = x − μ by forward substitution: log p = −½(d log 2π + 2 Σ log
+  Lᵢᵢ + |y|²)."
+  [mean chol x]
+  (let [n (count mean)
+        r (mapv - x mean)
+        y (reduce (fn [y i]
+                    (conj y (/ (- (nth r i) (reduce + 0.0 (map #(* (get-in chol [i %]) (nth y %)) (range i))))
+                               (get-in chol [i i]))))
+                  [] (range n))]
+    (* -0.5 (+ (* n log-2pi)
+               (* 2.0 (reduce + (map #(Math/log (get-in chol [% %])) (range n))))
+               (reduce + (map #(* % %) y))))))
+
 (defrecord MultivariateNormal [mean cov chol]
   Distribution
   (-draw [_]
     (let [z (vec (repeatedly (count mean) standard-normal))]
       (mapv (fn [m row] (+ m (reduce + (map * row z)))) mean chol)))
   (-logpdf [_ x]
-    ;; solve L y = x − μ by forward substitution: log p = −½(d log 2π + 2 Σ log Lᵢᵢ + |y|²)
-    (let [n (count mean)
-          r (mapv - x mean)
-          y (reduce (fn [y i]
-                      (conj y (/ (- (nth r i) (reduce + 0.0 (map #(* (get-in chol [i %]) (nth y %)) (range i))))
-                                 (get-in chol [i i]))))
-                    [] (range n))]
-      (* -0.5 (+ (* n log-2pi)
-                 (* 2.0 (reduce + (map #(Math/log (get-in chol [% %])) (range n))))
-                 (reduce + (map #(* % %) y))))))
+    (if (= (count mean) (count x)) (mvn-logpdf mean chol x) ##-Inf))
   Moments
   (-mean [_] mean)
   (-variance [_] (mapv #(get-in cov [% %]) (range (count mean)))))
@@ -670,7 +695,9 @@
         _ (check! (weights? (map second pairs)) :categorical {:outcomes outcomes})
         ;; an outcome listed twice carries both weights
         values (vec (distinct (map first pairs)))
-        by-value (reduce (fn [m [v w]] (update m v (fnil + 0.0) (double w))) {} pairs)
+        ;; scaled by the largest, so finite weights cannot overflow a sum
+        top (double (reduce max (map second pairs)))
+        by-value (reduce (fn [m [v w]] (update m v (fnil + 0.0) (/ (double w) top))) {} pairs)
         ws (mapv by-value values)]
     (->Categorical values ws (reduce + ws))))
 
@@ -716,7 +743,12 @@
   [mean cov]
   (check! (and (seq mean) (every? finite? mean)
                (= (count mean) (count cov))
-               (every? #(= (count mean) (count %)) cov))
+               (every? #(= (count mean) (count %)) cov)
+               (every? finite? (apply concat cov))
+               ;; symmetric: the factorization reads the lower triangle only
+               (every? (fn [[i j]] (let [x (get-in cov [i j]) y (get-in cov [j i])]
+                                     (<= (Math/abs (- x y)) (* 1e-9 (max 1.0 (Math/abs x) (Math/abs y))))))
+                       (for [i (range (count mean)) j (range i)] [i j])))
           :mvn {:mean mean :cov cov})
   (let [cov (mapv #(mapv double %) cov)]
     (->MultivariateNormal (mapv double mean) cov (cholesky cov))))
