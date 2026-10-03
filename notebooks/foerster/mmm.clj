@@ -2,11 +2,12 @@
 
 ;; How much did each advertising channel add to sales, and where should the
 ;; next euro go? A marketing mix model (MMM) answers both from weekly sales
-;; and spend. It is the bread and butter of Bayesian modeling in marketing —
-;; [PyMC-Marketing](https://www.pymc-marketing.io/), Google's
+;; and spend. [PyMC-Marketing](https://www.pymc-marketing.io/), Google's
 ;; [Meridian](https://developers.google.com/meridian) and Meta's
-;; [Robyn](https://facebookexperimental.github.io/Robyn/) are built around
-;; it — and a good test of a probabilistic programming system: carryover and
+;; [Robyn](https://facebookexperimental.github.io/Robyn/) all address it,
+;; with different models and inference (Robyn, for instance, fits ridge
+;; regressions with an evolutionary search rather than a posterior). It is
+;; a good test of a probabilistic programming system: carryover and
 ;; saturation make it nonlinear, channels move together, and the answers
 ;; people act on are counterfactuals.
 ;;
@@ -48,11 +49,14 @@
 ;;   Fourier harmonics); sales scatter around the sum with standard deviation
 ;;   σ.
 ;;
-;; That is PyMC-Marketing's default model (`GeometricAdstock(l_max=8)`,
-;; `LogisticSaturation`), with its default priors: β ~ HalfNormal(2),
-;; α ~ Beta(1, 3), λ ~ Gamma(3, 1), σ ~ HalfNormal(2), Normal(0, 2) on the
-;; intercept and the seasonal coefficients, Normal(0, 1) on the trend. Spend
-;; is scaled to [0, 1] per channel and sales by their maximum, as there.
+;; Adstock and saturation are PyMC-Marketing's defaults
+;; (`GeometricAdstock(l_max=8)`, `LogisticSaturation`), and so are the
+;; priors on the channels, the intercept, the seasonal terms and the noise:
+;; β ~ HalfNormal(2), α ~ Beta(1, 3), λ ~ Gamma(3, 1), Laplace(0, 1) on the
+;; Fourier coefficients, Normal(0, 2) on the intercept, σ ~ HalfNormal(2).
+;; The linear trend with a Normal(0, 1) prior is our addition. Spend is
+;; scaled to [0, 1] per channel, as there; sales are simulated directly in
+;; units that peak near 1.
 
 (def weeks 104)
 (def channels 3)
@@ -108,9 +112,10 @@
 ;;
 ;; Two years of weekly spend on three channels: the first in campaigns, the
 ;; second steady with a seasonal swing, and the third — the hard case —
-;; largely following the first (correlation about 0.8), as when two
-;; channels are booked together. Sales come from the model above with these
-;; parameters:
+;; following the first closely, as when two channels are booked together.
+;; In euros, each channel's largest weekly spend is 100, 60 and 40 thousand
+;; (`spend-scale`); the model sees spend scaled to [0, 1]. Sales come from
+;; the model above with these parameters:
 
 (def truth
   {:intercept 0.35 :trend 0.1
@@ -125,6 +130,21 @@
         x3 (vec (map (fn [v] (max 0.0 (+ (* 0.8 v) (* 0.25 (u))))) x1))
         scale (fn [v] (let [mx (reduce max v)] (double-array (map #(/ % mx) v))))]
     [(scale x1) (scale x2) (scale x3)]))
+
+(def spend-scale
+  "Each channel's largest weekly spend, in thousands of euros."
+  [100.0 60.0 40.0])
+
+(defn correlation [^doubles a ^doubles b]
+  (let [n (alength a) ma (/ (reduce + a) n) mb (/ (reduce + b) n)
+        cov (reduce + (map #(* (- %1 ma) (- %2 mb)) a b))
+        va (reduce + (map #(let [e (- % ma)] (* e e)) a))
+        vb (reduce + (map #(let [e (- % mb)] (* e e)) b))]
+    (/ cov (Math/sqrt (* va vb)))))
+
+;; Channels 1 and 3 have correlation:
+
+(r3 (correlation (first spend) (nth spend 2)))
 
 (def sales
   (let [rng (java.util.Random. 8)
@@ -159,6 +179,7 @@
    :sigma (aget th 15)})
 
 (def half-normal-2 (dist/half-normal 2.0))
+(def laplace-1 (dist/laplace 0.0 1.0))
 (def alpha-prior (dist/beta 1.0 3.0))
 (def lam-prior (dist/gamma 3.0 1.0))
 (def normal-2 (dist/normal 0.0 2.0))
@@ -169,7 +190,7 @@
      (reduce + (map #(dist/logpdf half-normal-2 %) beta))
      (reduce + (map #(dist/logpdf alpha-prior %) alpha))
      (reduce + (map #(dist/logpdf lam-prior %) lam))
-     (reduce + (map #(dist/logpdf normal-2 %) gamma))
+     (reduce + (map #(dist/logpdf laplace-1 %) gamma))
      (dist/logpdf half-normal-2 sigma)))
 
 (defn log-prior-gradient
@@ -179,7 +200,7 @@
                (map #(/ (- %) 4.0) beta)            ; HalfNormal(2)
                (map #(/ -2.0 (- 1.0 %)) alpha)       ; Beta(1, 3)
                (map #(- (/ 2.0 %) 1.0) lam)          ; Gamma(3, 1)
-               (map #(/ (- %) 4.0) gamma)
+               (map #(- (Math/signum (double %))) gamma)   ; Laplace(0, 1)
                [(/ (- sigma) 4.0)])))
 
 (defn lift-term
@@ -294,6 +315,7 @@
 (def parameter-rows
   (concat [[:intercept identity] [:trend identity]]
           (for [k [:beta :alpha :lam] c (range channels)] [k #(nth % c) (inc c)])
+          (for [k (range 4)] [:gamma #(nth % k) (inc k)])
           [[:sigma identity]]))
 
 (defn recovery-table [measure]
@@ -306,17 +328,18 @@
 
 (recovery-table (:measure fit))
 
-;; The chains agree (R-hat at 1.00) and every parameter is recovered within
-;; its posterior spread — but look at the third channel: its β is uncertain
+;; The chains agree (R-hat at most 1.005) and every parameter is within two
+;; posterior standard deviations of the truth — but look at the third channel: its β is uncertain
 ;; over most of its prior. It spent when the first did, so the data cannot
 ;; tell their effects apart; the model says so instead of guessing.
 
 ;; ## Return on spend, by counterfactual
 ;;
 ;; A channel's contribution is what sales would have been without it: the
-;; same model with that channel's spend set to zero. Its return on spend
-;; (ROAS) is that difference summed over the two years, per unit of spend.
-;; Computed for every posterior draw, it is a distribution:
+;; same model with that channel's spend set to zero for the whole two
+;; years. Its return on spend (ROAS) is that difference summed over the two
+;; years, in sales units per million euros spent. Computed for every
+;; posterior draw, it is a distribution:
 
 (def draws
   (let [ps (m/get-particles (:measure fit))]
@@ -326,7 +349,8 @@
 
 (defn roas [p xs c]
   (/ (reduce + (map - (mean-sales p xs) (mean-sales p (without xs c))))
-     (reduce + (nth xs c))))
+     ;; spend in millions: the scale is in thousands
+     (/ (* (nth spend-scale c) (reduce + (nth xs c))) 1000.0)))
 
 (defn interval [xs]
   (let [s (vec (sort xs)) n (count s)]
@@ -356,7 +380,8 @@
 ;; sites are mechanisms; with the observations inside a block, it is a line
 ;; of arithmetic.)
 ;;
-;; Over weeks 92–103, with channel 1 off:
+;; Over weeks 92–103, had channel 1 never run (so no carryover from earlier
+;; spend reaches the quarter either):
 
 (def quarter (range 92 104))
 
@@ -377,29 +402,38 @@
   (+ (quarter-sum (mean-sales truth (without spend 0)))
      (- (quarter-sum sales) (quarter-sum (mean-sales truth spend)))))
 
+(def true-interventional-mean
+  ;; a fresh quarter's expected sales without channel 1
+  (quarter-sum (mean-sales truth (without spend 0))))
+
 (kind/table
  {:column-names ["" "observed" "truth" "mean" "sd" "90% interval"]
-  :row-vectors (for [k [:counterfactual :interventional]]
+  :row-vectors (for [[k truth-value] [[:counterfactual true-counterfactual]
+                                      [:interventional true-interventional-mean]]]
                  (let [v (map k twin) mu (/ (reduce + v) (count v))]
-                   [(name k) (r3 (quarter-sum sales)) (r3 true-counterfactual) (r3 mu)
+                   [(name k) (r3 (quarter-sum sales)) (r3 truth-value) (r3 mu)
                     (r3 (Math/sqrt (/ (reduce + (map #(let [e (- % mu)] (* e e)) v)) (count v))))
                     (mapv r3 (interval v))]))})
 
-;; Both contain the truth and are centred alike, but they answer different
-;; questions, and the counterfactual is the sharper one: the quarter's
-;; noise is no longer a source of uncertainty, only the parameters are.
-;; Here the parameters dominate, so the gain is modest; with a better
-;; identified channel, or a noisier quarter, it is larger. It is the answer
-;; to "what did channel 1 do for us last quarter".
+;; They answer different questions and have different truths: the
+;; counterfactual's keeps the quarter's actual shocks, the interventional
+;; one is a mean over fresh ones. In this example both intervals contain
+;; their truth and the counterfactual is the sharper — its noise is fixed by
+;; abduction, leaving the parameters' uncertainty — though by little, as
+;; the parameters dominate. (That need not hold in general: the residuals
+;; carry parameter uncertainty too.) The counterfactual answers "what did
+;; channel 1 do for us last quarter".
 
 ;; ## A lift test
 ;;
 ;; The collinear channel can be untangled by an experiment: raise its spend
 ;; in some regions for a few weeks and measure the lift. Suppose one raised
-;; channel 3's steady weekly spend from 0.5 to 0.8 and measured a weekly
+;; channel 3's weekly spend from 0.5 to 0.8 (scaled; 20 to 32 thousand
+;; euros) long enough to reach the steady state, and measured a weekly
 ;; increase of 0.019 with standard error 0.003 (the truth is 0.018). The
 ;; experiment enters as one more factor in the block — the likelihood of the
-;; measured lift given β₃ and λ₃ — as PyMC-Marketing adds lift tests:
+;; measured lift given β₃ and λ₃, here Gaussian (PyMC-Marketing's lift
+;; tests default to a Gamma likelihood):
 
 (def lift {:channel 2 :x 0.5 :dx 0.3 :delta 0.019 :sd 0.003})
 
@@ -414,8 +448,8 @@
 
 (roas-table calibrated-draws)
 
-;; One measured number halves the uncertainty of β₃ and, through the sales
-;; the two channels share, narrows β₁'s too. Channel 3's ROAS over the two
+;; One measured number narrows β₃'s uncertainty by about a third and,
+;; through the sales the two channels share, β₁'s as well. Channel 3's ROAS over the two
 ;; years stays wide: it also depends on how fast the channel saturates (λ₃),
 ;; which a single spend step cannot pin down — a second step, or a test at
 ;; another spend level, would. An honest model tells you which experiment
@@ -423,9 +457,10 @@
 
 ;; ## Splitting a budget
 ;;
-;; Next quarter's weekly budget is 1.5 (in the scaled units), to be split
-;; across the three channels. At steady spend w_c the adstock is w_c, so
-;; the weekly sales the channels add are Σ_c β_c s(λ_c w_c). Each posterior
+;; A steady weekly budget of 120 thousand euros is to be split across the
+;; three channels in steps of 5 thousand. At steady spend (once the
+;; carryover has built up) the adstock equals the scaled spend w_c, so the
+;; weekly sales the channels add are Σ_c β_c s(λ_c w_c). Each posterior
 ;; draw gives a response for each split; the expected response is their
 ;; mean, and the risk-averse criterion CVaR₁₀ is the mean of the worst
 ;; tenth of them — what the split delivers if the parameters are on the
@@ -434,8 +469,12 @@
 (defn response [{:keys [beta lam]} w] (reduce + (map #(* %1 (saturate %2 %3)) beta lam w)))
 
 (def splits
-  (for [a (range 0 31) b (range 0 (- 31 a))]
-    (let [w [(* 0.05 a) (* 0.05 b) (* 0.05 (- 30 a b))]] w)))
+  "Splits of 120 k€ in steps of 5 k€ that no channel's history exceeds, as
+  scaled spend."
+  (for [a (range 0 25) b (range 0 (- 25 a))
+        :let [euros [(* 5.0 a) (* 5.0 b) (* 5.0 (- 24 a b))]]
+        :when (every? true? (map <= euros spend-scale))]
+    (mapv / euros spend-scale)))
 
 (defn cvar [xs q] (let [s (sort xs) k (max 1 (long (* q (count s))))] (/ (reduce + (take k s)) k)))
 
@@ -446,31 +485,38 @@
                     :truth (response truth w)}))
         best-truth (apply max (map :truth scored))]
     (kind/table
-     {:column-names ["criterion" "split (ch 1, 2, 3)" "expected" "CVaR₁₀" "true response" "regret"]
+     {:column-names ["criterion" "split in k€ (ch 1, 2, 3)" "expected" "CVaR₁₀" "true response" "regret"]
       :row-vectors (for [[label k] [["expected response" :mean] ["CVaR₁₀" :cvar] ["the truth (unknowable)" :truth]]]
                      (let [s (apply max-key k scored)]
-                       [label (mapv r3 (:split s)) (r3 (:mean s)) (r3 (:cvar s)) (r3 (:truth s))
+                       [label (mapv #(Math/round (* %1 %2)) (:split s) spend-scale) (r3 (:mean s)) (r3 (:cvar s)) (r3 (:truth s))
                         (r3 (- best-truth (:truth s)))]))})))
 
 (best-splits draws)
 
 ;; Maximizing the expected response finds the truth's best split up to the
-;; grid; the risk-averse split gives up about 1.5% of the true response to
-;; spread spend across the channels whose response is uncertain, which
-;; raises the worst-case tenth. With the lift test:
+;; grid; the risk-averse split gives up about 1% of the true response for a
+;; better worst tenth, moving money between the channels whose response is
+;; uncertain. With the lift test:
 
 (best-splits calibrated-draws)
 
-;; ## What else foerster brings to this
+;; ## Where this could go
 ;;
-;; - **Weekly updates without refitting.** Written with its weekly
-;;   observations as sites, the model runs under SMC², which adds a week by
-;;   reweighting and moving particles instead of refitting from scratch (see
-;;   [streaming](foerster.streaming.html)); an always-on MMM is a stream.
-;; - **Scenario worlds.** A budget scenario is a fork of the world the
-;;   posterior lives in: each runs against the same model, data and
-;;   connected systems, in isolation, and is discarded or kept.
-;; - **Which experiment next.** The lift test above was chosen by hand. The
-;;   one that most reduces the uncertainty of a decision is an expected
-;;   information gain, a nested inference (`infer/conditional`) over the
-;;   experiments one could run.
+;; Extensions, not demonstrated here:
+;;
+;; - **Weekly updates.** Written with its weekly observations as sites
+;;   rather than inside a block, the model runs under SMC²
+;;   ([algorithms](https://github.com/replikativ/foerster/blob/main/doc/algorithms.md)),
+;;   which adds a week by reweighting its particles; their rejuvenation
+;;   still replays the weeks seen so far, so this saves refitting from
+;;   scratch, not the work per week.
+;; - **Scenario worlds.** The budget scenarios above are arithmetic on
+;;   posterior draws. Scenarios that act on connected systems — a booking,
+;;   a forecast feeding a planner — can each run in a fork of the world the
+;;   posterior lives in ([worlds](foerster.worlds.html)), in isolation, and
+;;   be discarded or kept.
+;; - **Which experiment next.** The lift test was chosen by hand. Choosing
+;;   it to reduce the uncertainty of the budget decision — expected loss,
+;;   not just information about the parameters — is a nested inference over
+;;   candidate experiments, for which `infer/conditional` is the building
+;;   block.
