@@ -8,6 +8,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.nuts :as nuts]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn- model []
@@ -47,3 +48,16 @@
 (deftest only-chain-kernels-compose
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Only Markov-chain kernels compose"
                         (k/cycle 10 [(k/prior-kernel)]))))
+
+(deftest a-component-keeps-its-state-across-iterations
+  ;; NUTS adapts as it runs: in a cycle its step is made once per chain, not
+  ;; once per iteration of the cycle
+  (let [within-gibbs nuts/within-gibbs
+        made (fn [iterations]
+               (let [n (atom 0)]
+                 (with-redefs [nuts/within-gibbs (fn [opts] (swap! n inc) (within-gibbs opts))]
+                   (b/run-infer 72 #(infer/kernel-infer (model) (k/cycle iterations [(k/nuts-kernel 1 {:burn 10})
+                                                                                     (k/single-site-mh-kernel 1)])
+                                                        2)))
+                 @n))]
+    (is (= (made 10) (made 30)))))
