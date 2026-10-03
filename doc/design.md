@@ -147,6 +147,35 @@ split), and every world is discarded before the result is delivered. See
   through every barrier's move before a sweep, and slot 0 switched from its
   pre-move to its post-move values at each barrier.
 
+## Incremental re-execution (Gen's combinators and argdiffs)
+
+Gen's `Map`, `Unfold` and argdiffs let an update re-run only the parts of a
+program whose inputs changed, which turns an MH sweep over n independent
+items from O(n²) into O(n). foerster's replay today restarts at the
+earliest changed site: the program before it is shared (the anchor is a
+forked world), the rest re-runs with every other site kept at its value. In
+a program that awaits one sub-spin per item, an update of item 1's site
+re-runs the bodies of items 2 … n though nothing they read changed — the
+result is right, the work is the rest of the program.
+
+spindel already reuses unchanged work across worlds: a replay names the old
+world its reuse source, and a computation spin registering again adopts the
+old node — result, deps and children — when its subtree is clean and every
+input outside it is identical. A spin that reached a savepoint is a reuse
+barrier, deliberately: its decisions belong in the new trace, and adopting
+the spin would skip recording them.
+
+The increment is to adopt such a spin **with its trace**: when a sub-spin's
+captured inputs and outside deps are identical, copy its subtree's trace
+entries (addresses, values, notes) and their log-probability contributions
+into the new trace and world instead of re-running its body. The pieces it
+needs: the trace entries of a spin's subtree (spindel's trace knows which
+savepoint belongs to which spin), a world-level splice of those entries and
+of the weight they carry, and the reuse barrier relaxed to "adopt with
+trace" when the trace layer can splice. Per-item sub-spins then behave as
+`Map`, a loop of awaited steps as `Unfold`, and the captured-locals check is
+the argdiff.
+
 ## What else the same programs admit
 
 | Method | How |
