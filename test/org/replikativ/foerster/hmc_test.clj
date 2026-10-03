@@ -247,3 +247,18 @@
       (finally
         (await-cps (sp/close! session))
         (ctx/stop-context! root)))))
+
+(deftest a-replay-that-adds-a-site-keeps-the-chain-exact
+  ;; x ~ N(0, 1) as a block; a site w ~ N(0, 0.1) exists only when x > 0.
+  ;; w is drawn afresh when a move crosses into x > 0 and dropped when it
+  ;; crosses back: P(x > 0) must stay ½
+  (let [b (block/block {:block/id :x :block/latents [{:name :x :shape [1]}]}
+                       {:log-density (fn [^doubles x _] (* -0.5 (aget x 0) (aget x 0)))
+                        :value+grad (fn [^doubles x _] [(* -0.5 (aget x 0) (aget x 0)) (double-array [(- (aget x 0))])])})
+        model #(spin (let [x (sample (block/block-dist b nil) :id :theta :init [0.5])]
+                      (when (pos? (first x)) (sample (dist/normal 0.0 0.1) :id :w))
+                      (first x)))
+        wv (weighted-values
+            (run-infer 12 #(infer/kernel-infer (model) (k/hmc-kernel 3000 {:step-size 0.5 :steps 4 :samples :all :burn 200}) 4 {})))
+        p (reduce + (map (fn [[x w]] (if (pos? x) w 0.0)) wv))]
+    (is (< (Math/abs (- p 0.5)) 0.04) (str "P(x > 0) " p))))

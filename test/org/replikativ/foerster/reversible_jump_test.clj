@@ -70,3 +70,42 @@
               p2 (/ (count (filter #(= 2 %) ks)) (double (count ks)))]
           (is (< (Math/abs (- p2 exact)) 0.04) (str "P(k = 2) " p2 " vs " exact))))
       (finally (ctx/stop-context! root)))))
+
+;; A birth that installs nil: k ~ Bernoulli(½), and with k = 1 a site c over
+;; {nil 0.8, :a 0.2}. The birth proposes c from {nil 0.3, :a 0.7}; a new
+;; site whose proposed value is nil must still be installed, not redrawn.
+
+(def ^:private c-prior (dist/categorical {nil 0.8 :a 0.2}))
+(def ^:private c-proposal (dist/categorical {nil 0.3 :a 0.7}))
+
+(defn- nil-model []
+  (spin
+   (let [k (sample (dist/bernoulli 0.5) :id :k)]
+     [k (when (= 1 k) (sample c-prior :id :c))])))
+
+(def ^:private birth-death
+  {:propose (fn [x] (if (= 0 (:k x))
+                      (let [u (dist/draw c-proposal)] {:aux u :log-q (dist/logpdf c-proposal u)})
+                      {:aux nil :log-q 0.0}))
+   :log-q (fn [x u] (if (= 0 (:k x)) (dist/logpdf c-proposal u) 0.0))
+   :involution (fn [x u]
+                 (if (= 0 (:k x))
+                   {:choices {:k 1 :c u} :aux nil :log-jacobian 0.0}
+                   {:choices {:k 0} :aux (:c x) :log-jacobian 0.0 :removed #{:c}}))})
+
+(deftest a-birth-installs-a-nil-choice
+  (random/set-seed! 17)
+  (let [root (ctx/create-execution-context)]
+    (try
+      (binding [rtc/*execution-context* root]
+        (let [t0 (:trace (await* (gfi/generate (nil-model) {:k 0})))
+              results (loop [i 0 t t0 out []]
+                        (if (= i 8000)
+                          out
+                          (let [{t' :trace} (await* (involutive/step t birth-death))]
+                            (recur (inc i) t' (conj out (:trace/result t'))))))
+              born (filter #(= 1 (first %)) results)
+              p-nil (/ (count (filter #(nil? (second %)) born)) (double (count born)))]
+          (is (< (Math/abs (- (/ (count born) 8000.0) 0.5)) 0.04) (str "P(k = 1) " (/ (count born) 8000.0)))
+          (is (< (Math/abs (- p-nil 0.8)) 0.04) (str "P(c = nil | k = 1) " p-nil))))
+      (finally (ctx/stop-context! root)))))

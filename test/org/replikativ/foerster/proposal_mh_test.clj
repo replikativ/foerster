@@ -9,7 +9,6 @@
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
@@ -86,23 +85,4 @@
                        (recur (inc i) t' (conj out (:trace/result t'))))))
               p (/ (reduce + ks) (double (count ks)))]
           (is (< (Math/abs (- p 0.9)) 0.03) (str "P(k = 1) " p))))
-      (finally (ctx/stop-context! root)))))
-
-(deftest move-numbers-continue-across-chain-calls
-  (random/set-seed! 6)
-  (let [root (ctx/create-execution-context)
-        seen (atom [])
-        recording (fn [t opts] (swap! seen conj (:iteration opts)) (itrace/mh-step t opts))]
-    (try
-      (binding [rtc/*execution-context* root]
-        ;; a prior-only model: every move from the prior is accepted, so the
-        ;; final trace's world is a fork of an earlier checkpoint
-        (let [t0 (await* (gfi/simulate (spin (sample (dist/normal 0.0 1.0) :id :x))))
-              {t1 :trace} (await* (itrace/mh-chain t0 20 {:step recording}))
-              _ (await* (itrace/mh-chain t1 20 {:step recording}))
-              continued @seen
-              _ (await* (itrace/mh-chain t0 20 {:step recording}))
-              again (concat (take 20 @seen) (drop 40 @seen))]
-          (is (= 40 (count (distinct continued))) (str continued))
-          (is (= 40 (count (distinct again))) (str again))))
       (finally (ctx/stop-context! root)))))

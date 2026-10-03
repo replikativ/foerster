@@ -7,7 +7,10 @@
   computation from the block site. It is accepted on the change of the FULL
   trace log joint plus the kinetic energy, not on the block's own value:
 
-    log α = [log p(trace') − K(p')] − [log p(trace) − K(p)]
+    log α = [log p(trace') − K(p')] − [log p(trace) − K(p)] + log q(rev)/q(fwd)
+
+  where the last term, as in single-site MH (`trace/mh-log-ratio`), covers
+  the sites the replay drew afresh or no longer reaches.
 
   Leapfrog is volume preserving and reversible for any position-dependent
   force, so the move is exact whatever the block's target covers. A block
@@ -83,7 +86,13 @@
                                      (- (itrace/log-joint proposed) (itrace/log-joint trace)))
                        block-delta (- (or (entry-log-prob proposed address) ##-Inf)
                                       (entry-log-prob trace address))
-                       ratio (+ joint-delta (- (kinetic p0) (kinetic p1)))
+                       ;; the full MH ratio of the replay — sites it drew
+                       ;; afresh or dropped enter as in single-site MH — plus
+                       ;; the kinetic energy of the leapfrog endpoint
+                       ratio (if (:trace/error proposed)
+                               ##-Inf
+                               (+ (itrace/mh-log-ratio trace proposed (constantly 0.0) address)
+                                  (- (kinetic p0) (kinetic p1))))
                        accept? (and (not (NaN? ratio))
                                     (or (>= ratio 0.0)
                                         (< (Math/log (random/in-world-stream
