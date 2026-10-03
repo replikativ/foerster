@@ -106,3 +106,15 @@
         [_ g] ((block/capability b :value+grad) x nil)
         [_ g'] ((block/capability mean-and-scale :value+grad) x nil)]
     (is (every? #(< (Math/abs %) 1e-5) (map - g g')))))
+
+(deftest an-interval-transform-is-exact-in-its-tails
+  ;; p ~ Uniform(0, 1) in natural coordinates: in θ = logit p the density is
+  ;; σ(θ)(1 − σ(θ)) ≈ e^−|θ|, also where σ rounds to 1
+  (let [b (block/block {:block/id :p :block/coordinates :constrained
+                        :block/latents [{:name :p :shape [] :support [:interval 0.0 1.0]}]}
+                       {:log-density (fn [_ _] 0.0)
+                        :value+grad (fn [_ _] [0.0 (double-array [0.0])])})
+        d (block/block-dist b nil)
+        [lp [g]] (block/value+grad d [40.0])]
+    (is (< (Math/abs (- lp -40.0)) 1e-9) (str lp))
+    (is (< (Math/abs (- g -1.0)) 1e-9) (str g))))

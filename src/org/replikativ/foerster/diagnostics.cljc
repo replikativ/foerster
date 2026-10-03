@@ -111,7 +111,15 @@
         w (mean (map variance cs))
         b (* n (variance (map mean cs)))
         var+ (+ (* (/ (dec n) n) w) (/ b n))]
-    (if (pos? w) (Math/sqrt (/ var+ w)) ##NaN)))
+    ;; chains each constant, at different values: they disagree completely
+    (cond (pos? w) (Math/sqrt (/ var+ w))
+          (pos? b) ##Inf
+          :else ##NaN)))
+
+(defn- invalid?
+  "Whether any draw is NaN: ArviZ reports NaN for such chains."
+  [cs]
+  (some #(and (number? %) (NaN? %)) (apply concat cs)))
 
 (defn- autocovariance
   "(fn [t]) → the autocovariance of `xs` at lag t, normalized by n: computed
@@ -171,27 +179,38 @@
                 tau (max tau (/ 1.0 (Math/log10 (* m n))))]
             (/ (* m n) tau)))))))
 
+(declare rhat-valid ess-tail-valid)
+
 (defn rhat
   "Rank-normalized split R-hat of `cs` (draws by chain): the larger of the
   bulk and the folded (tail) statistic. Near 1 when the chains agree; above
   1.01 they have not mixed."
   [cs]
+  (if (invalid? cs)
+    ##NaN
+    (rhat-valid cs)))
+
+(defn- rhat-valid [cs]
   (let [split (split-chains cs)
         z (rank-normalize split)
         med (median (apply concat split))
         folded (rank-normalize (mapv (fn [c] (mapv #(Math/abs (- % med)) c)) split))]
-    (max (rhat* z) (rhat* folded))))
+    ;; as Python's max(bulk, tail): a NaN tail leaves the bulk
+    (let [bulk (rhat* z) tail (rhat* folded)] (if (> tail bulk) tail bulk))))
 
 (defn ess-bulk
   "The bulk effective sample size of `cs` (draws by chain): of the
   rank-normalized split chains."
   [cs]
-  (ess* (rank-normalize (split-chains cs))))
+  (if (invalid? cs) ##NaN (ess* (rank-normalize (split-chains cs)))))
 
 (defn ess-tail
   "The tail effective sample size of `cs`: the smaller of the effective sample
   sizes of the indicators of the 5% and the 95% quantile."
   [cs]
+  (if (invalid? cs) ##NaN (ess-tail-valid cs)))
+
+(defn- ess-tail-valid [cs]
   (let [pooled (apply concat cs)
         ess-of (fn [c] (ess* (split-chains (mapv (fn [chain] (mapv #(if (<= % c) 1.0 0.0) chain)) cs))))]
     (min (ess-of (quantile pooled 0.05)) (ess-of (quantile pooled 0.95)))))

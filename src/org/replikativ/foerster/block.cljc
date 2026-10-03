@@ -62,10 +62,17 @@
         (= :positive support) (Math/exp t)
         :else (let [[_ a b] support s (sigmoid t)] (* (- b a) s (- 1.0 s)))))
 
+(defn- softplus
+  "log(1 + eᵗ), without overflow or underflow."
+  [t]
+  (if (> t 0.0) (+ t (Math/log1p (Math/exp (- t)))) (Math/log1p (Math/exp t))))
+
 (defn- log-jacobian [support t]
   (cond (= :real support) 0.0
         (= :positive support) t
-        :else (let [[_ a b] support s (sigmoid t)] (+ (Math/log (- b a)) (Math/log s) (Math/log (- 1.0 s))))))
+        ;; log σ(t) + log(1 − σ(t)) = −softplus(−t) − softplus(t): exact far
+        ;; into the tails, where σ(t) rounds to 0 or 1
+        :else (let [[_ a b] support] (- (Math/log (- b a)) (softplus t) (softplus (- t))))))
 
 (defn- dlog-jacobian [support t]
   (cond (= :real support) 0.0

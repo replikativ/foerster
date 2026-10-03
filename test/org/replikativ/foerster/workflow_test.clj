@@ -220,3 +220,12 @@
     (testing "do(b = 0) leaves the intercept"
       (is (every? #(= 0.0 (second (:value %))) done))
       (is (< (Math/abs (- (mean-of done [:y 0]) 1.04)) 0.3) (str (mean-of done [:y 0]))))))
+
+(deftest stuck-and-invalid-chains
+  ;; ArviZ 0.23.4: inf for chains constant at different values, nan for
+  ;; identical constants and for NaN draws
+  (is (= ##Inf (d/rhat [(vec (repeat 20 0.0)) (vec (repeat 20 1.0))])))
+  (is (NaN? (d/rhat [(vec (repeat 20 0.0)) (vec (repeat 20 0.0))])))
+  (is (NaN? (d/rhat [[0.0 1.0 ##NaN 2.0 3.0 4.0] [1.0 2.0 3.0 4.0 5.0 6.0]])))
+  (is (NaN? (d/ess-bulk [[0.0 1.0 ##NaN 2.0 3.0 4.0] [1.0 2.0 3.0 4.0 5.0 6.0]])))
+  (is (close? 2.999420779156687 (d/rhat [[0 1 100 3 4] [5 6 100 8 9]]))))
