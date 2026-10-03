@@ -77,6 +77,15 @@
                          (finish! resolve (assoc (m/empirical done)
                                                  :log-normalizer (Math/log (count done))
                                                  :enumeration {:branches (count done)}))))))
+          ;; a branch whose weight is zero has nothing left to contribute:
+          ;; it is dropped before it runs on (where it might build a law that
+          ;; is only invalid where it is impossible)
+          continue! (fn [s value]
+                      (if (= ##-Inf (or (rtp/get-state (:savepoint/world s) [:inference :log-weight]) 0.0))
+                        (do (sp/abandon s)
+                            (sp/release-world! session (:savepoint/world s))
+                            (ended!))
+                        (sp/resume s value)))
           decide! (fn [s p]
                     (let [decision (p s nil)]
                       (trace/record! (:savepoint/world s) s decision nil)
@@ -104,7 +113,7 @@
                                (doseq [[child v] (map vector (cons s children) values)]
                                  (try
                                    (let [{:keys [value]} (decide! child (itrace/policy {:constraints {address v}}))]
-                                     (sp/resume child value))
+                                     (continue! child value))
                                    (catch #?(:clj Throwable :cljs :default) e (fail! e)))))
                              fail!)))))
           run-site! (fn [s]
@@ -112,7 +121,7 @@
                         (cond
                           (= smc/start-site (:savepoint/site s)) (sp/resume s nil)
                           (latent-site? s) (branch! s)
-                          :else (let [{:keys [value]} (decide! s policy)] (sp/resume s value)))
+                          :else (let [{:keys [value]} (decide! s policy)] (continue! s value)))
                         (catch #?(:clj Throwable :cljs :default) e (fail! e))))]
       (try
         (sp/install-handlers!

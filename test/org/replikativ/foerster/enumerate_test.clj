@@ -60,3 +60,12 @@
               nil
               (catch clojure.lang.ExceptionInfo e
                 (:type (ex-data (or (ex-cause e) e))))))))
+
+(deftest impossible-branches-are-dropped
+  ;; the only possible outcome is :ok; the branch with the continuous site
+  ;; has probability zero and must not be run on
+  (let [measure (b/run-infer 1 #(infer/infer (spin (if (sample (dist/flip 0.0) :id :z)
+                                                     (sample (dist/normal 0.0 1.0) :id :x)
+                                                     :ok))
+                                             {:method :enumerate}))]
+    (is (= [:ok] (mapv (comp m/get-value first) (m/get-particles measure))))))
