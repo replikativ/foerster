@@ -149,3 +149,51 @@
         (doseq [p [0.1 0.5 0.9]]
           (is (< (Math/abs (- p (dist/cdf d (dist/quantile d p)))) 1e-9) label))))
     (is (thrown? clojure.lang.ExceptionInfo (dist/binomial -1 0.5)))))
+
+(deftest loo-and-waic-agree-with-arviz
+  ;; az.loo / az.waic (ArviZ 0.23.4) of the same matrix, one chain, the last
+  ;; observation an outlier (k̂ > 0.7)
+  (let [S 1000
+        ys [-0.4 0.1 0.3 0.8 1.2 -1.0 0.5 6.0]
+        mu (mapv #(+ 0.2 (* 0.4 (Math/sin (* 1.7 %)) (Math/cos (* 0.31 %)))) (range S))
+        sd (mapv #(+ 0.8 (* 0.3 (Math/abs (Math/sin (* 0.13 %))))) (range S))
+        rows (mapv (fn [y] (mapv (fn [s] (- (* -0.5 (Math/pow (/ (- y (mu s)) (sd s)) 2))
+                                            (Math/log (sd s)) (* 0.5 (Math/log (* 2 Math/PI)))))
+                                 (range S)))
+                   ys)
+        l (#'d/loo-rows (vec (range 8)) rows {})
+        w (#'d/waic-rows (vec (range 8)) rows)]
+    (is (close? -33.26613819654955 (:elpd-loo l)))
+    (is (close? 22.26593722334338 (:se l)))
+    (is (close? 9.437383556995009 (:p-loo l)))
+    (doseq [[i k] (map-indexed vector [-0.7504504140913563 -0.22560708703632104 -0.39163661138576306
+                                       -0.3787971592024531 0.14113488898314375 -0.0671982732243114
+                                       -0.6057390271064482 1.1188649155334143])]
+      (is (close? k (get (:pareto-k l) i)) (str i)))
+    (is (> (get (:pareto-k l) 7) (:good-k l)))
+    (is (close? -37.606187534742496 (:elpd-waic w)))
+    (is (close? 26.32456537721405 (:se w)))
+    (is (close? 13.777432895187951 (:p-waic w)))))
+
+(defn- located [mu-prior]
+  (spin
+   (let [mu (sample mu-prior :id :mu)]
+     (loop [i 0]
+       (when (< i 6)
+         (observe (dist/normal mu 1.0) (nth [-0.4 0.1 0.3 0.8 1.2 -1.0] i) :id [:y i])
+         (recur (inc i))))
+     mu)))
+
+(deftest loo-compares-models
+  (let [fit #(b/run-infer 87 (fn [] (infer/infer (located %) {:method :mh :iterations 2000 :chains 2 :burn 200})))
+        free (fit (dist/normal 0.0 3.0))
+        pinned (fit (dist/normal 3.0 0.05))
+        l (d/loo free)
+        [best worse] (d/compare {:free free :pinned pinned})]
+    (is (= 6 (count (:pointwise l))))
+    (is (every? #(< % (:good-k l)) (vals (:pareto-k l))))
+    (is (< (Math/abs (- (:elpd-loo l) (:elpd-waic (d/waic free)))) 0.2))
+    (is (< 0.3 (:p-loo l) 1.5) "about one parameter")
+    (is (= [:free :pinned] [(:name best) (:name worse)]))
+    (is (zero? (:elpd-diff best)))
+    (is (> (:elpd-diff worse) (* 2 (:dse worse))))))

@@ -218,10 +218,26 @@ Two quantities, which answer different questions:
    (m/empirical (mapv (fn [[p _]] [p 0.0]) (m/sample-measure smc 1000))))
   ```
 
-  foerster does not compute PSIS-LOO or WAIC itself. Arrange the maps into
-  a draws × observations matrix (in the order of the addresses) and pass it
-  to R's `loo` package or ArviZ; for chains, `(:chain-lengths chains)`
-  gives the chain boundaries those tools use for the relative efficiency.
+  `loo` and `waic` compute the estimates from them as ArviZ's `az.loo`
+  and `az.waic` do, and `compare` ranks models over the same observations:
+
+  ```clojure
+  (diagnostics/loo chains)
+  ;; => {:elpd-loo -7.87 :se 0.73 :p-loo 0.55
+  ;;     :pareto-k {[:y 0] 0.01 …} :good-k 0.7 :pointwise {[:y 0] -1.1 …}}
+
+  (diagnostics/compare {:free free-chains :pinned pinned-chains})
+  ;; => [{:name :free   :elpd-loo -7.87  :elpd-diff 0.0  :dse 0.0 …}
+  ;;     {:name :pinned :elpd-loo -30.54 :elpd-diff 22.66 :dse 5.04 …}]
+  ```
+
+  A higher `:elpd-loo` predicts held-out data better; a difference of a
+  few `:dse` is clear. An observation whose Pareto k̂ exceeds `:good-k` has
+  an unreliable estimate: the posterior moves a lot without it, so refit
+  without it or use a more robust model. `:p-loo` is the effective number
+  of parameters; far above the actual number says the model is
+  misspecified. `:reff` (default 1) is the relative efficiency ESS/S the
+  Pareto smoothing assumes, ArviZ's estimate from chains.
 
 ## 6. Calibrate the sampler
 
