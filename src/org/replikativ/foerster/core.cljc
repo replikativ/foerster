@@ -237,7 +237,7 @@
 
 (def ^:private particle-options
   "What every particle method takes."
-  #{:world-policy :world-opts :authority :grant :executor :resample-threshold :policy})
+  #{:world-policy :world-opts :authority :grant :executor :resample-threshold :policy :seed})
 
 (def ^:private rejuvenation-options
   "Resample-move and SMCP3 (`foerster.smc`): SMC and PIMH in fresh worlds

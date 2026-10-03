@@ -117,3 +117,24 @@ them back:
 `draws` is what a model trained on plain examples needs; `trajectories`
 keeps the weights for weighted losses (see
 [extending](extending.md#learned-twists-and-proposals)).
+
+## Fitting parameters
+
+A model's parameters are its arguments. `learn/maximize-evidence` fits them
+by maximum marginal likelihood (empirical Bayes): Adam on the evidence
+estimate of a particle method, the gradient by central differences whose
+two sides share a seed (common random numbers), so it is not lost in
+Monte Carlo noise.
+
+```clojure
+(learn/maximize-evidence (fn [{:keys [log-sigma]}] (model (Math/exp log-sigma)))
+                         {:log-sigma 0.0}
+                         {:method :smc :particles 300}
+                         {:steps 120 :rate 0.05})
+;; => {:params {:log-sigma …} :history [{:params … :log-evidence …} …]}
+```
+
+Each step costs 2·d + 1 inferences for d parameters, so it suits a few
+hyperparameters; a guide network or many parameters train with gradients
+in finetune-rstr and raster. Particle methods take `:seed` for such
+reproducible runs.
