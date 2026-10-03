@@ -6,6 +6,7 @@
             [org.replikativ.foerster.diagnostics :as d]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample]]
+            [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
@@ -22,3 +23,19 @@
                                                        :policy (itrace/policy {:constraints {:y true}})}))
         {:keys [mean]} (d/summary measure identity)]
     (is (< (Math/abs (- mean 0.9)) 0.03) (str "P(x = 1) " mean))))
+
+(defn- guided-branch []
+  ;; k ~ Bernoulli(½); with k = 1 a site b ~ Flip(½) that a replay draws
+  ;; from its guide Flip(0.9): the guide must not shift the posterior
+  (spin
+   (let [k (sample (dist/bernoulli 0.5) :id :k)]
+     [k (when (= 1 k) (sample (dist/flip 0.5) :id :b :proposal (dist/flip 0.9)))])))
+
+(deftest mh-scores-a-guided-site-it-drops-under-its-guide
+  (let [measure (b/run-infer 22 #(infer/infer (guided-branch) {:method :mh :iterations 6000 :chains 2 :burn 500}))
+        vs (map (comp m/get-value first) (m/get-particles measure))
+        born (filter #(= 1 (first %)) vs)
+        pk (/ (count born) (double (count vs)))
+        pb (/ (count (filter second born)) (double (count born)))]
+    (is (< (Math/abs (- pk 0.5)) 0.04) (str "P(k = 1) " pk))
+    (is (< (Math/abs (- pb 0.5)) 0.04) (str "P(b | k = 1) " pb))))
