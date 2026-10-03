@@ -17,6 +17,7 @@ Each runs as it renders, in CI on every pull request.
 | [Streaming SMC](../notebooks/foerster/streaming.clj) | online filtering against the Kalman filter |
 | [Programmable Inference](../notebooks/foerster/programmable.clj) | the generative function interface, MH by selection, involutive MCMC |
 | [Interventions and Counterfactuals](../notebooks/foerster/counterfactuals.clj) | seeing and doing, interventions by selector, twin-world counterfactuals |
+| [Marketing Mix Modeling](../notebooks/foerster/mmm.clj) | adstock and saturation fit by NUTS on a block, ROAS by counterfactual and in the twin world, a lift test, budget splits by expected response and CVaR — against a known truth |
 | [Steering a Process](../notebooks/foerster/steering.clj) | SMC over scored steps of a process without a density, value estimates as twists, trajectories as training data |
 
 ## Guides
