@@ -154,7 +154,7 @@
         [(* p q (if x (/ 1.0 p) (/ -1.0 q)))])))
 
   (grad-step [dist grad lr]
-    (let [lr (if (number? lr) (first (if (sequential? lr) lr [lr])) lr)
+    (let [lr (if (number? lr) lr (first lr))
           z (logit (:p dist))
           new-z (+ z (* lr (first grad)))
           new-p (sigmoid new-z)]
@@ -176,7 +176,7 @@
         [(* beta (- (/ 1.0 beta) x))])))
 
   (grad-step [dist grad lr]
-    (let [lr (if (number? lr) (first (if (sequential? lr) lr [lr])) lr)
+    (let [lr (if (number? lr) lr (first lr))
           log-beta (Math/log (:lambda dist))
           new-log-beta (+ log-beta (* lr (first grad)))
           new-beta (Math/exp new-log-beta)]
