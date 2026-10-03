@@ -18,9 +18,11 @@ A reference for every inference entry point in `org.replikativ.foerster.core`
 
 Methods: `:enumerate` (exact, see below); `:importance`, `:smc`, `:tempered` (`:particles`); `:pimh`,
 `:pgibbs`, `:pgas`, `:ipmcmc`, `:bbvi` (`:particles`, `:iterations`); `:mh`,
-`:rmh`, `:nuts` (`:iterations` per chain, `:chains`, `:burn`, `:step-size`); `:kernel`
-(`:kernel`, `:chains`); `:pmmh` (`:particles`, `:iterations`, `:params`).
-Other options go to the method's own function, described below.
+`:rmh`, `:nuts` (`:iterations` per chain, `:chains`, `:burn`; `:step-size` for
+`:rmh`); `:kernel` (`:kernel`, `:chains`; the kernel carries its own `:burn`
+and output options); `:pmmh` (`:particles`, `:iterations`, `:burn`,
+`:params`). A size option a method does not take is refused; other options
+go to the method's own function, described below.
 
 Which to start with:
 
@@ -64,7 +66,7 @@ non-Markov-chain kernel:
 | `:anchors`, `:rejuvenate` | — | resample-move (below); `smc-infer` and `pimh-infer`, fresh worlds |
 | `:resampling` | `:systematic` | `:stratified`, `:residual` or `:multinomial` (Douc, Cappé & Moulines 2005); `smc-infer`, `pimh-infer` |
 | `:genealogy?` | `false` | record every resampling's ancestor indices in the measure's `:history` |
-| `:batch` | — | B: resample in batches of B in arrival order instead of at a barrier for all (below) |
+| `:batch` | — | B: resample in batches of B in arrival order instead of at a barrier for all (below); `smc-infer`, fresh worlds |
 | `:smcp3` | — | `{:forward K :backward L}`: SMCP3 move-reweight steps at each observation (below); needs `:anchors` |
 
 An option a method does not take is refused (`::infer/unknown-options`), and
