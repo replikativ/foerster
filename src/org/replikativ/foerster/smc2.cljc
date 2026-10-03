@@ -143,7 +143,7 @@
   (when-not (seq params)
     (throw (ex-info "pmmh needs :params" {:type ::no-params})))
   (fn [resolve reject]
-    (let [seed (random/fresh-seed)
+    (let [seed (or (:seed opts) (random/fresh-seed))
           propose (or propose (random-walk (zipmap params (repeat scale))))
           ;; every run its own seed: a fixed one would make the chain target
           ;; the posterior of one noise draw
@@ -217,7 +217,7 @@
   (when-not (seq params)
     (throw (ex-info "smc2 needs :params" {:type ::no-params})))
   (fn [resolve reject]
-    (let [seed (random/fresh-seed)
+    (let [seed (or (:seed opts) (random/fresh-seed))
           ;; each inner filter's seed comes from this run's and a fixed key:
           ;; they start inside concurrent callbacks
           inner (fn [theta key]

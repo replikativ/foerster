@@ -1008,26 +1008,37 @@
                    reject)))]
       (go 0 init []))))
 
+(defn- sweep-seeds
+  "[seed (fn [key] opts)]: the run's seed — `opts`' `:seed`, or a fresh one
+  — and the options of its sweep `key`, whose seed derives from it, so
+  every sweep draws afresh and `:seed` fixes them all."
+  [opts]
+  (let [seed (or (:seed opts) (random/fresh-seed))]
+    [seed (fn [key] (assoc opts :seed (sp/derive-seed seed ::sweep key)))]))
+
 (defn pgibbs
   "Particle Gibbs (Andrieu et al. 2010) as iterated conditional SMC: each
   sweep keeps the trajectory drawn from the previous one, and every sweep's
   particles are pooled, normalized per sweep. `opts` as for `smc`."
   [model n iterations & [opts]]
   (fn [resolve reject]
-    ((smc model n opts)
-     (fn [initial]
-       (let [pick (fn [measure]
-                    (let [ps (m/get-particles measure)]
-                      (choices-of (first (nth ps (m/sample-categorical
-                                                  (m/normalize-log-weights (mapv second ps))))))))]
+    (let [[seed sweep-opts] (sweep-seeds opts)
+          k (volatile! 0)
+          pick (fn [measure]
+                 (let [ps (m/get-particles measure)]
+                   (random/with-stream* seed [::pick (vswap! k inc)]
+                     #(choices-of (first (nth ps (m/sample-categorical
+                                                  (m/normalize-log-weights (mapv second ps)))))))))]
+      ((smc model n (sweep-opts :initial))
+       (fn [initial]
          ((sweeps iterations (pick initial)
                   (fn [retained]
                     (fn [res rej]
-                      ((smc model n (assoc opts :retained retained))
+                      ((smc model n (assoc (sweep-opts @k) :retained retained))
                        (fn [sweep] (res [(pick sweep) (normalized sweep)]))
                        rej))))
-          resolve reject)))
-     reject)))
+          resolve reject))
+       reject))))
 
 (defn pgas
   "Particle Gibbs with ancestor sampling (Lindsten et al. 2014): `pgibbs`
@@ -1045,14 +1056,14 @@
   [model n iterations & [opts]]
   (fn [resolve reject]
     ;; each iteration's accept draws from its own stream of the chain's seed
-    (let [seed (random/fresh-seed)
+    (let [[seed sweep-opts] (sweep-seeds opts)
           iteration (volatile! 0)]
-      ((smc model n opts)
+      ((smc model n (sweep-opts :initial))
        (fn [initial]
          ((sweeps iterations [(normalized initial) (m/log-marginal initial)]
                   (fn [[current log-z]]
                     (fn [res rej]
-                      ((smc model n opts)
+                      ((smc model n (sweep-opts (inc @iteration)))
                        (fn [proposed]
                          (let [log-z' (m/log-marginal proposed)
                                ratio (- log-z' log-z)
