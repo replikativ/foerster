@@ -135,8 +135,9 @@ Not in foerster yet:
   modeling language. Replay restarts from the earliest changed site; the
   design for incremental re-execution through spindel's spin reuse is in
   [design](design.md#incremental-re-execution-gens-combinators-and-argdiffs).
-- Moves that add or remove sites (reversible jump) are not supported.
-  (`mh(tr, proposal, args)` with a proposal program is `gfi/mh-proposal`.)
+- (Implemented: `mh(tr, proposal, args)` with a proposal program is
+  `gfi/mh-proposal`; involutive moves that add or remove sites —
+  reversible jump — are `involutive/step` with `:removed`.)
 - Gradient-trained parameters (`@param`, `train!`) and amortized training
   of guides. A model's few parameters fit by maximum marginal likelihood
   (`learn/maximize-evidence`); `foerster.learn` exports trajectories as

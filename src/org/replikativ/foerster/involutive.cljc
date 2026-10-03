@@ -13,10 +13,13 @@
   `fd-log-jacobian` computes it numerically for real-valued maps — raster's AD
   is the intended replacement.
 
-  Scope: moves that keep the set of sites (fixed dimension). A site the
-  replay reaches afresh is drawn from its prior and one it no longer reaches
-  is dropped, both scored as in single-site MH; moves that create or remove
-  sites through the involution itself (reversible jump) are future work."
+  Moves may change the set of sites (reversible jump; Green 1995): the
+  involution sets the sites of the new dimension through `:choices` (new
+  addresses included) and names under `:removed` the sites whose values it
+  moved into the auxiliary variables — those are part of the state, not
+  dropped. A site the replay reaches afresh without the involution setting
+  it is drawn from its prior, and one it no longer reaches and that is not
+  `:removed` is dropped, both scored as in single-site MH."
   (:require [org.replikativ.spindel.trace :as trace]
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.foerster.measure :as m]
@@ -30,7 +33,7 @@
   "Σ log p of the stale latents of `old` minus Σ log p of the latents `new`
   drew from their prior: sites outside the involution that the replay
   dropped or reached afresh."
-  [old new]
+  [old new removed]
   (let [old-by (entry-map old)
         new-by (entry-map new)
         fresh (filter (fn [e] (and (itrace/latent? e)
@@ -38,7 +41,9 @@
                                    (not (:kept? (:note e)))
                                    (not (:symmetric? (:note e)))))
                       (itrace/entries new))
-        stale (filter (fn [e] (and (itrace/latent? e) (not (contains? new-by (:address e)))))
+        stale (filter (fn [e] (and (itrace/latent? e)
+                                   (not (contains? new-by (:address e)))
+                                   (not (contains? removed (:address e)))))
                       (itrace/entries old))]
     (- (reduce + 0.0 (map (comp :log-prob :note) stale))
        (reduce + 0.0 (map (comp :log-prob :note) fresh)))))
@@ -48,8 +53,12 @@
 
     :propose    (fn [choices]) -> {:aux u :log-q log q(u ; x)}
     :log-q      (fn [choices u]) -> log q(u ; x), for the reverse move
-    :involution (fn [choices u]) -> {:choices x' :aux u' :log-jacobian l}
+    :involution (fn [choices u]) -> {:choices x' :aux u' :log-jacobian l
+                                     :removed #{address}}
                 where x' gives new values for some addresses of `choices`
+                (or for addresses of a new dimension), and :removed names
+                the sites of the old dimension it moved into u'
+                (reversible jump; default none)
 
   `choices` is `foerster.trace/choices` of the trace ({address value}).
   Resolves {:trace t :accepted? b :log-ratio r}; the loser's worlds are
@@ -62,7 +71,7 @@
             ;; every move from this state draws its own auxiliary variable
             move (rtp/swap-state! world [:inference ::moves] (fnil inc 0))
             {u :aux lq-fwd :log-q} (random/in-world-stream world [::aux move] #(propose x))
-            {x' :choices u' :aux lj :log-jacobian} (involution x u)
+            {x' :choices u' :aux lj :log-jacobian removed :removed} (involution x u)
             changed (into {} (filter (fn [[a v]] (not= v (get x a)))) x')
             from (trace/earliest trace (keys changed))]
         (if-not from
@@ -79,7 +88,7 @@
                (let [ratio (if (:trace/error t')
                              ##-Inf
                              (+ (- (itrace/log-joint t') (itrace/log-joint trace))
-                                (prior-terms trace t')
+                                (prior-terms trace t' (set removed))
                                 (- (log-q (itrace/choices t') u') lq-fwd)
                                 (or lj 0.0)))
                      accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
