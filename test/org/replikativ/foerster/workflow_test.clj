@@ -197,3 +197,26 @@
     (is (= [:free :pinned] [(:name best) (:name worse)]))
     (is (zero? (:elpd-diff best)))
     (is (> (:elpd-diff worse) (* 2 (:dse worse))))))
+(defn- line [xs ys]
+  (spin
+   (let [a (sample (dist/normal 0.0 5.0) :id :a)
+         b (sample (dist/normal 0.0 5.0) :id :b)]
+     (loop [i 0]
+       (when (< i (count xs))
+         (observe (dist/normal (+ a (* b (nth xs i))) 0.3) (nth ys i) :id [:y i])
+         (recur (inc i))))
+     [a b])))
+
+(deftest predictive-on-new-inputs-and-under-interventions
+  (let [xs [0.0 1.0 2.0 3.0 4.0] ys [1.1 2.9 5.2 6.9 9.1]
+        measure (b/run-infer 88 #(infer/infer (line xs ys) {:method :mh :iterations 3000 :chains 2 :burn 500}))
+        mean-of (fn [draws address] (let [vs (map #(get-in % [:observations address]) draws)]
+                                      (/ (reduce + vs) (count vs))))
+        new (b/run-infer 89 #(infer/predictive (line [10.0] [0.0]) measure 2000))
+        done (b/run-infer 90 #(infer/predictive (line [10.0] [0.0]) measure 2000 {:interventions {:b 0.0}}))]
+    (testing "a new input is predicted from the posterior, not its placeholder data"
+      (is (= #{[:y 0]} (set (keys (:observations (first new))))))
+      (is (< (Math/abs (- (mean-of new [:y 0]) 21.04)) 0.3) (str (mean-of new [:y 0]))))
+    (testing "do(b = 0) leaves the intercept"
+      (is (every? #(= 0.0 (second (:value %))) done))
+      (is (< (Math/abs (- (mean-of done [:y 0]) 1.04)) 0.3) (str (mean-of done [:y 0]))))))

@@ -7,12 +7,14 @@
 ;; `smc/stream` pushes observations into them one at a time.
 
 (ns foerster.streaming
+  (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.smc :as smc]
             [org.replikativ.spindel.core :as sp]
+            [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [scicloj.kindly.v4.kind :as kind]
             [scicloj.tableplot.v1.plotly :as plotly]
@@ -42,14 +44,11 @@
 ;;
 ;; `smc/stream` is a CPS operation: it resolves a *step* once every particle
 ;; waits at its next stream site. A step carries the current `:measure`, a
-;; `:push` function taking the next value, and `:done?`. The helper below
-;; waits for a CPS operation at the REPL.
+;; `:push` function taking the next value, and `:done?`. Inside a spin
+;; `await` takes a CPS operation; at the REPL we deref such a spin.
 
-(defn await-cps [operation]
-  (let [p (promise)]
-    (operation #(deliver p [:ok %]) #(deliver p [:error %]))
-    (let [[status v] (deref p 60000 [:error (ex-info "timed out" {})])]
-      (if (= :ok status) v (throw v)))))
+(defn run [operation]
+  (sp/with-context world @(spin (await operation))))
 
 (defn filtered
   "Posterior mean and standard deviation of x_t."
@@ -62,12 +61,12 @@
 
 (def steps
   (sp/with-context world
-    (loop [step (await-cps (smc/stream (tracker) 2000))
+    (loop [step (run (smc/stream (tracker) 2000))
            t 0
            out []]
       (if (= t (count measurements))
         out
-        (let [step' (await-cps ((:push step) (nth measurements t)))]
+        (let [step' (run ((:push step) (nth measurements t)))]
           (recur step' (inc t) (conj out (filtered (:measure step') t))))))))
 
 ;; ## Against the exact answer

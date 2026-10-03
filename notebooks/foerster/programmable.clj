@@ -8,6 +8,7 @@
 ;; a program with every random choice at its address.
 
 (ns foerster.programmable
+  (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.foerster.gfi :as gfi]
@@ -15,19 +16,19 @@
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.trace :as trace]
             [org.replikativ.spindel.core :as sp]
+            [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.select :as select]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (def world (sp/create-execution-context))
 (random/set-seed! 7)
 
-;; The operations are CPS operations; at the REPL we wait for them:
+;; The operations are CPS operations — functions of `resolve` and `reject`,
+;; the shape `await` takes inside a spin, so a spin composes them directly.
+;; At the REPL we deref such a spin:
 
-(defn await-cps [operation]
-  (let [p (promise)]
-    (operation #(deliver p [:ok %]) #(deliver p [:error %]))
-    (let [[status v] (deref p 60000 [:error (ex-info "timed out" {})])]
-      (if (= :ok status) v (throw v)))))
+(defn run [operation]
+  (sp/with-context world @(spin (await operation))))
 
 ;; ## A model with addresses
 ;;
@@ -46,7 +47,7 @@
 ;;
 ;; **simulate** runs the program, every choice from its prior:
 
-(def t (await-cps (gfi/simulate (model))))
+(def t (run (gfi/simulate (model))))
 
 (trace/choices t)
 
@@ -58,20 +59,20 @@
 ;; observed sites. Averaging `exp(weight)` over runs with no constraints
 ;; estimates the evidence.
 
-(def g (await-cps (gfi/generate (model) {:z 1.5})))
+(def g (run (gfi/generate (model) {:z 1.5})))
 
 {:choices (trace/choices (:trace g)) :weight (:weight g)}
 
 ;; **assess** scores a complete assignment of the latent sites — the log
 ;; joint density, observations included:
 
-(:weight (await-cps (gfi/assess (model) {:x 0.5 :z 1.5})))
+(:weight (run (gfi/assess (model) {:x 0.5 :z 1.5})))
 
 ;; **update** changes some choices of an existing trace, keeps the others
 ;; (rescored under their distributions as they are now), and returns the
 ;; weight of the change and the values it overwrote:
 
-(let [{t' :trace w :weight d :discard} (await-cps (gfi/update (:trace g) {:x -0.5}))]
+(let [{t' :trace w :weight d :discard} (run (gfi/update (:trace g) {:x -0.5}))]
   {:choices (trace/choices t') :weight w :discard d})
 
 ;; **regenerate** proposes fresh values for a *selection* of sites from
@@ -79,7 +80,7 @@
 ;; spindel **selectors** — by id, path, prefix or site kind, combined with
 ;; `union`, `intersection` and `complement*`:
 
-(let [{t' :trace} (await-cps (gfi/regenerate t (select/id :z)))]
+(let [{t' :trace} (run (gfi/regenerate t (select/id :z)))]
   {:before (trace/choices t) :after (trace/choices t')})
 
 ;; ## MH by selection
@@ -89,10 +90,10 @@
 ;; sampler for the posterior of x:
 
 (def xs
-  (loop [t (await-cps (gfi/simulate (model))), i 0, xs []]
+  (loop [t (run (gfi/simulate (model))), i 0, xs []]
     (if (= i 4000)
-      (do (await-cps (gfi/close! t)) xs)
-      (let [{t' :trace} (await-cps (gfi/mh t (if (even? i) #{:x} #{:z})))]
+      (do (run (gfi/close! t)) xs)
+      (let [{t' :trace} (run (gfi/mh t (if (even? i) #{:x} #{:z})))]
         (recur t' (inc i) (if (> i 1000) (conj xs (:trace/result t')) xs))))))
 
 (let [n (count xs) mu (/ (reduce + xs) n)]
@@ -134,10 +135,10 @@
                     :log-jacobian (if with-jacobian? (- (Math/log s)) 0.0)})}))
 
 (defn chain-mean [move]
-  (loop [t (await-cps (gfi/simulate (gamma-poisson))), i 0, ls []]
+  (loop [t (run (gfi/simulate (gamma-poisson))), i 0, ls []]
     (if (= i 4000)
-      (do (await-cps (gfi/close! t)) (/ (reduce + ls) (count ls)))
-      (let [{t' :trace} (await-cps (inv/step t move))]
+      (do (run (gfi/close! t)) (/ (reduce + ls) (count ls)))
+      (let [{t' :trace} (run (inv/step t move))]
         (recur t' (inc i) (if (>= i 500) (conj ls (get-in t' [:trace/entries :l :value])) ls))))))
 
 {:with-jacobian (chain-mean (scale-move true))
@@ -150,5 +151,5 @@
 
 ;; ## Cleaning up
 
-(await-cps (gfi/close! t))
-(await-cps (gfi/close! (:trace g)))
+(run (gfi/close! t))
+(run (gfi/close! (:trace g)))

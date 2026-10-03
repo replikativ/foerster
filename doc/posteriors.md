@@ -94,7 +94,11 @@ and every observed site drawing a fresh value from its distribution
 instead of scoring the data; it resolves `[{:value v :observations {address
 x}} …]`. Compare the drawn observations with the data (a posterior
 predictive check). For a prior predictive check, simulate the model
-(`gfi/simulate`).
+(`gfi/simulate`). `model` may be the program on new inputs — its latent
+sites are held at the posterior draw and observed sites draw fresh, so it
+forecasts — and `(infer/predictive model measure n {:interventions {:b
+0.0}})` sets sites by the do-operator first: a scenario under the
+posterior.
 
 **Pointwise log-likelihood** — `(diagnostics/pointwise-log-likelihood
 measure)`: one map `{address log-p}` of the observations per draw, the

@@ -171,6 +171,18 @@ returning a `spin`, awaited from the parent:
 (spin (let [x (await (noisy 0.0))] …))
 ```
 
+foerster's operations come in two shapes. `infer/infer`, `infer/predictive`
+and the models are **spins**; the trace operations (`gfi/simulate`,
+`gfi/update`, `involutive/step`, `smc/stream`, …) are **CPS operations**,
+functions of `resolve` and `reject`. `await` takes both, so inside a spin
+they compose the same way. At the REPL (JVM), deref a spin and wrap a CPS
+operation in one:
+
+```clojure
+@(infer/infer (model) {:method :smc})
+(sp/with-context world @(spin (await (gfi/simulate (model)))))
+```
+
 ## Interventions from inside
 
 `(intervene! address value)` sets a site's value for the rest of the run,
