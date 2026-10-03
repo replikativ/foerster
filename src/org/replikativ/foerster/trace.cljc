@@ -556,21 +556,30 @@
   `mh-step` (e.g. `foerster.hmc/within-gibbs`); a step that makes several
   moves reports `:moves` and `:accepted-moves`, otherwise it is one move,
   accepted when `:accepted?`. A move's randomness is keyed by its number in
-  the trace's world, so the moves made from one world need distinct numbers:
+  the session's seed, so the moves of one session need distinct numbers:
   they are numbered from `:first-iteration`, or — when it is not given —
-  from a counter the world keeps, so calling `mh-chain` again on the same
-  trace (after a rejection, the world is the same) draws afresh."
+  from a counter the worlds carry: a call reserves its n numbers in the
+  starting world, and every world a move resolves to is advanced past the
+  numbers used, so a chain continued from the final trace (whose world may
+  be a fork of an earlier checkpoint) or again from the starting one never
+  repeats a number along its own history. (Two chains that part from one
+  trace may share numbers: each is a valid chain, but they are not
+  independent — start independent chains from independently drawn traces.)"
   ([trace n] (mh-chain trace n nil))
   ([trace n {:keys [on-step first-iteration] move :step :or {move mh-step} :as opts}]
    (fn [resolve reject]
-     (let [first-iteration (or first-iteration
-                               (- (rtp/swap-state! (:trace/world trace) [:inference ::chain-moves] #(+ (or % 0) n))
-                                  n))]
+     (let [counter [:inference ::chain-moves]
+           reserved? (nil? first-iteration)
+           first-iteration (or first-iteration
+                               (- (rtp/swap-state! (:trace/world trace) counter #(+ (or % 0) n)) n))]
        (letfn [(step [current i moves accepted]
                  (if (= i n)
                    (resolve {:trace current :moves moves :accepted accepted})
                    ((move current (assoc opts :iteration (+ first-iteration i)))
                     (fn [{:keys [accepted?] next-trace :trace :as result}]
+                      (when reserved?
+                        (rtp/swap-state! (:trace/world next-trace) counter
+                                         #(max (or % 0) (+ first-iteration n))))
                       (when on-step (on-step result))
                       (step next-trace (inc i)
                             (+ moves (:moves result 1))

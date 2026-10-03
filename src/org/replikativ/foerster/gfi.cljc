@@ -28,6 +28,7 @@
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.trace :as trace]
+            [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]))
@@ -130,6 +131,25 @@
                     (resolve out)))
                 reject)))
            reject)))))
+
+(defn- assess-visiting
+  "As `assess`, resolving also `:visited`, the addresses of the sample sites
+  the run reached; `choices` may hold others, which it ignores."
+  [model choices]
+  (fn [resolve reject]
+    ((run model (itrace/policy {:constraints choices}) nil)
+     (fn [t]
+       (let [free (itrace/latent-addresses t)
+             out {:weight (itrace/log-joint t)
+                  :visited (into #{} (keep #(when (= itrace/choose-site (:site %)) (:address %))) (itrace/entries t))}]
+         ((close! t)
+          (fn [_]
+            (if (seq free)
+              (reject (ex-info "The reverse proposal leaves a sample site unproposed"
+                               {:type ::unconstrained-choices :addresses free}))
+              (resolve out)))
+          reject)))
+     reject)))
 
 (defn- replay-from [trace addresses]
   (or (trace/earliest trace addresses)
@@ -242,9 +262,15 @@
           (fn [_]
             ((update trace proposed)
              (fn [{t' :trace w :weight discard :discard}]
-               ((assess (apply proposal (itrace/choices t') args) discard)
-                (fn [{bwd-score :weight}]
-                  (let [log-alpha (+ w (- bwd-score fwd-score))
+               ((assess-visiting (apply proposal (itrace/choices t') args) discard)
+                (fn [{bwd-score :weight visited :visited}]
+                  ;; a discarded site the reverse proposal does not propose
+                  ;; would be drawn afresh from its prior by the reverse
+                  ;; update: its prior density belongs to the reverse move
+                  (let [regenerated (reduce + 0.0 (for [[a v] discard
+                                                        :when (not (contains? visited a))]
+                                                    (dist/logpdf (get-in (entry-map trace) [a :note :dist]) v)))
+                        log-alpha (+ w (- (+ bwd-score regenerated) fwd-score))
                         accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) log-alpha))
                                      (or (>= log-alpha 0.0)
                                          (< (Math/log (random/in-world-stream (:trace/world t') ::accept
