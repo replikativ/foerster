@@ -381,6 +381,29 @@ take output options: `:samples :final` (default) emits each chain's last
 state; `:samples :all` emits every state after the first `:burn` moves,
 equally weighted.
 
+## Point estimates and the Laplace approximation
+
+`org.replikativ.foerster.optimize` works on a block site's target directly
+(a `block/block-dist` at its inputs), no sampling:
+
+```clojure
+(optimize/map-estimate (block/block-dist b inputs) {:init θ0})
+;; => {:latents {:mu 1.02 :sigma 0.48} :theta […] :log-density … :converged? true}
+
+(def approx (optimize/laplace (block/block-dist b inputs) {:init θ0}))
+(:covariance approx)   ; of θ, the unconstrained coordinates
+(:log-evidence approx) ; log p(θ*) + d/2 log 2π − ½ log det(−H)
+((:draw approx))       ; {:mu … :sigma …}, mapped back through the transforms
+```
+
+`map-estimate` runs L-BFGS on the block's gradient. With constrained
+latents it finds the mode in their own coordinates (σ itself), as Stan's
+`optimize`; `:jacobian? true` gives the mode of the unconstrained θ.
+`laplace` fits a Gaussian in θ at that mode, the Hessian by central
+differences of the gradient (as Stan's `laplace`), and refuses a mode that
+is not a strict maximum. It is exact for a Gaussian target and fast; check
+it against NUTS when the posterior may be skewed or multimodal in θ.
+
 ## Streaming
 
 `(smc/stream model n opts)` (`org.replikativ.foerster.smc`) is a CPS
