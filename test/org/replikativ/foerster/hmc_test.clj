@@ -256,8 +256,8 @@
                        {:log-density (fn [^doubles x _] (* -0.5 (aget x 0) (aget x 0)))
                         :value+grad (fn [^doubles x _] [(* -0.5 (aget x 0) (aget x 0)) (double-array [(- (aget x 0))])])})
         model #(spin (let [x (sample (block/block-dist b nil) :id :theta :init [0.5])]
-                      (when (pos? (first x)) (sample (dist/normal 0.0 0.1) :id :w))
-                      (first x)))
+                       (when (pos? (first x)) (sample (dist/normal 0.0 0.1) :id :w))
+                       (first x)))
         wv (weighted-values
             (run-infer 12 #(infer/kernel-infer (model) (k/hmc-kernel 3000 {:step-size 0.5 :steps 4 :samples :all :burn 200}) 4 {})))
         p (reduce + (map (fn [[x w]] (if (pos? x) w 0.0)) wv))]
