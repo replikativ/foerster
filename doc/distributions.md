@@ -33,6 +33,23 @@ the exponential takes a rate and `discrete` counts from 0.)
 | `(half-normal sigma)` | x ≥ 0 | scale of the normal it folds |
 | `(cauchy x0 gamma)` | reals | location, scale |
 | `(half-cauchy gamma)` | x ≥ 0 | scale |
+| `(half-student-t nu sigma)` | x ≥ 0 | degrees of freedom, scale |
+| `(weibull k lambda)` | x ≥ 0 | shape, scale |
+| `(laplace mu b)` | reals | location, scale |
+| `(inverse-gamma alpha beta)` | x > 0 | shape, scale (mean β/(α − 1)) |
+| `(gumbel mu beta)` | reals | location, scale |
+| `(gamma-mean-sd m sd)` | x > 0 | the gamma with that mean and standard deviation |
+| `(beta-binomial n alpha beta)` | 0 … n | trials, shapes of the success probability's Beta |
+| `(zero-sum-normal sigma n)` | n-vectors summing to 0 | scale, length (PyMC's ZeroSumNormal) |
+
+Laws built from others:
+
+| Constructor | Meaning |
+|---|---|
+| `(truncated d lo hi)` | d restricted to [lo, hi] and renormalized (d needs a `cdf`; a discrete d lives on the integers) |
+| `(censored d lo hi)` | d seen through a clamp to [lo, hi]: an observation at a bound has the probability of lying beyond it (detection limits, saturated sensors) |
+| `(zero-inflated p-zero d)` | 0 with probability p-zero, otherwise d (whose own zeros remain) |
+| `(hurdle p-zero d)` | 0 with probability p-zero, otherwise d conditioned to be nonzero |
 
 Note the gamma's second parameter: it is the **scale**, as in raster,
 Distributions.jl, NumPy and SciPy — not the rate, as in Anglican and PyTorch.
@@ -55,7 +72,11 @@ and some of
 | normal, uniform, exponential, Poisson | ✓ | ✓ | ✓ |
 | log-normal, half-normal, uniform-discrete | ✓ | ✓ | ✓ |
 | Cauchy, half-Cauchy | ✓ | ✓ | — (no moments) |
-| binomial | — | — | ✓ |
+| binomial, beta-binomial | ✓ | ✓ | ✓ |
+| Weibull, Laplace, Gumbel | ✓ | ✓ | ✓ |
+| inverse gamma | ✓ | — (throws) | ✓ |
+| truncated | ✓ | ✓ (when d has one) | — |
+| half-Student-t, zero-inflated | — | — | ✓ |
 | gamma, χ² | ✓ | — (throws) | ✓ |
 | discrete | ✓ | ✓ | — |
 | beta, Bernoulli, Dirichlet, Student-t | — | — | ✓ |

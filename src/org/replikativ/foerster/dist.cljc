@@ -410,6 +410,18 @@
 ;; Binomial, LogNormal, HalfNormal, Cauchy, HalfCauchy, UniformDiscrete
 ;; =============================================================================
 
+(defn- lattice-cdf
+  "P(X ≤ x) of a law on 0..n, by summing its mass."
+  [d n x]
+  (cond (neg? x) 0.0
+        (>= x n) 1.0
+        :else (min 1.0 (reduce + 0.0 (map #(Math/exp (-logpdf d %)) (range (inc (long (Math/floor x)))))))))
+
+(defn- lattice-quantile [d n p]
+  (loop [k 0 acc 0.0]
+    (let [acc (+ acc (Math/exp (-logpdf d k)))]
+      (if (or (>= acc p) (>= k n)) k (recur (inc k) acc)))))
+
 (defrecord Binomial [n p]
   ;; successes in n trials of success probability p
   Distribution
@@ -419,6 +431,9 @@
       (+ (- (lgamma (+ n 1.0)) (lgamma (+ k 1.0)) (lgamma (+ (- n k) 1.0)))
          (xlogy k p) (xlogy (- n k) (- 1.0 p)))
       ##-Inf))
+  Univariate
+  (-cdf [d x] (lattice-cdf d n x))
+  (-quantile [d p] (lattice-quantile d n p))
   Moments
   (-mean [_] (* n p))
   (-variance [_] (* n p (- 1.0 p))))
@@ -753,3 +768,283 @@
   random walk can move."
   [d]
   (-continuous? d))
+
+;; =============================================================================
+;; Weibull, Laplace, inverse gamma, Gumbel, half-t, beta-binomial
+;; =============================================================================
+
+(def ^:private euler-gamma 0.5772156649015329)
+
+(defrecord Weibull [k lambda]
+  ;; shape k, scale λ
+  Distribution
+  (-draw [_] (* lambda (Math/pow (- (Math/log (- 1.0 (u01)))) (/ 1.0 k))))
+  (-logpdf [_ x]
+    (if (neg? x)
+      ##-Inf
+      (let [z (/ x lambda)]
+        (- (+ (Math/log (/ k lambda)) (xlogy (- k 1.0) z)) (Math/pow z k)))))
+  Univariate
+  (-cdf [_ x] (if (neg? x) 0.0 (- 1.0 (Math/exp (- (Math/pow (/ x lambda) k))))))
+  (-quantile [_ p] (* lambda (Math/pow (- (Math/log (- 1.0 p))) (/ 1.0 k))))
+  Moments
+  (-mean [_] (* lambda (Math/exp (lgamma (+ 1.0 (/ 1.0 k))))))
+  (-variance [_] (* lambda lambda (- (Math/exp (lgamma (+ 1.0 (/ 2.0 k))))
+                                     (Math/exp (* 2.0 (lgamma (+ 1.0 (/ 1.0 k)))))))))
+
+(defrecord Laplace [mu b]
+  Distribution
+  (-draw [d] (-quantile d (u01)))
+  (-logpdf [_ x] (- (- (Math/log (* 2.0 b))) (/ (Math/abs (- x mu)) b)))
+  Univariate
+  (-cdf [_ x] (if (< x mu) (* 0.5 (Math/exp (/ (- x mu) b))) (- 1.0 (* 0.5 (Math/exp (/ (- mu x) b))))))
+  (-quantile [_ p] (if (< p 0.5) (+ mu (* b (Math/log (* 2.0 p)))) (- mu (* b (Math/log (* 2.0 (- 1.0 p)))))))
+  Moments
+  (-mean [_] mu)
+  (-variance [_] (* 2.0 b b)))
+
+(defrecord InverseGamma [alpha beta]
+  ;; 1/X for X ~ Gamma(α, rate β): shape α, scale β
+  Distribution
+  (-draw [_] (/ beta (standard-gamma alpha)))
+  (-logpdf [_ x]
+    (if (<= x 0.0)
+      ##-Inf
+      (- (* alpha (Math/log beta)) (lgamma alpha) (* (+ alpha 1.0) (Math/log x)) (/ beta x))))
+  Univariate
+  (-cdf [_ x] (if (<= x 0.0) 0.0 (regularized-gamma-q alpha (/ beta x))))
+  (-quantile [_ _]
+    (throw (ex-info "InverseGamma has no quantile yet" {:type ::unsupported})))
+  Moments
+  (-mean [_] (if (> alpha 1.0) (/ beta (- alpha 1.0)) ##Inf))
+  (-variance [_] (if (> alpha 2.0)
+                   (/ (* beta beta) (* (- alpha 1.0) (- alpha 1.0) (- alpha 2.0)))
+                   ##Inf)))
+
+(defrecord Gumbel [mu beta]
+  ;; the maximum's law: F(x) = exp(−exp(−(x − μ)/β))
+  Distribution
+  (-draw [d] (-quantile d (u01)))
+  (-logpdf [_ x] (let [z (/ (- x mu) beta)] (- (- (Math/log beta)) z (Math/exp (- z)))))
+  Univariate
+  (-cdf [_ x] (Math/exp (- (Math/exp (- (/ (- x mu) beta))))))
+  (-quantile [_ p] (- mu (* beta (Math/log (- (Math/log p))))))
+  Moments
+  (-mean [_] (+ mu (* beta euler-gamma)))
+  (-variance [_] (/ (* Math/PI Math/PI beta beta) 6.0)))
+
+(defrecord HalfStudentT [nu sigma]
+  ;; |Student-t(ν, 0, σ)|
+  Distribution
+  (-draw [_]
+    (let [chi2 (* 2.0 (standard-gamma (* 0.5 nu)))]
+      (Math/abs (* sigma (/ (standard-normal) (Math/sqrt (/ chi2 nu)))))))
+  (-logpdf [_ x]
+    (if (neg? x)
+      ##-Inf
+      (let [t (/ x sigma)]
+        (- (+ (Math/log 2.0) (lgamma (* 0.5 (+ nu 1.0))))
+           (lgamma (* 0.5 nu))
+           (* 0.5 (Math/log (* nu Math/PI)))
+           (Math/log sigma)
+           (* 0.5 (+ nu 1.0) (Math/log (+ 1.0 (/ (* t t) nu))))))))
+  Moments
+  (-mean [_] (if (> nu 1.0)
+               (* 2.0 sigma (Math/sqrt (/ nu Math/PI))
+                  (Math/exp (- (lgamma (* 0.5 (+ nu 1.0))) (lgamma (* 0.5 nu)) (Math/log (- nu 1.0)))))
+               ##Inf))
+  (-variance [d] (if (> nu 2.0)
+                   (- (/ (* sigma sigma nu) (- nu 2.0)) (let [m (-mean d)] (* m m)))
+                   ##Inf)))
+
+(defrecord BetaBinomial [n alpha beta]
+  ;; successes in n trials whose probability is Beta(α, β)
+  Distribution
+  (-draw [_]
+    (let [x (standard-gamma alpha) y (standard-gamma beta) p (/ x (+ x y))]
+      (loop [i 0 k 0] (if (= i n) k (recur (inc i) (if (< (u01) p) (inc k) k))))))
+  (-logpdf [_ k]
+    (if (and (whole? k) (<= 0 k n))
+      (+ (- (lgamma (+ n 1.0)) (lgamma (+ k 1.0)) (lgamma (+ (- n k) 1.0)))
+         (- (lbeta (+ k alpha) (+ (- n k) beta)) (lbeta alpha beta)))
+      ##-Inf))
+  Univariate
+  (-cdf [d x] (lattice-cdf d n x))
+  (-quantile [d p] (lattice-quantile d n p))
+  Moments
+  (-mean [_] (/ (* n alpha) (+ alpha beta)))
+  (-variance [_] (let [s (+ alpha beta)]
+                   (/ (* n alpha beta (+ s n)) (* s s (+ s 1.0))))))
+
+;; =============================================================================
+;; Truncated and censored laws, zero inflation and hurdles
+;; =============================================================================
+
+(defn- below
+  "P(X < x): F(x) for a continuous law, F(x − 1) on the integers."
+  [d x]
+  (cond (= x ##-Inf) 0.0
+        (= x ##Inf) 1.0
+        (-continuous? d) (-cdf d x)
+        :else (-cdf d (dec (Math/ceil x)))))
+
+(defn- upto
+  "P(X ≤ x)."
+  [d x]
+  (cond (= x ##-Inf) 0.0 (= x ##Inf) 1.0 :else (-cdf d x)))
+
+(defrecord Truncated [d lo hi below-lo log-mass]
+  ;; d restricted to [lo, hi], renormalized
+  Distribution
+  (-draw [this]
+    (if (or (> log-mass (Math/log 0.05)) (not (-continuous? d)))
+      (loop [] (let [x (-draw d)] (if (<= lo x hi) x (recur))))
+      (-quantile this (u01))))
+  (-logpdf [_ x] (if (<= lo x hi) (- (-logpdf d x) log-mass) ##-Inf))
+  Univariate
+  (-cdf [_ x] (cond (< x lo) 0.0
+                    (>= x hi) 1.0
+                    :else (/ (- (-cdf d x) below-lo) (Math/exp log-mass))))
+  (-quantile [_ p] (min hi (max lo (-quantile d (+ below-lo (* p (Math/exp log-mass))))))))
+
+(defrecord Censored [d lo hi]
+  ;; d observed through a clamp to [lo, hi]: a value at a bound carries the
+  ;; mass beyond it
+  Distribution
+  (-draw [_] (min hi (max lo (-draw d))))
+  (-logpdf [_ x]
+    (cond (or (< x lo) (> x hi)) ##-Inf
+          (== x lo) (Math/log (upto d lo))
+          (== x hi) (Math/log1p (- (below d hi)))
+          :else (-logpdf d x))))
+
+(defrecord ZeroInflated [p-zero d]
+  ;; 0 with probability p-zero, otherwise a draw of d (which may be 0 too,
+  ;; when d is discrete); for a continuous d, a point mass at 0 next to a
+  ;; density
+  Distribution
+  (-draw [_] (if (< (u01) p-zero) 0 (-draw d)))
+  (-logpdf [_ x]
+    (let [inner (+ (Math/log1p (- p-zero)) (-logpdf d x))]
+      (if (and (number? x) (zero? x))
+        (if (-continuous? d)
+          (Math/log p-zero)
+          (let [a (Math/log p-zero) hi (max a inner)]
+            (if (= hi ##-Inf) ##-Inf (+ hi (Math/log (+ (Math/exp (- a hi)) (Math/exp (- inner hi))))))))
+        inner)))
+  Moments
+  (-mean [_] (* (- 1.0 p-zero) (-mean d)))
+  (-variance [_] (let [m (-mean d)]
+                   (+ (* (- 1.0 p-zero) (-variance d)) (* p-zero (- 1.0 p-zero) m m)))))
+
+(defrecord Hurdle [p-zero d log-positive]
+  ;; 0 with probability p-zero, otherwise d conditioned on being nonzero
+  Distribution
+  (-draw [_] (if (< (u01) p-zero) 0 (loop [] (let [x (-draw d)] (if (zero? x) (recur) x)))))
+  (-logpdf [_ x]
+    (if (and (number? x) (zero? x))
+      (Math/log p-zero)
+      (- (+ (Math/log1p (- p-zero)) (-logpdf d x)) log-positive))))
+
+(defrecord ZeroSumNormal [sigma n]
+  ;; n normals of scale σ constrained to sum to zero: the density on that
+  ;; (n−1)-dimensional subspace, as PyMC's ZeroSumNormal
+  Distribution
+  (-draw [_]
+    (let [z (vec (repeatedly n #(* sigma (standard-normal))))
+          m (/ (reduce + z) n)]
+      (mapv #(- % m) z)))
+  (-logpdf [_ x]
+    (if (and (= n (count x)) (< (Math/abs (reduce + x)) (* 1e-9 n (max 1.0 (reduce max (map #(Math/abs (double %)) x))))))
+      (- (* -0.5 (reduce + (map #(let [z (/ % sigma)] (* z z)) x)))
+         (* (dec n) (+ log-sqrt-2pi (Math/log sigma))))
+      ##-Inf)))
+
+(defn weibull "Weibull with shape k > 0 and scale λ > 0." [k lambda]
+  (check! (and (positive? k) (positive? lambda)) :weibull {:k k :lambda lambda})
+  (->Weibull (double k) (double lambda)))
+
+(defn laplace "Laplace (double exponential) with location μ and scale b > 0." [mu b]
+  (check! (and (finite? mu) (positive? b)) :laplace {:mu mu :b b})
+  (->Laplace (double mu) (double b)))
+
+(defn inverse-gamma "1/X for X ~ Gamma: shape α > 0 and scale β > 0 (mean β/(α − 1))." [alpha beta]
+  (check! (and (positive? alpha) (positive? beta)) :inverse-gamma {:alpha alpha :beta beta})
+  (->InverseGamma (double alpha) (double beta)))
+
+(defn gumbel "Gumbel (extreme value) with location μ and scale β > 0." [mu beta]
+  (check! (and (finite? mu) (positive? beta)) :gumbel {:mu mu :beta beta})
+  (->Gumbel (double mu) (double beta)))
+
+(defn half-student-t "|Student-t(ν, 0, σ)|: a prior for a scale, between half-normal and half-Cauchy." [nu sigma]
+  (check! (and (positive? nu) (positive? sigma)) :half-student-t {:nu nu :sigma sigma})
+  (->HalfStudentT (double nu) (double sigma)))
+
+(defn beta-binomial "Successes in n ≥ 0 trials of a Beta(α, β) probability: an overdispersed binomial." [n alpha beta]
+  (check! (and (whole? n) (>= n 0) (positive? alpha) (positive? beta)) :beta-binomial {:n n :alpha alpha :beta beta})
+  (->BetaBinomial (long n) (double alpha) (double beta)))
+
+(defn gamma-mean-sd
+  "The gamma with mean m > 0 and standard deviation sd > 0 (shape (m/sd)²,
+  scale sd²/m)."
+  [m sd]
+  (check! (and (positive? m) (positive? sd)) :gamma-mean-sd {:mean m :sd sd})
+  (gamma (/ (* m m) (* sd sd)) (/ (* sd sd) m)))
+
+(defn truncated
+  "`d` (a univariate law with a `cdf`) restricted to [lo, hi] and
+  renormalized; lo or hi may be ##-Inf / ##Inf. A discrete `d` lives on the
+  integers."
+  [d lo hi]
+  (check! (and (satisfies? Univariate d) (< lo hi)) :truncated {:d d :lo lo :hi hi})
+  (let [below-lo (below d lo)
+        log-mass (Math/log (- (upto d hi) below-lo))]
+    (check! (> log-mass ##-Inf) :truncated {:d d :lo lo :hi hi :mass 0.0})
+    (->Truncated d (double lo) (double hi) below-lo log-mass)))
+
+(defn censored
+  "`d` (a univariate law with a `cdf`) observed through a clamp to [lo, hi]:
+  an observation at a bound has the probability of lying beyond it — the
+  likelihood of data that saturate a detection limit."
+  [d lo hi]
+  (check! (and (satisfies? Univariate d) (< lo hi)) :censored {:d d :lo lo :hi hi})
+  (->Censored d (double lo) (double hi)))
+
+(defn zero-inflated
+  "0 with probability `p-zero`, otherwise a draw of `d`: extra zeros on top
+  of d's own (a zero-inflated Poisson or negative binomial)."
+  [p-zero d]
+  (check! (and (finite? p-zero) (<= 0.0 p-zero 1.0) (distribution? d)) :zero-inflated {:p-zero p-zero})
+  (->ZeroInflated (double p-zero) d))
+
+(defn hurdle
+  "0 with probability `p-zero`, otherwise `d` conditioned to be nonzero:
+  whether anything happens, and how much if it does, as separate parts."
+  [p-zero d]
+  (check! (and (finite? p-zero) (<= 0.0 p-zero 1.0) (distribution? d)) :hurdle {:p-zero p-zero})
+  (let [p0 (if (-continuous? d) 0.0 (Math/exp (-logpdf d 0)))]
+    (check! (< p0 1.0) :hurdle {:p-zero p-zero :d d})
+    (->Hurdle (double p-zero) d (if (zero? p0) 0.0 (Math/log1p (- p0))))))
+
+(defn zero-sum-normal
+  "n ≥ 2 normals of scale σ constrained to sum to zero (as PyMC's
+  ZeroSumNormal): identifiable group offsets next to an intercept."
+  [sigma n]
+  (check! (and (positive? sigma) (whole? n) (>= n 2)) :zero-sum-normal {:sigma sigma :n n})
+  (->ZeroSumNormal (double sigma) (long n)))
+
+;; the new laws' support and continuity
+
+(extend-protocol Finite
+  BetaBinomial (-support [d] (vec (range (inc (:n d)))))
+  Truncated (-support [{:keys [d lo hi]}] (some->> (-support d) (filterv #(<= lo % hi))))
+  ZeroInflated (-support [{:keys [d]}] (some->> (-support d) (cons 0) distinct vec))
+  Hurdle (-support [{:keys [d]}] (some->> (-support d) (cons 0) distinct vec)))
+
+(extend-protocol Continuous
+  Weibull (-continuous? [_] true)
+  Laplace (-continuous? [_] true)
+  InverseGamma (-continuous? [_] true)
+  Gumbel (-continuous? [_] true)
+  HalfStudentT (-continuous? [_] true)
+  Truncated (-continuous? [{:keys [d]}] (-continuous? d)))
