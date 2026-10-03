@@ -144,7 +144,7 @@
   :row-vectors (for [{:keys [name elpd-loo se p-loo elpd-diff dse]}
                      (diagnostics/compare {"geometric" (:measure geometric-run) "logistic" (:measure logistic-run)})]
                  [name (r3 elpd-loo) (r3 se) (r3 p-loo) (r3 elpd-diff) (r3 dse)
-                  (r3 (apply max (vals (:pareto-k (diagnostics/loo (:measure (if (= name "geometric") geometric-run logistic-run))))))))])})
+                  (r3 (apply max (vals (:pareto-k (diagnostics/loo (:measure (if (= name "geometric") geometric-run logistic-run)))))))])})
 
 ;; Read the warnings before the ranking. A Pareto k̂ above 0.7 says leaving a
 ;; distance out moves the posterior too far for the importance-sampling
