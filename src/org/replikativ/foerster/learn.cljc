@@ -84,9 +84,9 @@
                m (into {} (map (fn [k] [k (+ (* 0.9 (m k)) (* 0.1 (grad k)))]) names))
                v (into {} (map (fn [k] [k (+ (* 0.999 (v k)) (* 0.001 (grad k) (grad k)))]) names))
                theta' (into {} (map (fn [k]
-                                     (let [mh (/ (m k) (- 1.0 (Math/pow 0.9 t)))
-                                           vh (/ (v k) (- 1.0 (Math/pow 0.999 t)))]
-                                       [k (+ (theta k) (/ (* rate mh) (+ (Math/sqrt vh) 1e-8)))]))
-                                   names))]
+                                      (let [mh (/ (m k) (- 1.0 (Math/pow 0.9 t)))
+                                            vh (/ (v k) (- 1.0 (Math/pow 0.999 t)))]
+                                        [k (+ (theta k) (/ (* rate mh) (+ (Math/sqrt vh) 1e-8)))]))
+                                    names))]
            ;; the evidence was estimated at θ, before the step
            (recur (inc t) theta' m v (conj history {:params theta :log-evidence lz}))))))))
