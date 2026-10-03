@@ -229,6 +229,8 @@
   [model n {:keys [resample-threshold policy executor retained ancestor-sampling? root copy?
                    anchors rejuvenate resampling genealogy? smcp3 adopt batch] :as opts}
    {:keys [on-idle on-done on-error]}]
+  (when-not (pos-int? n)
+    (throw (ex-info "SMC needs at least one particle" {:type ::invalid-particles :particles n})))
   (when (and batch (or retained anchors smcp3 (not (pos-int? batch))))
     (throw (ex-info ":batch is a positive count, not combined with :retained, :anchors or :smcp3"
                     {:type ::invalid-batch :batch batch})))

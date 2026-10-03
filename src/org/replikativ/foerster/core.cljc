@@ -188,6 +188,9 @@
     (spin
      (let [;; per chain: a block Gibbs description closes over its own state
            {:keys [iterations] :as step-opts} (mh-options kernel)
+           _ (when (and (= :all (:samples kernel)) (>= (:burn kernel 0) iterations))
+               (throw (ex-info ":burn leaves no draws: it must be below :iterations"
+                               {:type ::burn-exceeds-iterations :burn (:burn kernel) :iterations iterations})))
            root (ctx/create-execution-context :executor executor)
            session (sp/open! root {:purpose :mcmc :seed seed :fork-opts {:systems :none}
                                    :retain-released? false})]

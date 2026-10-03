@@ -105,16 +105,34 @@
   (search-cumulative (cumulative weights) (uniform01)))
 
 (defn normalize-log-weights
-  "Convert log-weights to normalized linear weights.
-
-  Returns vector of weights summing to 1.0"
+  "Convert log-weights to normalized linear weights, summing to 1. All
+  weights zero (##-Inf) gives equal weights — a resampling step's choice
+  among particles that are all impossible; `measure-stats` refuses such a
+  population. ##Inf weights share the mass equally; a NaN weight throws."
   [log-weights]
+  (when (some #(and (number? %) (NaN? %)) log-weights)
+    (throw (ex-info "A log weight is NaN" {:type ::nan-weight})))
   (let [log-max (apply max log-weights)]
-    (if (= log-max ##-Inf)
+    (cond
+      (= log-max ##-Inf)
       (vec (repeat (count log-weights) (/ 1.0 (count log-weights))))
+
+      (= log-max ##Inf)
+      (let [k (count (filter #(= ##Inf %) log-weights))]
+        (mapv #(if (= ##Inf %) (/ 1.0 k) 0.0) log-weights))
+
+      :else
       (let [weights (mapv #(Math/exp (- % log-max)) log-weights)
             total (reduce + weights)]
         (mapv #(/ % total) weights)))))
+
+(defn- possible!
+  "Throw unless some weight is positive: a measure whose particles all have
+  probability zero (evidence zero) has no posterior to report or draw from."
+  [log-weights]
+  (when (every? #(= ##-Inf %) log-weights)
+    (throw (ex-info "Every particle has probability zero: the measure is impossible"
+                    {:type ::impossible}))))
 
 (defn compute-ess
   "Compute effective sample size from normalized weights.
@@ -229,6 +247,7 @@
 
   (sample-measure [_ n]
     (let [log-weights (mapv second particles)
+          _ (possible! log-weights)
           weights (normalize-log-weights log-weights)
           ;; Systematic resampling (low-variance)
           indices (systematic-resample weights n)]
@@ -247,6 +266,7 @@
 
   (measure-stats [_ query-fn]
     (let [log-weights (mapv second particles)
+          _ (possible! log-weights)
           weights (normalize-log-weights log-weights)
           values (mapv (fn [[ctx _]] (query-fn ctx)) particles)
           mean (reduce + (map * weights values))
@@ -269,7 +289,8 @@
   particles: vector of [context log-weight] pairs"
   [particles]
   {:pre [(vector? particles)
-         (every? (fn [[ctx lw]] (and (map? ctx) (number? lw))) particles)]}
+         (seq particles)
+         (every? (fn [[ctx lw]] (and (map? ctx) (number? lw) (not (NaN? lw)))) particles)]}
   (->EmpiricalMeasure particles))
 
 ;; =============================================================================
