@@ -86,3 +86,16 @@
     (is (= :none (:factual pair)))
     (is (number? (:counterfactual pair)))
     (is (= [:u] (:unaligned pair)))))
+
+(deftest a-failing-world-fails-the-query
+  ;; the program throws in the counterfactual world (x = 2): the query
+  ;; rejects with the program's error instead of answering
+  (let [boom (fn [x] (when (= 2.0 x) (throw (ex-info "boom" {:x x}))) x)
+        outcome (try (await-cps (cf/counterfactual
+                                 (model (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+                                          (boom x)))
+                                 {:evidence {:x 1.0} :interventions {:x {:do 2.0}}}))
+                     (catch Exception e e))]
+    (is (instance? Exception outcome))
+    (is (= "boom" (some #(when (= {:x 2.0} (ex-data %)) (ex-message %))
+                        (take-while some? (iterate ex-cause outcome)))))))

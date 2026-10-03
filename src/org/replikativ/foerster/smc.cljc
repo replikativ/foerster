@@ -326,6 +326,13 @@
                       (do (callback outcome) (close!))
                       (close! #(callback outcome)))))
         fail! #(finish! on-error %)
+        ;; without `on-idle` the caller takes no stream: waiting at a
+        ;; stream site is a failure, and the session closes with it
+        idle! (fn [m]
+                (if on-idle
+                  (on-idle m)
+                  (fail! (ex-info "The model has stream sites; run it with smc/stream"
+                                  {:type ::stream-sites}))))
         measure (fn [{:keys [parked streaming done log-z rejuvenation history]}]
                   (cond-> (assoc (m/empirical
                                   (mapv (fn [slot]
@@ -356,7 +363,7 @@
                       ;; it a value: a particle whose `arrived!` runs late
                       ;; must not declare it idle a second time
                       (seq streaming) (do (swap! state assoc :idle? true)
-                                          (on-idle (measure after)))
+                                          (idle! (measure after)))
                       :else (finish! on-done (measure after)))))))
 
             (run-site! [sp]
@@ -831,7 +838,7 @@
                       :streaming (zipmap slots children)
                       :done done :log-z log-z :history history
                       :in-barrier? true :idle? true)
-               (on-idle (measure @state)))
+               (idle! (measure @state)))
              fail!))
           (do (sp/install-handlers! root @handler-table)
               (sp/start! session model)))
@@ -915,10 +922,7 @@
     (let [[resolve reject] (sp/in-callers-world resolve reject)]
       (run-particles model n opts
                      {:on-done resolve
-                      :on-error reject
-                      :on-idle (fn [_]
-                                 (reject (ex-info "The model has stream sites; run it with smc/stream"
-                                                  {:type ::stream-sites})))}))))
+                      :on-error reject}))))
 
 (defn- stream-steps
   "The step interface of a streaming controller made by `(start callbacks)`

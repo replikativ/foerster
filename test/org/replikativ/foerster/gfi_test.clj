@@ -135,3 +135,10 @@
       ;; over seeds the estimate's error has sd ≈ 0.026 and no bias: 3σ
       (is (< (Math/abs (- log-z (lp (dist/normal 0.0 (Math/sqrt 3.0)) 2.0))) 0.08)
           (str "log Z " log-z)))))
+
+(deftest a-failing-program-rejects
+  (with-root [root]
+    (let [model (binding [ec/*execution-context* root] (spin (throw (ex-info "boom" {}))))
+          outcome (try (await-cps (gfi/simulate model)) (catch Exception e e))]
+      (is (= :org.replikativ.foerster.gfi/model-failed (:type (ex-data outcome))))
+      (is (= "boom" (ex-message (ex-cause outcome)))))))

@@ -43,7 +43,8 @@
   "{:session s :operation op}: `model` under `policy` in a new root world and
   session `s`, run by the CPS operation `op`. Options: `:executor` for the
   root world, the rest are session options (`effects.savepoint/open!`). A run
-  that fails closes its session."
+  that fails — the program throws — closes its session and rejects
+  (`::model-failed`, the program's error its cause)."
   [model policy {:keys [executor] :as opts}]
   (let [root (if executor
                (ctx/create-execution-context :executor executor)
@@ -55,10 +56,15 @@
                                       (dissoc opts :executor)))]
     {:session session
      :operation (fn [resolve reject]
-                  ((trace/run session model policy {:anchor? itrace/anchor?})
-                   resolve
-                   (fn [error]
-                     ((sp/close! session) (fn [_] (reject error)) (fn [_] (reject error))))))}))
+                  (let [fail (fn [error]
+                               ((sp/close! session) (fn [_] (reject error)) (fn [_] (reject error))))]
+                    ((trace/run session model policy {:anchor? itrace/anchor?})
+                     (fn [t]
+                       ;; a program that threw is a failed run, not a trace
+                       (if-let [error (:trace/error t)]
+                         (fail (ex-info "The model failed" {:type ::model-failed} error))
+                         (resolve t)))
+                     fail)))}))
 
 (defn- run [model policy opts]
   (:operation (run* model policy opts)))
