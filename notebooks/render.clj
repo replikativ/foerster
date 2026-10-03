@@ -12,7 +12,9 @@
    ["programmable" "Programmable Inference" "the generative function interface, MH by selection, involutive MCMC"]
    ["steering" "Steering a Process" "tilting a process by a reward with SMC; trajectories as training data"]
    ["counterfactuals" "Interventions and Counterfactuals" "seeing, doing, and what would have been"]
-   ["gallery" "A Gallery of Classic Models" "pencils, regression, seven scientists, label switching, branching, coal-mining disasters and eight schools, each against an exact answer"]])
+   ["gallery" "A Gallery of Classic Models" "pencils, regression, seven scientists, label switching, branching, coal-mining disasters and eight schools, each against an exact answer"]
+   ["pymc_gallery" "From the PyMC Gallery" "golf putting (two models, LOO) and radon (partial pooling, NUTS on 89 parameters), against exact posteriors"]
+   ["mmm" "Marketing Mix Modeling" "adstock and saturation by NUTS on a block, ROAS by counterfactual, a lift test, budget splits under risk — against a known truth"]])
 
 (def guides
   [["language" "Language" "sites, addresses, and the rules of the spin macro"]

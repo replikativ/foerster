@@ -1,0 +1,314 @@
+;; # From the PyMC Gallery
+
+;; Models from [PyMC's example gallery](https://www.pymc.io/projects/examples/en/latest/),
+;; written in foerster and checked as the classic [gallery](foerster.gallery.html)
+;; is: against an answer computed without sampling where one exists — here
+;; a posterior on a grid — and otherwise against PyMC's published results.
+;; Every number below is computed as the notebook renders, with fixed seeds.
+
+(ns foerster.pymc-gallery
+  (:require [clojure.string :as str]
+            [org.replikativ.foerster.block :as block]
+            [org.replikativ.foerster.core :as infer]
+            [org.replikativ.foerster.diagnostics :as diagnostics]
+            [org.replikativ.foerster.dist :as dist]
+            [org.replikativ.foerster.effects :refer [sample observe]]
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.random :as random]
+            [org.replikativ.spindel.core :as sp]
+            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [scicloj.kindly.v4.kind :as kind]
+            [scicloj.tableplot.v1.plotly :as plotly]
+            [tablecloth.api :as tc]))
+
+(def world (sp/create-execution-context))
+
+(defn run [seed f]
+  (random/set-seed! seed)
+  (let [t0 (System/nanoTime)
+        out (sp/with-context world @(f))]
+    {:measure out :ms (long (/ (- (System/nanoTime) t0) 1e6))}))
+
+(defn r3 [x] (/ (Math/round (* 1000.0 (double x))) 1000.0))
+(defn r4 [x] (/ (Math/round (* 10000.0 (double x))) 10000.0))
+
+;; ## 1. Golf putting
+;;
+;; Andrew Gelman's [case study](https://mc-stan.org/users/documentation/case-studies/golf.html),
+;; in PyMC's [putting workflow](https://www.pymc.io/projects/examples/en/latest/case_studies/putting_workflow.html):
+;; professional golfers' putts at distances from 2 to 20 feet, how many
+;; were tried and how many went in (Berry 1995).
+
+(def golf
+  {:distance [2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20]
+   :tries [1443 694 455 353 272 256 240 217 200 237 202 192 174 167 201 195 191 147 152]
+   :successes [1346 577 337 208 149 136 111 69 67 75 52 46 54 28 27 31 33 20 24]})
+
+;; **A logistic regression** says the log-odds of success fall linearly
+;; with distance, with Normal(0, 1) priors on both coefficients as in PyMC:
+
+(defn sigmoid [x] (/ 1.0 (+ 1.0 (Math/exp (- x)))))
+
+(defn logistic-golf []
+  (spin
+   (let [a (sample (dist/normal 0.0 1.0) :id :a)
+         b (sample (dist/normal 0.0 1.0) :id :b)]
+     (loop [i 0]
+       (when (< i 19)
+         (observe (dist/binomial (nth (:tries golf) i) (sigmoid (+ a (* b (nth (:distance golf) i)))))
+                  (nth (:successes golf) i) :id [:putt i])
+         (recur (inc i))))
+     {:a a :b b})))
+
+;; **A geometric model** says instead that a putt goes in when its angle
+;; error is small enough for the ball to fit the cup: with ball radius r and
+;; cup radius R, the threshold angle at distance x is asin((R − r)/x), and
+;; with a Normal(0, σ) angle error the probability is 2Φ(threshold/σ) − 1.
+;; One parameter, σ ~ HalfNormal(1):
+
+(def ball-radius (/ (/ 1.68 2) 12))
+(def cup-radius (/ (/ 4.25 2) 12))
+
+(defn p-in [sigma x]
+  (- (* 2.0 (dist/normal-cdf (/ (Math/asin (/ (- cup-radius ball-radius) x)) sigma))) 1.0))
+
+(defn geometric-golf []
+  (spin
+   (let [sigma (sample (dist/half-normal 1.0) :id :sigma :init 0.1)]
+     (loop [i 0]
+       (when (< i 19)
+         (observe (dist/binomial (nth (:tries golf) i) (p-in sigma (nth (:distance golf) i)))
+                  (nth (:successes golf) i) :id [:putt i])
+         (recur (inc i))))
+     {:sigma sigma})))
+
+;; Both posteriors are concentrated, so random-walk Metropolis–Hastings needs
+;; steps on their scale, four chains each. The logistic model's two
+;; coefficients are strongly correlated (the distances are not centred),
+;; which a random walk crosses slowly: it gets long chains. The geometric
+;; chains start at σ = 0.1, far above the posterior, and walk down during the
+;; warm-up:
+
+(def logistic-run
+  (run 1 #(infer/infer (logistic-golf) {:method :rmh :iterations 20000 :burn 2000 :chains 4 :step-size 0.02})))
+
+(def geometric-run
+  (run 2 #(infer/infer (geometric-golf) {:method :rmh :iterations 4000 :burn 1000 :chains 4 :step-size 0.0006})))
+
+;; **The exact posteriors** follow from the same densities on a grid: two
+;; dimensions for the logistic model, one for the geometric.
+
+(defn log-lik [p-of]
+  (reduce + (map (fn [n y x] (dist/logpdf (dist/binomial n (p-of x)) y))
+                 (:tries golf) (:successes golf) (:distance golf))))
+
+(defn grid-moments
+  "Posterior means and sds of the coordinates on a grid: `axes` a vector of
+  [lo hi steps], `log-post` of a point (vector)."
+  [axes log-post]
+  (let [points (reduce (fn [ps [lo hi k]]
+                         (for [p ps i (range k)] (conj p (+ lo (* i (/ (- hi lo) (dec k)))))))
+                       [[]] axes)
+        lps (mapv log-post points)
+        top (reduce max lps)
+        ws (mapv #(Math/exp (- % top)) lps)
+        total (reduce + ws)
+        moment (fn [f] (/ (reduce + (map #(* %1 (f %2)) ws points)) total))]
+    (vec (for [j (range (count axes))]
+           (let [mu (moment #(nth % j))]
+             [mu (Math/sqrt (- (moment #(let [v (nth % j)] (* v v))) (* mu mu)))])))))
+
+(def logistic-exact
+  (grid-moments [[1.9 2.55 161] [-0.31 -0.21 161]]
+                (fn [[a b]] (+ (dist/logpdf (dist/normal 0.0 1.0) a) (dist/logpdf (dist/normal 0.0 1.0) b)
+                               (log-lik #(sigmoid (+ a (* b %))))))))
+
+(def geometric-exact
+  (grid-moments [[0.024 0.0295 551]]
+                (fn [[s]] (+ (dist/logpdf (dist/half-normal 1.0) s) (log-lik #(p-in s %))))))
+
+(kind/table
+ {:column-names ["parameter" "exact mean" "exact sd" "mean" "sd" "R-hat" "bulk ESS"]
+  :row-vectors (for [[label run k [mu sd]] [["a (logistic)" logistic-run :a (first logistic-exact)]
+                                            ["b (logistic)" logistic-run :b (second logistic-exact)]
+                                            ["σ (geometric)" geometric-run :sigma (first geometric-exact)]]]
+                 (let [s (diagnostics/summary (:measure run) k)]
+                   [label (r4 mu) (r4 sd) (r4 (:mean s)) (r4 (:sd s)) (r3 (:rhat s)) (long (:ess-bulk s))]))})
+
+;; Which model predicts better? PSIS-LOO compares their expected log
+;; predictive density on a held-out distance (each distance's putts are one
+;; observation):
+
+(kind/table
+ {:column-names ["model" "elpd-loo" "se" "p-loo" "elpd difference" "se of difference" "max Pareto k"]
+  :row-vectors (for [{:keys [name elpd-loo se p-loo elpd-diff dse]}
+                     (diagnostics/compare {"geometric" (:measure geometric-run) "logistic" (:measure logistic-run)})]
+                 [name (r3 elpd-loo) (r3 se) (r3 p-loo) (r3 elpd-diff) (r3 dse)
+                  (r3 (apply max (vals (:pareto-k (diagnostics/loo (:measure (if (= name "geometric") geometric-run logistic-run)))))))])})
+
+;; Read the warnings before the ranking. A Pareto k̂ above 0.7 says leaving a
+;; distance out moves the posterior too far for the importance-sampling
+;; estimate to be trusted, and an effective number of parameters `p-loo`
+;; far above the actual one (two, and one) says the model misfits the
+;; observations it depends on most. Both are expected here: each distance
+;; pools up to 1443 putts, so every observation is very informative. The
+;; difference is over twice its standard error and the geometric model is
+;; ahead at 15 of the 19 distances — at two feet alone by 52 — so the
+;; ranking stands; its size should not be read precisely.
+
+;; One physical parameter beats two free ones: the logistic curve cannot
+;; follow the success rate's fall from near certainty at two feet. The fits
+;; against the data:
+
+(-> (tc/dataset (for [[i x] (map-indexed vector (:distance golf))
+                      [label p] [["observed" (/ (double (nth (:successes golf) i)) (nth (:tries golf) i))]
+                                 ["logistic" (let [[[a] [b]] logistic-exact] (sigmoid (+ a (* b x))))]
+                                 ["geometric" (p-in (ffirst geometric-exact) x)]]]
+                  {:distance x :p p :series label}))
+    (plotly/layer-line {:=x :distance :=y :p :=color :series}))
+
+;; ## 2. Radon in Minnesota homes
+;;
+;; PyMC's [multilevel modeling](https://www.pymc.io/projects/examples/en/latest/generalized_linear_models/multilevel_modeling.html)
+;; example (from Gelman & Hill 2006): the log radon level of 919 homes in 85
+;; counties, measured in the basement (floor 0) or on the first floor. The
+;; varying-intercept model gives each county its own intercept, drawn from
+;; a common normal — partial pooling: a county with few homes is pulled
+;; toward the state mean, one with many keeps its own.
+;;
+;;     μ_a ~ N(0, 10),  σ_a ~ Exp(1),  α_c ~ N(μ_a, σ_a)   (85 counties)
+;;     β ~ N(0, 10),    σ_y ~ Exp(1),  y_i ~ N(α_county(i) + β floor_i, σ_y)
+;;
+;; (The data: PyMC's `radon.csv`, MIT licence, reduced to the three columns
+;; used here.)
+
+(def radon
+  (let [[_ & lines] (str/split-lines (slurp "notebooks/data/radon.csv"))
+        rows (mapv #(let [[c f y] (str/split % #",")]
+                      [(Long/parseLong c) (Long/parseLong f) (Double/parseDouble y)])
+                   lines)]
+    {:county (int-array (map first rows))
+     :floor (double-array (map second rows))
+     :y (double-array (map #(nth % 2) rows))
+     :counties 85}))
+
+;; Eighty-nine parameters: a block (see [blocks](foerster.blocks.html))
+;; with its gradient written out, θ = [μ_a, σ_a, β, σ_y, α_1 … α_85] with
+;; σ_a and σ_y positive, sampled by NUTS. The block also shows each home's
+;; log density (`:pointwise`), for LOO.
+
+(defn radon-value+grad [^doubles th {:keys [^ints county ^doubles floor ^doubles y counties]}]
+  (let [mu-a (aget th 0) s-a (aget th 1) beta (aget th 2) s-y (aget th 3)
+        n (alength y)
+        g (double-array (alength th))
+        lp (volatile! (+ (* -0.5 (/ (* mu-a mu-a) 100.0)) (- s-a)
+                         (* -0.5 (/ (* beta beta) 100.0)) (- s-y)))]
+    (aset g 0 (/ (- mu-a) 100.0)) (aset g 1 -1.0) (aset g 2 (/ (- beta) 100.0)) (aset g 3 -1.0)
+    (dotimes [c counties]
+      (let [a (aget th (+ 4 c)) z (/ (- a mu-a) s-a)]
+        (vswap! lp + (- (* -0.5 z z) (Math/log s-a)))
+        (aset g (+ 4 c) (- (aget g (+ 4 c)) (/ z s-a)))
+        (aset g 0 (+ (aget g 0) (/ z s-a)))
+        (aset g 1 (+ (aget g 1) (/ (- (* z z) 1.0) s-a)))))
+    (dotimes [i n]
+      (let [c (aget county i)
+            r (/ (- (aget y i) (aget th (+ 4 c)) (* beta (aget floor i))) s-y)]
+        (vswap! lp + (- (* -0.5 r r) (Math/log s-y)))
+        (aset g (+ 4 c) (+ (aget g (+ 4 c)) (/ r s-y)))
+        (aset g 2 (+ (aget g 2) (/ (* r (aget floor i)) s-y)))
+        (aset g 3 (+ (aget g 3) (/ (- (* r r) 1.0) s-y)))))
+    [(- @lp (* 0.5 n (Math/log (* 2 Math/PI))) (* 0.5 counties (Math/log (* 2 Math/PI)))) g]))
+
+(def radon-block
+  (block/block {:block/id :radon
+                :block/coordinates :constrained
+                :block/latents [{:name :mu-a :shape []}
+                                {:name :sigma-a :shape [] :support :positive}
+                                {:name :beta :shape []}
+                                {:name :sigma-y :shape [] :support :positive}
+                                {:name :alpha :shape [85]}]
+                :block/target :complete-conditional}
+               {:log-density (fn [th inputs] (first (radon-value+grad th inputs)))
+                :value+grad radon-value+grad
+                :pointwise (fn [^doubles th {:keys [^ints county ^doubles floor ^doubles y]}]
+                             (into {} (for [i (range (alength y))]
+                                        [i (dist/logpdf (dist/normal (+ (aget th (+ 4 (aget county i)))
+                                                                        (* (aget th 2) (aget floor i)))
+                                                                     (aget th 3))
+                                                        (aget y i))])))}))
+
+(defn radon-model []
+  (spin (sample (block/block-dist radon-block radon) :id :theta :init (vec (repeat 89 0.0)))))
+
+(def radon-run
+  (run 3 #(infer/infer (radon-model) {:method :nuts :iterations 1500 :burn 500 :chains 4})))
+
+;; **The exact posterior.** Given the two scales, everything else is linear
+;; and Gaussian: within county c the n_c homes share α_c, so their
+;; covariance is σ_y² I + σ_a² 11ᵀ, whose inverse and determinant are in
+;; closed form; μ_a and β (normal priors) then integrate out exactly. That
+;; leaves a two-dimensional posterior over (σ_a, σ_y), computed on a grid,
+;; and the mean and variance of β given each grid point.
+
+(defn radon-given-scales
+  "[log p(y | σ_a, σ_y) up to a constant, posterior mean of (μ_a, β),
+  posterior covariance of (μ_a, β)] at the scales."
+  [s-a s-y {:keys [^ints county ^doubles floor ^doubles y counties]}]
+  (let [n (alength y)
+        sy2 (* s-y s-y) sa2 (* s-a s-a)
+        ;; per county: n_c, Σ 1, Σ x, Σ y over its homes
+        sums (reduce (fn [acc i]
+                       (update acc (aget county i)
+                               (fn [[k sx sy]] [(inc k) (+ sx (aget floor i)) (+ sy (aget y i))])))
+                     (vec (repeat counties [0 0.0 0.0])) (range n))
+        ;; V⁻¹ = (I − w 11ᵀ)/σ_y² per county, w = σ_a²/(σ_y² + n_c σ_a²)
+        quad (fn [f g] ; f(i), g(i) → Σ_i Σ_j f_i (V⁻¹)_ij g_j
+               (let [own (reduce + (map #(* (f %) (g %)) (range n)))
+                     fs (reduce (fn [acc i] (update acc (aget county i) + (f i))) (vec (repeat counties 0.0)) (range n))
+                     gs (reduce (fn [acc i] (update acc (aget county i) + (g i))) (vec (repeat counties 0.0)) (range n))]
+                 (/ (- own (reduce + (map (fn [[k] a b] (* (/ sa2 (+ sy2 (* k sa2))) a b)) sums fs gs))) sy2)))
+        one (constantly 1.0) x #(aget floor %) yy #(aget y %)
+        a11 (+ (quad one one) 0.01) a12 (quad one x) a22 (+ (quad x x) 0.01)
+        b1 (quad one yy) b2 (quad x yy)
+        det (- (* a11 a22) (* a12 a12))
+        m1 (/ (- (* a22 b1) (* a12 b2)) det) m2 (/ (- (* a11 b2) (* a12 b1)) det)
+        log-det-v (reduce + (map (fn [[k]] (+ (* (dec k) (Math/log sy2)) (Math/log (+ sy2 (* k sa2))))) sums))]
+    [(* -0.5 (+ (- (quad yy yy) (+ (* m1 b1) (* m2 b2))) log-det-v (Math/log det)))
+     [m1 m2]
+     [[(/ a22 det) (/ (- a12) det)] [(/ (- a12) det) (/ a11 det)]]]))
+
+(def radon-exact
+  (let [grid (for [s-a (map #(+ 0.15 (* 0.005 %)) (range 81))
+                   s-y (map #(+ 0.66 (* 0.0025 %)) (range 61))]
+               (let [[ll m c] (radon-given-scales s-a s-y radon)]
+                 {:s-a s-a :s-y s-y :lp (- ll s-a s-y) :beta (second m) :var-beta (get-in c [1 1])}))
+        top (reduce max (map :lp grid))
+        ws (map #(Math/exp (- (:lp %) top)) grid)
+        total (reduce + ws)
+        e (fn [f] (/ (reduce + (map #(* %1 (f %2)) ws grid)) total))
+        mean-sd (fn [f] (let [mu (e f)] [mu (Math/sqrt (- (e #(let [v (f %)] (* v v))) (* mu mu)))]))
+        beta-mean (e :beta)]
+    {:sigma-a (mean-sd :s-a) :sigma-y (mean-sd :s-y)
+     ;; total variance: within a grid point, plus between
+     :beta [beta-mean (Math/sqrt (+ (e :var-beta) (- (e #(* (:beta %) (:beta %))) (* beta-mean beta-mean))))]}))
+
+(defn radon-natural [theta] (block/constrain radon-block theta))
+
+(kind/table
+ {:column-names ["parameter" "exact mean" "exact sd" "PyMC" "mean" "sd" "R-hat" "bulk ESS"]
+  :row-vectors (for [[label k i pymc] [["β (floor)" :beta 2 "−0.664 ± 0.069"]
+                                       ["σ_a" :sigma-a 1 ""] ["σ_y" :sigma-y 3 ""]]]
+                 (let [s (diagnostics/summary (:measure radon-run) #(nth (radon-natural %) i))
+                       [mu sd] (get radon-exact k)]
+                   [label (r3 mu) (r3 sd) pymc (r3 (:mean s)) (r3 (:sd s)) (r3 (:rhat s)) (long (:ess-bulk s))]))})
+
+;; Partial pooling at work: each county's intercept against its number of
+;; homes. Counties with few homes sit near the state mean μ_a; with many,
+;; the estimate follows the county's own data.
+
+(let [draws (mapv (comp radon-natural m/get-value first) (m/get-particles (:measure radon-run)))
+      homes (frequencies (seq (:county radon)))]
+  (-> (tc/dataset (for [c (range 85)]
+                    {:homes (get homes c 0)
+                     :intercept (/ (reduce + (map #(nth % (+ 4 c)) draws)) (count draws))}))
+      (plotly/layer-point {:=x :homes :=y :intercept})))
