@@ -886,31 +886,31 @@
                ;; the iteration's Gibbs draws from its own stream of the run's seed
                [csmc-indices zeta-sums samples retained-traces]
                (random/with-stream*
-                seed [::gibbs iteration]
-                (fn []
-                  (let [[csmc-indices zeta-sums] (gibbs-update-csmc-indices log-Zs num-csmc-nodes)
+                 seed [::gibbs iteration]
+                 (fn []
+                   (let [[csmc-indices zeta-sums] (gibbs-update-csmc-indices log-Zs num-csmc-nodes)
                    ;; emit THESE sweeps, each node weighted by its Rao-Blackwellized
                    ;; probability of being a conditional node (ζ_j), particles
                    ;; normalized within the node
-                   samples (vec (mapcat
-                                 (fn [node-idx]
-                                   (let [zeta (nth zeta-sums node-idx)
-                                         node (normalized-samples (nth measures node-idx))]
-                                     (when (pos? zeta)
-                                       (if all-particles?
-                                         (map (fn [[smp lw]] [smp (+ lw (Math/log zeta))]) node)
-                                         [[(first (nth node (m/sample-categorical
-                                                             (m/normalize-log-weights (mapv second node)))))
-                                           (Math/log zeta)]]))))
-                                 (range num-nodes)))
-                   retained-traces (vec (concat
-                                         (map (fn [node-idx]
-                                                (let [ps (m/get-particles (nth measures node-idx))]
-                                                  (m/get-trace (first (nth ps (m/sample-categorical
-                                                                               (m/normalize-log-weights (mapv second ps))))))))
-                                              csmc-indices)
-                                         (repeat num-smc-nodes nil)))]
-                    [csmc-indices zeta-sums samples retained-traces])))]
+                         samples (vec (mapcat
+                                       (fn [node-idx]
+                                         (let [zeta (nth zeta-sums node-idx)
+                                               node (normalized-samples (nth measures node-idx))]
+                                           (when (pos? zeta)
+                                             (if all-particles?
+                                               (map (fn [[smp lw]] [smp (+ lw (Math/log zeta))]) node)
+                                               [[(first (nth node (m/sample-categorical
+                                                                   (m/normalize-log-weights (mapv second node)))))
+                                                 (Math/log zeta)]]))))
+                                       (range num-nodes)))
+                         retained-traces (vec (concat
+                                               (map (fn [node-idx]
+                                                      (let [ps (m/get-particles (nth measures node-idx))]
+                                                        (m/get-trace (first (nth ps (m/sample-categorical
+                                                                                     (m/normalize-log-weights (mapv second ps))))))))
+                                                    csmc-indices)
+                                               (repeat num-smc-nodes nil)))]
+                     [csmc-indices zeta-sums samples retained-traces])))]
            (log/trace :ipmcmc/gibbs-update {:iteration iteration :csmc-indices csmc-indices})
            (recur (inc iteration)
                   (await (run-parallel-sweeps model-task num-particles retained-traces (sweep-opts iteration)))

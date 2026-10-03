@@ -31,8 +31,8 @@
 (deftest impossible-and-empty-runs-say-so
   (testing "a population whose particles are all impossible has no posterior"
     (let [measure (b/run-infer 3 #(infer/infer (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
-                                                         (observe (dist/uniform 5.0 6.0) x :id :y)
-                                                         x))
+                                                       (observe (dist/uniform 5.0 6.0) x :id :y)
+                                                       x))
                                                {:method :smc :particles 20}))]
       (is (= ##-Inf (m/log-marginal measure)))
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"probability zero"
