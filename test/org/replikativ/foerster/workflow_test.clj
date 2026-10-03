@@ -5,6 +5,8 @@
   standard models need."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :as b]
+            [org.replikativ.foerster.arviz :as arviz]
+            [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.diagnostics :as d]
             [org.replikativ.foerster.dist :as dist]
@@ -229,3 +231,40 @@
   (is (NaN? (d/rhat [[0.0 1.0 ##NaN 2.0 3.0 4.0] [1.0 2.0 3.0 4.0 5.0 6.0]])))
   (is (NaN? (d/ess-bulk [[0.0 1.0 ##NaN 2.0 3.0 4.0] [1.0 2.0 3.0 4.0 5.0 6.0]])))
   (is (close? 2.999420779156687 (d/rhat [[0 1 100 3 4] [5 6 100 8 9]]))))
+
+(def ^:private block-ys [0.3 1.1 0.8 1.6 0.4])
+
+(def ^:private mean-block
+  ;; mu ~ N(0, 3), y_i ~ N(mu, 1) inside the block, shown to the trace
+  (block/block {:block/id :mean :block/latents [{:name :mu :shape [1]}]}
+               (-> {:log-density (fn [^doubles th {:keys [ys]}]
+                                   (+ (dist/logpdf (dist/normal 0.0 3.0) (aget th 0))
+                                      (reduce + (map #(dist/logpdf (dist/normal (aget th 0) 1.0) %) ys))))
+                    :pointwise (fn [^doubles th {:keys [ys]}]
+                                 (into {} (map-indexed (fn [i y] [i (dist/logpdf (dist/normal (aget th 0) 1.0) y)]) ys)))
+                    :simulate (fn [^doubles th {:keys [ys]}]
+                                (into {} (map-indexed (fn [i _] [i (dist/draw (dist/normal (aget th 0) 1.0))]) ys)))}
+                   block/with-numeric-gradient)))
+
+(deftest a-block-shows-its-observations
+  (let [model #(spin (first (sample (block/block-dist mean-block {:ys block-ys}) :id :theta :init [0.0])))
+        measure (b/run-infer 91 #(infer/infer (model) {:method :nuts :iterations 600 :burn 200 :chains 2}))
+        ll (d/pointwise-log-likelihood measure)
+        draws (b/run-infer 92 #(infer/predictive (model) measure 500))
+        ys (map #(get-in % [:observations [:theta 0]]) draws)
+        post-mean (/ (reduce + block-ys) (+ (count block-ys) (/ 1.0 9.0)))]
+    (is (= (set (map #(vector :theta %) (range 5))) (set (keys (first ll)))))
+    (is (= 5 (count (:pointwise (d/loo measure)))))
+    (is (= 5 (count (:observations (first draws)))))
+    (is (< (Math/abs (- (/ (reduce + ys) (count ys)) post-mean)) 0.2))))
+
+(deftest arviz-groups
+  (let [measure (b/run-infer 93 #(infer/infer (located (dist/normal 0.0 3.0)) {:method :mh :iterations 30 :chains 2 :burn 10}))
+        pp (b/run-infer 94 #(infer/predictive (located (dist/normal 0.0 3.0)) measure 7))
+        data (arviz/inference-data measure {:predictive pp})]
+    (is (= #{"posterior" "log_likelihood" "observed_data" "posterior_predictive"} (set (keys data))))
+    (is (= [2 20] [(count (get-in data ["posterior" "mu"])) (count (first (get-in data ["posterior" "mu"])))]))
+    (is (= 6 (count (first (first (get-in data ["log_likelihood" "y"]))))) "y is an array of 6")
+    (is (= [-0.4 0.1 0.3 0.8 1.2 -1.0] (get-in data ["observed_data" "y"])))
+    (is (= 7 (count (first (get-in data ["posterior_predictive" "y"])))))
+    (is (= "{\"a\":[1,NaN,-Infinity],\"b\":\"x\\\"y\"}" (arviz/->json {:a [1 ##NaN ##-Inf] "b" "x\"y"})))))

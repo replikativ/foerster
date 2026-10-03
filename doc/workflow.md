@@ -239,6 +239,34 @@ Two quantities, which answer different questions:
   misspecified. `:reff` (default 1) is the relative efficiency ESS/S the
   Pareto smoothing assumes, ArviZ's estimate from chains.
 
+### To ArviZ
+
+`foerster.arviz` turns a Markov-chain measure into ArviZ's groups —
+posterior, log likelihood, observed data, and with `:predictive` the
+posterior predictive — for `az.from_dict`, so ArviZ's plots and
+diagnostics apply as they are:
+
+```clojure
+(spit "run.json" (arviz/->json (arviz/inference-data chains {:predictive pp})))
+```
+
+```python
+idata = az.from_dict(**json.load(open("run.json")))
+az.plot_trace(idata); az.loo(idata)
+```
+
+`[:y 3]` becomes element 3 of the variable `y`, and a block site its
+latents by name (`theta.mu`).
+
+### Observations inside a block
+
+A block's target includes its observations, which are therefore not sites
+of the trace. A block shows them with two optional capabilities,
+`:pointwise` (fn [theta inputs]) → {key log-lik} and `:simulate` (fn [theta
+inputs]) → {key value}: `pointwise-log-likelihood` (so `loo`, `waic`,
+`compare` and the ArviZ export) and `infer/predictive` then include them,
+at `[site-address key]`.
+
 ## 6. Calibrate the sampler
 
 The checks above find a run that went wrong. Simulation-based calibration
