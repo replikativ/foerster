@@ -2,7 +2,8 @@
   "A seeded run draws the same numbers however its particles and chains are
   scheduled: every draw made in a world reads a stream keyed by the world's
   seed and what is drawn."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.walk :as walk]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :refer [run-infer weighted-values]]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.counterfactual :as cf]
@@ -115,3 +116,27 @@
                     (await-cps (gfi/close! t))
                     n)))]
     (is (= (noise false) (noise true)))))
+
+(deftest generator-preserves-uuid-word-layout
+  (doseq [seed [0 1 -1 1.5 :seed [42 :x] {:a [1 2.0]} '(1 :x 2.0) #{1 2.0}
+                (first {:a 2.0})]]
+    (let [canonical (walk/postwalk
+                     (fn [v] (if (and (number? v) (== v (Math/floor v)))
+                               (str (long v)) v))
+                     seed)
+          _ (is (= canonical (#'org.replikativ.foerster.random/canonical seed)))
+          uuid (org.replikativ.spindel.engine.hash/content-hash
+                [:org.replikativ.foerster.random/stream
+                 canonical])
+          hex (clojure.string/replace (str uuid) "-" "")
+          words (mapv #(Long/parseLong (subs hex (* 8 %) (* 8 (inc %))) 16)
+                      (range 4))
+          expected (if (every? zero? words) [1 0 0 0] words)
+          g (random/generator seed)]
+      (is (= expected @g))
+      (loop [state expected i 0]
+        (when (< i 100)
+          (let [[out next-state] (#'org.replikativ.foerster.random/step state)]
+            (is (= out (random/next-u32! g)))
+            (is (= next-state @g))
+            (recur next-state (inc i))))))))
