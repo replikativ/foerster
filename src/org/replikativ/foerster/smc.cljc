@@ -650,7 +650,7 @@
                                       ;; conditional: slot 0 continues from its
                                       ;; own lineage, or the past PGAS drew for it
                                        (into [retained-ancestor]
-                                             (repeatedly (dec n) (fn [] (m/sample-categorical weights))))
+                                             (m/multinomial-resample weights (dec n)))
                                        (m/resample resampling weights n)))
                         live? #(or (contains? parked %) (contains? streaming %))
                         forked-slots (filterv #(live? (nth ancestors %)) slots)
