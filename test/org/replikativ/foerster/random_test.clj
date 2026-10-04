@@ -27,6 +27,33 @@
        (observe (dist/normal z 1) -2.0)
        [x z]))))
 
+(deftest keyed-streams-seed-only-on-demand
+  (let [seeds (atom [])
+        generator random/generator
+        expected (let [g (generator [17 :site])]
+                   (vec (repeatedly 8 #(random/next-double! g))))]
+    (with-redefs [random/generator (fn [seed]
+                                     (swap! seeds conj seed)
+                                     (generator seed))]
+      (is (= :scored (random/with-stream* 17 :observe (constantly :scored))))
+      (is (empty? @seeds))
+      (is (= expected (random/with-stream* 17 :site
+                        #(vec (repeatedly 8 random/uniform01)))))
+      (is (= [[17 :site]] @seeds))
+      (is (= expected (random/with-stream* 17 :site
+                        #(vec (repeatedly 8 random/uniform01)))))
+      (is (= [[17 :site] [17 :site]] @seeds)))))
+
+(deftest nested-and-unseeded-streams
+  (let [g (random/generator [17 :outer])
+        expected (vec (repeatedly 3 #(random/next-double! g)))]
+    (is (= expected
+           (random/with-stream* 17 :outer
+             #(let [a (random/uniform01)
+                    _ (random/with-stream* 18 :inner random/uniform01)
+                    b (random/with-stream* nil :unused random/uniform01)]
+                [a b (random/uniform01)]))))))
+
 (defn- runs
   "`n` runs of `make` under `seed` on a 4-thread executor."
   [n seed make]
