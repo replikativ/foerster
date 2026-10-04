@@ -26,15 +26,26 @@ A probabilistic program is a spindel `spin` with `sample`, `observe` and
 `factor` sites. Every site is a spindel *savepoint*, so an inference algorithm
 is a handler that decides, scores, forks, copies or abandons those savepoints:
 
+- **one call shape** for every method: `(infer/infer model {:method :smc
+  :particles 1000})`
+- **exact enumeration** of finite discrete models over forked worlds
 - **SMC** and streaming SMC, importance sampling, tempered SMC,
   resample-move and SMCP3; arrival-batched SMC and the **particle cascade**,
   which do not wait for the slowest particle
 - **particle MCMC**: PIMH, particle Gibbs, PGAS, IPMCMC; **PMMH** and
   **SMC²** for static parameters
 - **MCMC over traces**: single-site and random-walk Metropolis–Hastings,
-  block Gibbs, involutive MCMC, **HMC** on numerical blocks; kernels
-  composed by `k/cycle` and `k/mixture`
-- **BBVI** (black-box variational inference)
+  block Gibbs, involutive MCMC with reversible jump, custom proposal
+  programs; **NUTS** (Stan's adaptation) and HMC on numerical blocks, with
+  constrained latents; kernels composed by `k/cycle` and `k/mixture`
+- **MAP** (L-BFGS) and the **Laplace approximation** on blocks; **BBVI**
+  (black-box variational inference); evidence maximization for a model's
+  parameters (`foerster.learn`)
+- **Anglican's toolkit**: `mem`, Chinese restaurant processes, nested
+  inference (`infer/conditional`)
+- **checking**: R-hat, bulk and tail ESS and MCSE as ArviZ computes them,
+  PSIS-LOO, WAIC and model comparison, posterior predictive checks
+  (also on new inputs and under interventions), export to ArviZ
 - **steering** a process — a language model's turns, a simulator — by SMC
   over scored steps, twisted by a value estimate (`foerster.steer`), with
   the trajectories as training data (`foerster.learn`)
@@ -60,7 +71,7 @@ is a handler that decides, scores, forks, copies or abandons those savepoints:
      mu)))
 
 ;; inference returns a spin; at the REPL, deref it
-(def posterior (sp/with-context world @(infer/smc-infer (model) 1000)))
+(def posterior (sp/with-context world @(infer/infer (model) {:method :smc :particles 1000})))
 
 (:mean (infer/query posterior identity))   ; ≈ 0.5, the posterior is N(0.5, 0.707²)
 ```
@@ -74,7 +85,9 @@ Inside another spin, `await` it instead of dereferencing
   [replikativ.github.io/foerster](https://replikativ.github.io/foerster/):
   getting started, choosing an algorithm, models in worlds, blocks and HMC,
   streaming SMC, programmable inference, interventions and counterfactuals,
-  steering a process.
+  steering a process, a gallery of classic models, models from the PyMC
+  gallery, and marketing mix modeling — each checked against an exact
+  answer or a known truth.
 - **Guides** — [doc/](doc/README.md): the language, the algorithms,
   posteriors, [checking a model and its inference](doc/workflow.md),
   [coming from Stan, PyMC, Turing, Gen, Anglican or WebPPL](doc/coming-from.md),
