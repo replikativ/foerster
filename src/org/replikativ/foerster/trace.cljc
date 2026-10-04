@@ -68,10 +68,13 @@
 
 (defn- intervention-for [opts sp]
   (let [world (:savepoint/world sp)
-        d (sel/describe sp)]
-    (some (fn [[selects? transform]] (when (selects? d) transform))
-          (concat (intervention-pairs (:interventions opts))
-                  (intervention-pairs (rtp/get-state world [:inference :interventions]))))))
+        pairs (::intervention-pairs opts)
+        interventions (rtp/get-state world [:inference :interventions])]
+    (when (or (seq pairs) (seq interventions))
+      (let [d (sel/describe sp)
+            match (fn [[selects? transform]] (when (selects? d) transform))]
+        (or (some match pairs)
+            (some match (intervention-pairs interventions)))))))
 
 (defn- choices-so-far
   "{address value} of the sample sites this computation decided so far."
@@ -283,14 +286,17 @@
   `barrier-site?`); `policy-options` recovers the options."
   ([] (policy nil))
   ([{fallback :else :as opts}]
-   (let [fallback (or fallback trace/payload-policy)]
+   (let [fallback (or fallback trace/payload-policy)
+         prepared (if (seq (:interventions opts))
+                    (assoc opts ::intervention-pairs (vec (intervention-pairs (:interventions opts))))
+                    opts)]
      (with-meta
        (fn [sp old-entry]
          (let [site (:savepoint/site sp)]
            (cond
              (= choose-site site)
              (cond-> (random/in-world-stream (:savepoint/world sp) (:savepoint/address sp)
-                                             #(decide-choose opts sp old-entry))
+                                             #(decide-choose prepared sp old-entry))
                true (assoc-in [:note :barrier] (count-barrier! sp))
              ;; with :noise, a site that got no factual noise (it did not
              ;; exist in the factual world, or its law is not a mechanism)

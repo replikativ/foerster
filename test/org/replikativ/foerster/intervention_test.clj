@@ -14,8 +14,24 @@
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.foerster.dist :as dist]))
+
+(deftest policy-interventions-precede-live-world-interventions
+  (let [world (context/create-execution-context)
+        opts {:interventions {:x {:do 1.0}}}
+        policy (itrace/policy opts)
+        site (fn [address]
+               {:savepoint/world world :savepoint/site itrace/choose-site
+                :savepoint/address address
+                :savepoint/payload {:dist (dist/normal 0.0 1.0)}})]
+    (is (= opts (itrace/policy-options policy)))
+    (rtp/swap-state! world [:inference :interventions] (constantly {:x 2.0 :y 3.0}))
+    (is (= 1.0 (:value (policy (site :x) nil))))
+    (is (= 3.0 (:value (policy (site :y) nil))))
+    (rtp/swap-state! world [:inference :interventions] #(assoc % :y 4.0))
+    (is (= 4.0 (:value (policy (site :y) nil))))))
 
 (defn- await-cps [operation]
   (let [result (promise)]
