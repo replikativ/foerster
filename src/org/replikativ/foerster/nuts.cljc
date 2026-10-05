@@ -24,13 +24,35 @@
             [org.replikativ.spindel.trace :as trace]))
 
 ;; =============================================================================
-;; Vectors
+;; Vectors — double arrays inside a transition. Every operation allocates its
+;; result and sums left to right from 0.0, as the sequence versions did, so
+;; the draws are the same numbers.
 ;; =============================================================================
 
-(defn- dot ^double [a b] (reduce + 0.0 (map * a b)))
-(defn- v+ [a b] (mapv + a b))
-(defn- axpy "a·x + y" [a x y] (mapv #(+ (* a %1) %2) x y))
+(defn- dot ^double [^doubles a ^doubles b]
+  (let [n (alength a)]
+    (loop [i 0 acc 0.0] (if (= i n) acc (recur (inc i) (+ acc (* (aget a i) (aget b i))))))))
+
+(defn- v+ ^doubles [^doubles a ^doubles b]
+  (let [n (alength a) out (double-array n)]
+    (dotimes [i n] (aset out i (+ (aget a i) (aget b i))))
+    out))
+
+(defn- axpy "a·x + y" ^doubles [a ^doubles x ^doubles y]
+  (let [a (double a) n (alength x) out (double-array n)]
+    (dotimes [i n] (aset out i (+ (* a (aget x i)) (aget y i))))
+    out))
+
+(defn- emul "elementwise a·b" ^doubles [^doubles a ^doubles b]
+  (let [n (alength a) out (double-array n)]
+    (dotimes [i n] (aset out i (* (aget a i) (aget b i))))
+    out))
+
 (defn- finite? [x] (not (or (NaN? x) (infinite? x))))
+
+(defn- all-finite? [^doubles a]
+  (let [n (alength a)]
+    (loop [i 0] (cond (= i n) true (finite? (aget a i)) (recur (inc i)) :else false))))
 
 (defn- log-sum-exp [a b]
   (cond (= ##-Inf a) b
@@ -44,8 +66,8 @@
 (defn- point
   "A phase-space point: position, momentum, log density and gradient."
   [dist inv-metric q p]
-  (let [[lp g] (block/value+grad dist q)]
-    {:q q :p p :lp lp :g g :p-sharp (mapv * inv-metric p)}))
+  (let [[lp g] (block/value+grad! dist q)]
+    {:q q :p p :lp lp :g g :p-sharp (emul inv-metric p)}))
 
 (defn- hamiltonian [{:keys [lp p p-sharp]}]
   (- (* 0.5 (dot p p-sharp)) lp))
@@ -53,10 +75,10 @@
 (defn- leapfrog [dist inv-metric eps direction {:keys [q p g]}]
   (let [e (* direction eps)
         p (axpy (* 0.5 e) g p)
-        q (axpy e (mapv * inv-metric p) q)
-        [lp g'] (if (every? finite? q) (block/value+grad dist q) [##-Inf (vec (repeat (count q) 0.0))])
+        q (axpy e (emul inv-metric p) q)
+        [lp g'] (if (all-finite? q) (block/value+grad! dist q) [##-Inf (double-array (alength ^doubles q))])
         p (axpy (* 0.5 e) g' p)]
-    {:q q :p p :lp lp :g g' :p-sharp (mapv * inv-metric p)}))
+    {:q q :p p :lp lp :g g' :p-sharp (emul inv-metric p)}))
 
 (defn- criterion
   "The generalized no-U-turn criterion: the trajectory still extends in both
@@ -107,18 +129,23 @@
   the current generator. Returns {:q :accept-stat :depth :n-leapfrog
   :divergent?}."
   [dist q0 eps inv-metric max-depth]
-  (let [p0 (mapv #(* (dist/draw (dist/normal 0.0 1.0)) (Math/sqrt (/ 1.0 %))) inv-metric)
+  (let [inv-metric (double-array inv-metric)
+        q0 (double-array q0)
+        p0 (let [n (alength inv-metric) out (double-array n)]
+             (dotimes [i n]
+               (aset out i (* (double (dist/draw (dist/normal 0.0 1.0))) (Math/sqrt (/ 1.0 (aget inv-metric i))))))
+             out)
         z0 (point dist inv-metric q0 p0)
         h0 (hamiltonian z0)]
     (loop [depth 0 fwd z0 bck z0 sample z0 log-w 0.0 rho (:p z0) n 0 metro 0.0 divergent? false]
       (if (>= depth max-depth)
-        {:q (:q sample) :accept-stat (/ metro (max 1 n)) :depth depth :n-leapfrog n :divergent? divergent?}
+        {:q (vec (:q sample)) :accept-stat (/ metro (max 1 n)) :depth depth :n-leapfrog n :divergent? divergent?}
         (let [forward? (> (random/uniform01) 0.5)
               from (if forward? fwd bck)
               sub (build-tree dist inv-metric eps (if forward? 1 -1) depth from h0)
               n (+ n (:n sub)) metro (+ metro (:metro sub))]
           (if-not (:valid? sub)
-            {:q (:q sample) :accept-stat (/ metro (max 1 n)) :depth (inc depth) :n-leapfrog n
+            {:q (vec (:q sample)) :accept-stat (/ metro (max 1 n)) :depth (inc depth) :n-leapfrog n
              :divergent? (boolean (:divergent? sub))}
             (let [sample (if (or (> (:log-w sub) log-w)
                                  (< (random/uniform01) (Math/exp (- (:log-w sub) log-w))))
@@ -139,7 +166,7 @@
                                        (criterion (:p-sharp bck-end) (:p-sharp from) (v+ new-rho (:p from))))))]
               (if persist?
                 (recur (inc depth) fwd bck sample log-w rho' n metro divergent?)
-                {:q (:q sample) :accept-stat (/ metro (max 1 n)) :depth (inc depth) :n-leapfrog n
+                {:q (vec (:q sample)) :accept-stat (/ metro (max 1 n)) :depth (inc depth) :n-leapfrog n
                  :divergent? divergent?}))))))))
 
 ;; =============================================================================
@@ -239,7 +266,7 @@
                  (let [joint (- (itrace/log-joint proposed) (itrace/log-joint trace))
                        own (- (get-in proposed [:trace/entries address :note :log-prob])
                               (get-in trace [:trace/entries address :note :log-prob]))]
-                   (when (or (:trace/error proposed) (> (Math/abs (- joint own)) 1e-6))
+                   (when (or (:trace/error proposed) (> (Math/abs (double (- joint own))) 1e-6))
                      (trace/release! proposed trace)
                      (throw (ex-info "NUTS needs the block's complete conditional as its target: the move changed sites outside the block"
                                      {:type ::incomplete-target :address address :outside (- joint own)})))
