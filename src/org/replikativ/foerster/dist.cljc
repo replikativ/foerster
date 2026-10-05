@@ -76,8 +76,12 @@
     (- (Math/log (/ Math/PI (Math/abs (Math/sin (* Math/PI x)))))
        (lgamma (- 1.0 x)))
     (let [x (- x 1.0)
-          a (reduce + (first lanczos)
-                    (map-indexed (fn [i c] (/ c (+ x i 1.0))) (rest lanczos)))
+          ;; Keep the Lanczos additions in their original order without
+          ;; allocating a lazy sequence for every density evaluation.
+          a (loop [i 1 a (double (first lanczos))]
+              (if (= i (count lanczos))
+                a
+                (recur (inc i) (+ a (/ (nth lanczos i) (+ x (dec i) 1.0))))))
           t (+ x 7.5)]
       (+ log-sqrt-2pi (* (+ x 0.5) (Math/log t)) (- t) (Math/log a)))))
 

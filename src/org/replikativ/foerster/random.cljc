@@ -121,13 +121,13 @@
   nil)
 
 (def ^:dynamic *stream*
-  "The stream draws come from, or nil for the process generator."
+  "The generator (or delayed generator) draws come from, or nil for the process generator."
   nil)
 
 (defn current
   "The generator draws come from now."
   []
-  (or *stream* process))
+  (force (or *stream* process)))
 
 (defn uniform01
   "A uniform draw in [0, 1) from the current generator."
@@ -136,10 +136,11 @@
 
 (defn with-stream*
   "Call `f` with draws coming from the stream keyed by `seed` and `key`. A nil
-  seed (no session) leaves draws on the process generator."
+  seed (no session) leaves draws on the process generator. The keyed
+  generator is seeded only when a draw actually needs it."
   [seed key f]
   (if (some? seed)
-    (binding [*stream* (generator [seed key])]
+    (binding [*stream* (delay (generator [seed key]))]
       (f))
     (f)))
 

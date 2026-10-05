@@ -6,6 +6,28 @@
 
 (defn- close? [a b] (< (Math/abs (- a b)) (* 1e-9 (max 1.0 (Math/abs b)))))
 
+(deftest lgamma-preserves-fixed-numeric-results
+  ;; Recorded before replacing the Lanczos sequence with an indexed loop.
+  ;; Exact equality catches a change in the order of floating additions.
+  (doseq [[x expected] [[-1.5 0.8600470153764792]
+                        [-0.5 1.2655121234846451]
+                        [0.01 4.599479878042021]
+                        [0.1 2.252712651734206]
+                        [0.49 0.5922496293352668]
+                        [0.5 0.5723649429246995]
+                        [1.0 -8.881784197001252E-16]
+                        [1.5 -0.12078223763524498]
+                        [2.0 0.0]
+                        [3.5 1.2009736023470756]
+                        [10.0 12.801827480081474]
+                        [50.0 144.56574394634487]
+                        [100.0 359.13420536957534]
+                        [1000.0 5905.220423209181]
+                        [1000000.0 1.2815504569147611E7]]]
+    (is (= (Double/doubleToLongBits expected)
+           (Double/doubleToLongBits (dist/lgamma x)))
+        (str "lgamma(" x ")"))))
+
 (deftest densities-agree-with-scipy
   (doseq [[label d x expected]
           [["weibull" (dist/weibull 1.5 2.0) 0.7 -1.0196559271096064]

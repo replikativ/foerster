@@ -2,7 +2,17 @@
   "Summaries of a weighted measure respect its weights."
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
-            [org.replikativ.foerster.measure :as m]))
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.random :as random]))
+
+(deftest multinomial-resampling-preserves-categorical-draws
+  (doseq [weights [[1.0] [0.0 0.25 0.0 0.75] [0.1 0.2 0.3 0.3999999999999999]]
+          n [0 1 49 200]]
+    (let [draw (fn [f]
+                 (random/with-stream* 42 :resample
+                   #(let [indices (f)] [indices (random/uniform01)])))]
+      (is (= (draw #(vec (repeatedly n (fn [] (m/sample-categorical weights)))))
+             (draw #(m/multinomial-resample weights n)))))))
 
 (deftest quantiles-follow-the-weights
   (let [q (m/weighted-quantiles [3.0 1.0 2.0 4.0] [0.1 0.1 0.7 0.1])]
