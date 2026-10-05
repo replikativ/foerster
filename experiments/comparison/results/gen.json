@@ -1,0 +1,42 @@
+{
+ "W3_golf_mh": {
+  "system": "Gen MH (random-walk proposal per site), chains start at a=b=0",
+  "warm_s": 3.151550644,
+  "a": {
+   "mean": 2.228017997215797,
+   "sd": 0.056926884101908444,
+   "ess_bulk": 652.6045205670287,
+   "rhat": 1.0062057029238032
+  },
+  "b": {
+   "mean": -0.25543689692036553,
+   "sd": 0.006573986506215523,
+   "ess_bulk": 757.5232490698752,
+   "rhat": 1.0058039941441146
+  }
+ },
+ "W1_rw_pf_unfold": {
+  "N100": {
+   "logZ_err_mean": -0.3487691539403329,
+   "median_s": 0.4090947385,
+   "logZ_err_sd": 0.7659883313927214,
+   "steps_per_s": 73332.64688272201
+  },
+  "system": "Gen static Unfold PF",
+  "N1000": {
+   "logZ_err_mean": -0.008807578994560573,
+   "median_s": 4.557264768,
+   "logZ_err_sd": 0.40957101731254586,
+   "steps_per_s": 65828.95997321172
+  }
+ },
+ "W1_rw_pf_dynamic": {
+  "N100": {
+   "logZ_err_mean": -0.7987047794142464,
+   "median_s": 14.227802588,
+   "logZ_err_sd": 0.4924799157669309,
+   "steps_per_s": 2108.547670270782
+  },
+  "system": "Gen dynamic-DSL PF"
+ }
+}
