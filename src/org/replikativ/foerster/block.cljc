@@ -90,15 +90,28 @@
   "Capabilities over θ from capabilities over the constrained latents
   `supports` (one per coordinate)."
   [{:keys [log-density value+grad sample sample-log-density pointwise simulate] :as caps} supports]
-  (let [xs (fn [^doubles th] (double-array (map to-x supports th)))
-        log-j (fn [^doubles th] (reduce + 0.0 (map log-jacobian supports th)))]
+  ;; primitive loops: a sampler calls these at every gradient
+  (let [supports (vec supports)
+        n (count supports)
+        xs (fn [^doubles th]
+             (let [out (double-array n)]
+               (dotimes [i n] (aset out i (double (to-x (nth supports i) (aget th i)))))
+               out))
+        log-j (fn [^doubles th]
+                (loop [i 0 acc 0.0]
+                  (if (= i n) acc (recur (inc i) (+ acc (double (log-jacobian (nth supports i) (aget th i))))))))]
     (cond-> (assoc caps
                    :log-density (fn [th inputs] (+ (double (log-density (xs th) inputs)) (log-j th)))
-                   :value+grad (fn [th inputs]
+                   :value+grad (fn [^doubles th inputs]
                                  (let [[lp g] (value+grad (xs th) inputs)]
                                    [(+ (double lp) (log-j th))
-                                    (double-array (map (fn [gi su t] (+ (* gi (dx-dtheta su t)) (dlog-jacobian su t)))
-                                                       (seq g) supports th))])))
+                                    ;; a capability may return its gradient as any sequence
+                                    (let [^doubles g (double-array g) out (double-array n)]
+                                      (dotimes [i n]
+                                        (let [su (nth supports i) t (aget th i)]
+                                          (aset out i (+ (* (aget g i) (double (dx-dtheta su t)))
+                                                         (double (dlog-jacobian su t))))))
+                                      out)])))
       sample (assoc :sample (fn [inputs] (mapv to-theta supports (sample inputs))))
       pointwise (assoc :pointwise (fn [th inputs] (pointwise (xs th) inputs)))
       simulate (assoc :simulate (fn [th inputs] (simulate (xs th) inputs)))
@@ -197,6 +210,13 @@
   [dist theta]
   (let [[lp g] ((capability (:block dist) :value+grad) (theta-array theta) (:inputs dist))]
     [(double lp) (vec g)]))
+
+(defn value+grad!
+  "As `value+grad` on a double array θ, the gradient a double array: for
+  samplers that keep their state in arrays. θ is not modified."
+  [dist ^doubles theta]
+  (let [[lp g] ((capability (:block dist) :value+grad) theta (:inputs dist))]
+    [(double lp) (double-array g)]))
 
 (defn with-numeric-gradient
   "`capabilities` with a `:value+grad` computed from `:log-density` by
