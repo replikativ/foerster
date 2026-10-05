@@ -312,3 +312,149 @@
                     {:homes (get homes c 0)
                      :intercept (/ (reduce + (map #(nth % (+ 4 c)) draws)) (count draws))}))
       (plotly/layer-point {:=x :homes :=y :intercept})))
+
+;; ## 3. Stochastic volatility
+;;
+;; PyMC's [stochastic volatility](https://www.pymc.io/projects/examples/en/latest/time_series/stochastic_volatility.html)
+;; model: daily returns of the S&P 500 are Student-t with a scale e^(v_t)
+;; whose logarithm v_t walks at random,
+;;
+;;     step ~ Exp(10),  ν ~ Exp(0.1),  v_0 ~ N(0, 100),  v_t ~ N(v_(t−1), step)
+;;     r_t ~ StudentT(ν, 0, e^(v_t))
+;;
+;; Here over the last 300 trading days of PyMC's data (to 2019-11-14). PyMC
+;; samples the whole volatility path with NUTS, and so does foerster, on a
+;; block of 302 numbers. A random walk written as it reads — v_t given
+;; v_(t−1) — gives NUTS a funnel: when the step is small the path must be
+;; nearly straight, when it is large the path is free, and no single step
+;; size fits both. The standard cure is to write the path *non-centred*:
+;; sample the standardized innovations z_t ~ N(0, 1) and compute
+;; v_t = v_(t−1) + step · z_t, which is the same model with a geometry NUTS
+;; can cross.
+
+(def days 300)
+
+(def returns
+  (let [[_ & lines] (str/split-lines (slurp "notebooks/data/sp500.csv"))]
+    (double-array (map #(Double/parseDouble (second (str/split % #","))) (take-last days lines)))))
+
+(defn digamma
+  "ψ(x), x > 0: the recurrence up to 6, then the asymptotic series."
+  [x]
+  (loop [x (double x) acc 0.0]
+    (if (< x 6.0)
+      (recur (inc x) (- acc (/ 1.0 x)))
+      (let [f (/ 1.0 (* x x))]
+        (+ acc (Math/log x) (/ -0.5 x)
+           (* f (+ (/ -1.0 12) (* f (+ (/ 1.0 120) (* f (+ (/ -1.0 252) (* f (+ (/ 1.0 240) (* f (/ -1.0 132)))))))))))))))
+
+(defn sv-value+grad
+  "θ = [step, ν, v_0, z_1 … z_(T−1)] (step and ν in their own coordinates):
+  the path non-centred, v_t = v_(t−1) + step·z_t with z_t ~ N(0, 1), which
+  removes the funnel between the step and the path."
+  [^doubles th {:keys [^doubles r]}]
+  (let [step (aget th 0) nu (aget th 1) n (alength r)
+        g (double-array (alength th))
+        v (double-array n)
+        _ (aset v 0 (aget th 2))
+        _ (loop [t 1] (when (< t n) (aset v t (+ (aget v (dec t)) (* step (aget th (+ 2 t))))) (recur (inc t))))
+        c (- (dist/lgamma (* 0.5 (+ nu 1.0))) (dist/lgamma (* 0.5 nu)) (* 0.5 (Math/log (* nu Math/PI))))
+        dc (- (* 0.5 (digamma (* 0.5 (+ nu 1.0)))) (* 0.5 (digamma (* 0.5 nu))) (/ 0.5 nu))
+        gv (double-array n)                     ; ∂ log-lik / ∂v_t
+        lp (volatile! (+ (Math/log 10.0) (* -10.0 step) (Math/log 0.1) (* -0.1 nu)
+                         (* -0.5 (/ (* (aget v 0) (aget v 0)) 10000.0)) (- (Math/log 100.0)) -0.9189385332046727))]
+    (aset g 0 -10.0) (aset g 1 -0.1)
+    (dotimes [t n]
+      (let [z (* (aget r t) (Math/exp (- (aget v t)))) q (/ (* z z) nu)]
+        (vswap! lp + (- c (aget v t) (* 0.5 (+ nu 1.0) (Math/log1p q))))
+        (aset gv t (+ -1.0 (/ (* (+ nu 1.0) q) (+ 1.0 q))))
+        (aset g 1 (+ (aget g 1) dc (* -0.5 (Math/log1p q)) (/ (* 0.5 (+ nu 1.0) q) (* nu (+ 1.0 q)))))))
+    ;; z_t moves v_t … v_(T−1): its gradient is step times the tail sum of ∂/∂v
+    (loop [t (dec n) tail 0.0]
+      (when (>= t 0)
+        (let [tail (+ tail (aget gv t))]
+          (if (zero? t)
+            (aset g 2 (- tail (/ (aget v 0) 10000.0)))
+            (let [zt (aget th (+ 2 t))]
+              (vswap! lp + (- (* -0.5 zt zt) 0.9189385332046727))
+              (aset g (+ 2 t) (- (* step tail) zt))
+              (aset g 0 (+ (aget g 0) (* zt tail)))))
+          (recur (dec t) tail))))
+    [@lp g]))
+
+(def sv-block
+  (block/block {:block/id :sv
+                :block/coordinates :constrained
+                :block/latents [{:name :step :shape [] :support :positive}
+                                {:name :nu :shape [] :support :positive}
+                                {:name :v0 :shape []}
+                                {:name :z :shape [(dec days)]}]
+                :block/target :complete-conditional}
+               {:log-density (fn [th inputs] (first (sv-value+grad th inputs)))
+                :value+grad sv-value+grad}))
+
+(defn sv-block-model []
+  (spin (sample (block/block-dist sv-block {:r returns}) :id :theta
+                :init (vec (concat [(Math/log 0.1) (Math/log 5.0) -4.5] (repeat (dec days) 0.0))))))
+
+(def sv-nuts
+  (run 4 #(infer/infer (sv-block-model) {:method :nuts :iterations 600 :burn 300 :chains 4})))
+
+(defn sv-path
+  "The volatility path e^(v_t) of a draw (θ in unconstrained coordinates)."
+  [theta]
+  (let [x (block/constrain sv-block theta) step (nth x 0)]
+    (mapv #(Math/exp %) (reductions (fn [v z] (+ v (* step z))) (nth x 2) (subvec (vec x) 3)))))
+
+(kind/table
+ {:column-names ["parameter" "mean" "sd" "R-hat" "bulk ESS"]
+  :row-vectors (for [[label f] [["step" #(nth (block/constrain sv-block %) 0)]
+                                ["ν" #(nth (block/constrain sv-block %) 1)]
+                                ["volatility, last day" #(peek (sv-path %))]]]
+                 (let [s (diagnostics/summary (:measure sv-nuts) f)]
+                   [label (r4 (:mean s)) (r4 (:sd s)) (r3 (:rhat s)) (long (:ess-bulk s))]))})
+
+;; The returns and the posterior mean of the volatility e^(v_t), with ±2
+;; times it as a band:
+
+(let [paths (mapv (comp sv-path m/get-value first) (take-nth 10 (m/get-particles (:measure sv-nuts))))
+      mean-path (apply mapv (fn [& vs] (/ (reduce + vs) (count vs))) paths)]
+  (-> (tc/dataset (concat (for [t (range days)] {:day t :value (aget ^doubles returns t) :series "return"})
+                          (for [t (range days)] {:day t :value (* 2 (nth mean-path t)) :series "+2 volatility"})
+                          (for [t (range days)] {:day t :value (* -2 (nth mean-path t)) :series "−2 volatility"})))
+      (plotly/layer-line {:=x :day :=y :value :=color :series})))
+
+;; **A second algorithm on the last day.** On the final day, the smoothed
+;; volatility NUTS reports and the filtered volatility a particle filter
+;; reports are the same quantity, p(v_T | all returns). The same model
+;; written with sites — the path a sequence of sample sites, each return an
+;; observation — runs under SMC, here with the two parameters fixed at
+;; their posterior means (NUTS also averages over them, so the two need not
+;; agree exactly):
+
+(defn sv-model [step nu]
+  (spin
+   (loop [t 0
+          v (sample (dist/normal 0.0 100.0) :id [:v 0]
+                    :proposal (dist/normal (Math/log (Math/abs (aget ^doubles returns 0))) 1.5))]
+     (observe (dist/student-t nu 0.0 (Math/exp v)) (aget ^doubles returns t) :id [:r t])
+     (if (= t (dec days))
+       (Math/exp v)
+       (recur (inc t) (sample (dist/normal v step) :id [:v (inc t)]))))))
+
+(def sv-filter
+  (let [s (fn [i] (:mean (diagnostics/summary (:measure sv-nuts) #(nth (block/constrain sv-block %) i))))]
+    (run 5 #(infer/infer (sv-model (s 0) (s 1)) {:method :smc :particles 1000}))))
+
+(kind/table
+ {:column-names ["volatility on the last day" "mean" "sd"]
+  :row-vectors [(let [s (diagnostics/summary (:measure sv-nuts) #(peek (sv-path %)))]
+                  ["NUTS (smoothing, parameters integrated)" (r4 (:mean s)) (r4 (:sd s))])
+                (let [s (diagnostics/summary (:measure sv-filter) identity)]
+                  ["particle filter (parameters at their means)" (r4 (:mean s)) (r4 (:sd s))])]})
+
+;; Two very different algorithms — gradient-based sampling of the whole
+;; path, and a filter that never sees the gradient — agree on today's
+;; volatility. The filter is also the model's online form: pushing each
+;; new day's return into it (see [streaming](foerster.streaming.html))
+;; updates today's volatility without refitting the year.
