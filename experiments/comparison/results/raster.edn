@@ -1,0 +1,1 @@
+{:W1_rw_pf {:system "raster deftm bootstrap PF", :N100 {:median_s 0.010318596, :steps_per_s 2907372.282043022, :logZ_err_mean -0.3989514975009456, :logZ_err_sd 0.7326226340754541}, :N1000 {:median_s 0.043780055, :steps_per_s 6852435.429786463, :logZ_err_mean -0.01268254332130141, :logZ_err_sd 0.18871648714399816}}}
