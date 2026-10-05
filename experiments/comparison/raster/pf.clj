@@ -29,7 +29,7 @@
               (let [d (- yt (aget v i))] (aset lw i (- (aget lw i) (* 0.5 d d) c)))))
           (let [m (loop [i 0 m Double/NEGATIVE_INFINITY] (if (= i n) m (recur (inc i) (Math/max m (aget lw i)))))
                 s (loop [i 0 s 0.0] (if (= i n) s
-                                         (let [e (Math/exp (- (aget lw i) m))] (aset w i e) (recur (inc i) (+ s e)))))
+                                        (let [e (Math/exp (- (aget lw i) m))] (aset w i e) (recur (inc i) (+ s e)))))
                 s2 (loop [i 0 s2 0.0] (if (= i n) s2 (let [x (/ (aget w i) s)] (recur (inc i) (+ s2 (* x x))))))]
             (if (< (/ 1.0 s2) (* 0.5 n))
               (let [u0 (.nextDouble rng)]
