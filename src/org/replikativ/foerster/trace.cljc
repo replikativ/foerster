@@ -141,20 +141,45 @@
 
 (defn tempered-score
   "The log target of a trace entry at temperature `beta`, for entries recorded
-  under any temperature: observations and factors by their `:log-lik`."
+  under any temperature: observations and factors by their `:log-lik`, a
+  site drawn from its own draw density (a block's :sample) by that density
+  plus β times the rest of its target (see `decide-choose`)."
   [beta]
   (fn [{:keys [note]}]
     (if-let [l (:log-lik note)]
-      (cond (zero? beta) 0.0 :else (* beta l))
+      (+ (:log-base note 0.0) (cond (zero? beta) 0.0 :else (* beta l)))
       (:log-prob note))))
 
 (declare decide-choose*)
+
+(defn- temper-drawn-site
+  "Under `:temperature` β, a latent site whose law has its own draw density q
+  (a block's :sample-log-density) follows the geometric path from q to its
+  target t: q^(1-β)·t^β. Its note keeps the base log q (`:log-base`) and the
+  untempered rest log t - log q (`:log-lik`), as an observation keeps its
+  likelihood, and the weight its decision added counts that rest at β. At
+  β = 0 the site is its draw density, at β = 1 its target."
+  [{:keys [temperature]} world {:keys [value note] :as decision}]
+  (let [{:keys [dist log-prob observed?]} note]
+    (if (or (nil? temperature) observed? (nil? dist)
+            (some note [:constrained? :intervened? :counterfactual? :simulated? :log-lik]))
+      decision
+      (if-let [base (dist/-draw-logpdf dist value)]
+        (let [rest (- log-prob base)
+              tempered-rest (if (zero? temperature) 0.0 (* temperature rest))]
+          ;; a draw or a non-symmetric proposal weighed the full rest
+          (when (and (contains? note :log-proposal) (not (:symmetric? note)))
+            (add-weight! world (- tempered-rest rest)))
+          (assoc decision :note (assoc note :log-prob (+ base tempered-rest)
+                                       :log-base base :log-lik rest)))
+        decision))))
 
 (defn- decide-choose
   "A choose site's decision; the note keeps the site's own `:proposal`, the
   law a replay draws it from afresh (see `mh-log-ratio`)."
   [opts sp old-entry]
-  (let [decision (decide-choose* opts sp old-entry)]
+  (let [decision (temper-drawn-site opts (:savepoint/world sp)
+                                    (decide-choose* opts sp old-entry))]
     (if-let [q (:proposal (:options (:savepoint/payload sp)))]
       (assoc-in decision [:note :proposal] q)
       decision)))

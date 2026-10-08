@@ -19,6 +19,7 @@
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.hmc :as hmc]
             [org.replikativ.foerster.nuts :as nuts]
+            [org.replikativ.foerster.block-mh :as block-mh]
             [org.replikativ.foerster.kernel :as k]
             [org.replikativ.foerster.smc :as smc]
             [org.replikativ.foerster.smc2 :as smc2]
@@ -153,7 +154,8 @@
                                  (iteration-of kernel trace (* iteration (span kernel))))})
     :single-site-mh {:iterations (:num-iterations kernel)}
     :random-walk-mh {:iterations (:num-iterations kernel)
-                     :propose (itrace/random-walk-proposal (:step-size kernel))}
+                     :step (block-mh/within-gibbs {:step-size (:step-size kernel)
+                                                   :burn (:burn kernel 0)})}
     :block-gibbs (assoc (block-gibbs-options kernel)
                         :iterations (:num-iterations kernel))
     :hmc {:iterations (:num-iterations kernel)
