@@ -207,6 +207,92 @@
                   (block-moves t step (blocks t) states seen accepted total)))]
       (go t 0 [] [] 0 0))))
 
+;; -----------------------------------------------------------------------------
+;; A model that is one block: particles are θ vectors
+;; -----------------------------------------------------------------------------
+
+(defn- single-block
+  "{:address :dist} when every trace in `ts` is one latent block site and
+  nothing else (no other choice, observation or factor), all under one law:
+  then a particle is its θ, and tempering needs no world until the end."
+  [ts]
+  (let [shape (fn [t]
+                (let [es (itrace/entries t)]
+                  (when (and (= 1 (count es)) (itrace/latent? (first es))
+                             (block-mh/block-site? t (:address (first es))))
+                    {:address (:address (first es)) :dist (:dist (:note (first es)))})))
+        s (shape (first ts))]
+    (when (and s (every? #(= s (shape %)) (rest ts)))
+      s)))
+
+(defn- theta-scales
+  "The block random walk of `block-scales`, over θ vectors."
+  [qs scale]
+  (let [n (count qs) dim (count (first qs))
+        mean (apply mapv (fn [& xs] (/ (reduce + xs) n)) qs)
+        sd (apply mapv (fn [mu & xs]
+                         (Math/sqrt (/ (reduce + (map #(let [d (- % mu)] (* d d)) xs))
+                                       (max 1 (dec n)))))
+                  mean qs)]
+    (mapv #(* (/ scale (Math/sqrt dim)) (max % 1e-9)) sd)))
+
+(defn- theta-tempered
+  "Tempered SMC of a one-block model on θ: weights from the block's rest
+  log t − log q, resampling and population-scaled random walks at each
+  temperature on the vectors, the same seeded streams as the world path.
+  The final particles are written back to traces by one replay each from
+  `template`'s anchor (equal θ once). Resolves what `finish` takes."
+  [template {:keys [address dist]} qs {:keys [ess-target scale waste-free max-steps n seed stats]}]
+  (let [rest-of (fn [q] (let [lq (dist/-draw-logpdf dist q)] (- (dist/logpdf dist q) lq)))
+        steps-per-chain (if waste-free (dec waste-free) 1)
+        chains (if waste-free (quot n waste-free) n)
+        dim (count (first qs))]
+    (loop [qs qs ls (mapv rest-of qs) lw (vec (repeat n (- (Math/log n)))) beta 0.0 log-z 0.0
+           temperatures [0.0] k 0]
+      (cond
+        (>= beta 1.0) {:qs qs :log-z log-z :temperatures temperatures}
+        (>= k max-steps) (throw (ex-info "Tempering did not reach β = 1" {:type ::too-many-steps :beta beta}))
+        :else
+        (let [delta (next-delta lw ls beta ess-target)
+              beta' (min 1.0 (+ beta delta))
+              delta (- beta' beta)
+              inc-lw (mapv (fn [w l] (if (zero? delta) w (+ w (* delta l)))) lw ls)
+              log-z' (+ log-z (log-sum-exp inc-lw))
+              weights (m/normalize-log-weights inc-lw)
+              ancestors (random/with-stream* seed [::resample k]
+                          #(m/systematic-resample weights chains))
+              starts (mapv #(nth qs %) ancestors)
+              scales (theta-scales starts scale)
+              f (block-mh/density dist beta')
+              moved (vec (map-indexed
+                          (fn [i q0]
+                            (random/with-stream* seed [::move k i]
+                              #(loop [s 0 q q0 states []]
+                                 (if (= s steps-per-chain)
+                                   states
+                                   (let [{q' :q a :accepted} (block-mh/walk f q scales dim)]
+                                     (swap! stats (fn [st] (-> st (update :moves + dim) (update :accepted + a))))
+                                     (recur (inc s) q' (conj states q')))))))
+                          starts))
+              qs' (vec (mapcat (fn [start states] (if waste-free (into [start] states) states))
+                               starts moved))]
+          (recur qs' (mapv rest-of qs') (vec (repeat (count qs') (- (Math/log (count qs')))))
+                 beta' log-z' (conj temperatures beta') (inc k)))))))
+
+(defn- write-back-all
+  "Traces of `template` with the block site at `address` set to each of `qs`
+  (one replay per distinct θ); resolves them in order."
+  [template address qs]
+  (fn [resolve reject]
+    (let [distinct-qs (vec (distinct qs))
+          policy (fn [q] (itrace/policy {:constraints {address q}}))]
+      ((all-settled (count distinct-qs)
+                    (fn [i res rej]
+                      ((trace/replay template address (policy (nth distinct-qs i)) {:anchor? itrace/anchor?})
+                       res rej)))
+       (fn [ts] (let [by-q (zipmap distinct-qs ts)] (resolve (mapv by-q qs))))
+       reject))))
+
 (defn tempered
   "Tempered SMC of `model` (a spin) with `n` particles. Options:
 
@@ -235,12 +321,14 @@
                     {:type ::invalid-waste-free :n n :waste-free waste-free})))
   (fn [resolve reject]
     (let [seed (random/fresh-seed)
-          traces (mapv (fn [_] (gfi/run-policy* model (itrace/policy {:temperature 0.0})
-                                                (cond-> {} executor (assoc :executor executor))))
-                       (range n))
           ;; every particle's session, closed when inference ends however it
           ;; ends
-          sessions (atom (mapv :session traces))
+          sessions (atom [])
+          run! (fn []
+                 (let [r (gfi/run-policy* model (itrace/policy {:temperature 0.0})
+                                          (cond-> {} executor (assoc :executor executor)))]
+                   (swap! sessions conj (:session r))
+                   (:operation r)))
           close-all! (fn [k v]
                        (let [ss (distinct @sessions)
                              remaining (atom (count ss))]
@@ -298,12 +386,35 @@
                                      :log-normalizer log-z
                                      :temperatures temperatures
                                      :rejuvenation @stats))))]
-        ((all-settled n (fn [i res rej] ((:operation (nth traces i)) res rej)))
-         (fn [ts]
+        ;; One run first: a model that is one block needs no other run, its
+        ;; particles are draws of the block until the end.
+        ((run!)
+         (fn [template]
            (try
-             (if-let [error (some :trace/error ts)]
+             (if-let [error (:trace/error template)]
                (fail! (ex-info "A particle's program failed" {:type ::model-failed} error))
-               (let [ls (mapv log-likelihood ts)]
-                 (step ts ls (vec (repeat n (- (Math/log n)))) 0.0 0.0 [0.0] 0)))
+               (if-let [{:keys [address dist] :as blk} (single-block [template])]
+                 (let [qs (into [(get-in template [:trace/entries address :value])]
+                                (map (fn [i] (random/with-stream* seed [::init i] #(vec (dist/draw dist)))))
+                                (range 1 n))
+                       {:keys [qs log-z temperatures]}
+                       (theta-tempered template blk qs
+                                       {:ess-target ess-target :scale scale :waste-free waste-free
+                                        :max-steps max-steps :n n :seed seed :stats stats})]
+                   ((write-back-all template address qs)
+                    (fn [final] (try (finish final log-z temperatures)
+                                     (catch #?(:clj Throwable :cljs :default) e (fail! e))))
+                    fail!))
+                 (let [operations (vec (repeatedly (dec n) run!))]
+                   ((all-settled (dec n) (fn [i res rej] ((nth operations i) res rej)))
+                    (fn [more]
+                      (try
+                        (let [ts (into [template] more)]
+                          (if-let [error (some :trace/error ts)]
+                            (fail! (ex-info "A particle's program failed" {:type ::model-failed} error))
+                            (step ts (mapv log-likelihood ts) (vec (repeat n (- (Math/log n))))
+                                  0.0 0.0 [0.0] 0)))
+                        (catch #?(:clj Throwable :cljs :default) e (fail! e))))
+                    fail!))))
              (catch #?(:clj Throwable :cljs :default) e (fail! e))))
          fail!)))))

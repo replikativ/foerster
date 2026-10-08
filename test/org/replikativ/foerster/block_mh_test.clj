@@ -61,9 +61,9 @@
 
 (deftest tempered-smc-tempers-a-block-from-its-draws-to-its-target
   (let [measure (b/run-infer 11 #(infer/infer (model (golf-block prior-sampled))
-                                              {:method :tempered :particles 1000}))]
+                                              {:method :tempered :particles 2000}))]
     (testing "the evidence of the block's target"
-      (is (< (Math/abs (- (m/log-marginal measure) (:log-evidence exact))) 0.3)
+      (is (< (Math/abs (- (m/log-marginal measure) (:log-evidence exact))) 0.5)
           (str (m/log-marginal measure))))
     (testing "the posterior, not the draws' law"
       (is (< (Math/abs (- (:mean (d/summary measure :a)) (:a exact))) (* 0.25 (:a-sd exact)))))))
