@@ -9,7 +9,7 @@
         ;; 0.1.96: trace :until, replay :seed, O(log n) world release.
         ;; 0.1.102: overlays skip tombstone scans without tombstones (2x SMC).
         ;; 0.1.103: overlay entity writes rebuild once (round-2 performance).
-        org.replikativ/spindel {:mvn/version "0.1.103"}
+        org.replikativ/spindel {:mvn/version "0.1.105"}
         org.replikativ/logging {:mvn/version "0.1.3"}}
 
  :aliases
