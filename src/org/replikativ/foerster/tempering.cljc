@@ -22,6 +22,7 @@
   resample-move instead (`foerster.smc`, `:anchors` on the static
   parameters)."
   (:require [org.replikativ.foerster.dist :as dist]
+            [org.replikativ.foerster.block-mh :as block-mh]
             [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
@@ -136,29 +137,75 @@
         (when-not (contains? live-worlds (:fork-id w))
           (sp/release-world! (:trace/session t) w))))))
 
+(defn- block-scales
+  "{address [step …]} for the block sites of `traces`: each coordinate's
+  population standard deviation times `scale`/√dimension, a random walk sized
+  to the spread of the particles (as `adaptive-proposal` for single sites)."
+  [traces scale]
+  (let [values (reduce (fn [acc t]
+                         (reduce (fn [acc address]
+                                   (if (block-mh/block-site? t address)
+                                     (update acc address (fnil conj [])
+                                             (mapv double (get-in t [:trace/entries address :value])))
+                                     acc))
+                                 acc (itrace/latent-addresses t)))
+                       {} traces)]
+    (into {} (map (fn [[address qs]]
+                    (let [n (count qs) dim (count (first qs))
+                          mean (apply mapv (fn [& xs] (/ (reduce + xs) n)) qs)
+                          sd (apply mapv (fn [mu & xs]
+                                           (Math/sqrt (/ (reduce + (map #(let [d (- % mu)] (* d d)) xs))
+                                                         (max 1 (dec n)))))
+                                    mean qs)]
+                      [address (mapv #(* (/ scale (Math/sqrt dim)) (max % 1e-9)) sd)])))
+          values)))
+
 (defn- move-chain
-  "`steps` MH moves of `t` at temperature `beta`, `moves` single-site moves
-  each; resolves the state after every step, every trace the chain passed
-  through (`:seen`, to be released) and the acceptance counts."
-  [t steps moves beta propose key]
+  "`steps` moves of `t` at temperature `beta`; resolves the state after every
+  step, every trace the chain passed through (`:seen`, to be released) and
+  the acceptance counts. A step moves each block site by a block move
+  (`foerster.block-mh`, `bscales` its random walk), then makes `moves`
+  single-site MH moves of the other latent sites (default: one sweep)."
+  [t steps moves beta propose bscales key]
   (fn [resolve reject]
-    (let [n (or moves (max 1 (count (itrace/latent-addresses t))))]
-      (letfn [(go [t step j states seen accepted total]
-                  (cond
-                    (= step steps) (resolve {:states states :seen seen :accepted accepted :moves total})
-                    (= j n) (go t (inc step) 0 (conj states t) seen accepted total)
-                    :else
-                    ((itrace/mh-step t {:temperature beta :propose propose
-                                        :iteration [key step j] :keep-old? true})
-                     (fn [{t' :trace accepted? :accepted?}]
-                     ;; the accepted world need not keep the one it replayed
-                     ;; from alive as a source of reused spins
-                       (when accepted?
-                         (rtp/swap-state! (:trace/world t') [:engine/reuse-source] (constantly nil)))
-                       (go t' step (inc j) states (if accepted? (conj seen t') seen)
-                           (if accepted? (inc accepted) accepted) (inc total)))
-                     reject)))]
-        (go t 0 0 [] [] 0 0)))))
+    (letfn [(others [t] (vec (remove #(block-mh/block-site? t %) (itrace/latent-addresses t))))
+            (blocks [t] (filterv #(block-mh/block-site? t %) (itrace/latent-addresses t)))
+            (single-site [t step j n states seen accepted total]
+              (if (= j n)
+                (go t (inc step) (conj states t) seen accepted total)
+                ((itrace/mh-step t (cond-> {:temperature beta :propose propose
+                                            :iteration [key step j] :keep-old? true}
+                                     (seq (blocks t))
+                                     (assoc :select (fn [t' _]
+                                                      {:targets #{(m/pick-uniformly (others t'))}
+                                                       :log-selection #(- (Math/log (double (count (others %)))))}))))
+                 (fn [{t' :trace accepted? :accepted?}]
+                   ;; the accepted world need not keep the one it replayed
+                   ;; from alive as a source of reused spins
+                   (when accepted?
+                     (rtp/swap-state! (:trace/world t') [:engine/reuse-source] (constantly nil)))
+                   (single-site t' step (inc j) n states (if accepted? (conj seen t') seen)
+                                (if accepted? (inc accepted) accepted) (inc total)))
+                 reject)))
+            (block-moves [t step [address & more] states seen accepted total]
+              (if-not address
+                (let [n (if (seq (others t)) (or moves (count (others t))) 0)]
+                  (single-site t step 0 n states seen accepted total))
+                ((block-mh/move t address {:beta beta :scales (get bscales address)
+                                           :steps (count (get bscales address))
+                                           :key [key step] :keep-old? true})
+                 (fn [{t' :trace n-accepted :accepted}]
+                   (let [moved? (pos? n-accepted)]
+                     (when moved?
+                       (rtp/swap-state! (:trace/world t') [:engine/reuse-source] (constantly nil)))
+                     (block-moves t' step more states (if moved? (conj seen t') seen)
+                                  (if moved? (inc accepted) accepted) (inc total))))
+                 reject)))
+            (go [t step states seen accepted total]
+                (if (= step steps)
+                  (resolve {:states states :seen seen :accepted accepted :moves total})
+                  (block-moves t step (blocks t) states seen accepted total)))]
+      (go t 0 [] [] 0 0))))
 
 (defn tempered
   "Tempered SMC of `model` (a spin) with `n` particles. Options:
@@ -222,10 +269,11 @@
                                       #(m/systematic-resample weights chains))
                           starts (mapv #(nth ts %) ancestors)
                           propose (adaptive-proposal (population-scales starts) scale)
+                          bscales (block-scales starts scale)
                           steps-per-chain (if waste-free (dec waste-free) 1)]
                       ((all-settled chains
                                     (fn [i res rej]
-                                      ((move-chain (nth starts i) steps-per-chain moves beta' propose [k i])
+                                      ((move-chain (nth starts i) steps-per-chain moves beta' propose bscales [k i])
                                        res rej)))
                        (fn [results]
                          (try
