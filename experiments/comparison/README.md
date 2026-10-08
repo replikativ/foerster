@@ -29,13 +29,14 @@ W2 NUTS radon — time (warm / first run incl. compilation), ESS/s:
 |---|---|---|---|---|---|
 | PyMC | 4.1 s | 25.4 s | 737 | 276 | −0.661 |
 | foerster (block, hand gradient) | 2.8 s | 3.2 s | 1516 | 544 | −0.663 |
-| foerster + raster autodiff (`defdensity`) | 7.0 s | 10.5 s | 653 | 206 | −0.664 |
+| foerster + raster autodiff (`defdensity`) | 4.4 s | 8.5 s | 1150 | 361 | −0.664 |
 
 The hand-gradient row is after foerster #52 (primitive arrays in the NUTS
 transition; draws bit-identical, so the ESS is the earlier run's). The
 `defdensity` row writes only the log density; raster's reverse mode supplies
-the gradient (raster 0.2.1241, foerster-raster `bench/radon.clj`). Its
-gradient costs ~26 µs against ~5 µs for the forward pass.
+the gradient (raster 0.2.1257, foerster-raster `bench/radon.clj`). Its
+compiled gradient costs ~15 µs against ~4 µs for the forward pass: the
+likelihood is an additive reduction, differentiated without a carry tape.
 
 W3 random-walk MH golf — time, ESS of a, ESS/s (exact a = 2.2247 ± 0.0583):
 
@@ -60,5 +61,5 @@ W4 tempered SMC golf — time, log evidence (exact −191.932):
 - foerster's MH is 12× slower per move than Gen: every move replays the
   program suffix through savepoints. The largest gap, and structural.
 - foerster's NUTS with a hand gradient is 1.5× faster than PyMC warm and 8×
-  cold. With the gradient from raster's autodiff it is 1.7× slower warm and
-  2.4× faster cold; the remaining cost is raster's gradient.
+  cold. With the gradient from raster's autodiff it is on par warm (4.4 s vs
+  4.1 s, with higher ESS/s) and 3× faster cold.
