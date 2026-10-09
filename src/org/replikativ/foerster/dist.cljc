@@ -913,6 +913,50 @@
                    (/ (* n alpha beta (+ s n)) (* s s (+ s 1.0))))))
 
 ;; =============================================================================
+;; Bernoulli and binomial on the log-odds
+;; =============================================================================
+
+(defn- sigmoid [t] (/ 1.0 (+ 1.0 (Math/exp (- t)))))
+
+(defn- log-sigmoid
+  "log σ(t) = −log(1 + e^−t), finite for every finite t: σ(t) itself rounds
+  to 1.0 from t ≈ 37, and its complement's log to −∞."
+  [t]
+  (if (neg? t)
+    (- t (Math/log1p (Math/exp t)))
+    (- (Math/log1p (Math/exp (- t))))))
+
+(defrecord BernoulliLogit [logit-p]
+  ;; Bernoulli(σ(logit-p))
+  Distribution
+  (-draw [_] (if (< (u01) (sigmoid logit-p)) 1 0))
+  (-logpdf [_ x]
+    (cond (not (number? x)) ##-Inf
+          (== x 1) (log-sigmoid logit-p)
+          (== x 0) (log-sigmoid (- logit-p))
+          :else ##-Inf))
+  Moments
+  (-mean [_] (sigmoid logit-p))
+  (-variance [_] (* (sigmoid logit-p) (sigmoid (- logit-p)))))
+
+(defrecord BinomialLogit [n logit-p]
+  ;; Binomial(n, σ(logit-p))
+  Distribution
+  (-draw [_] (let [p (sigmoid logit-p)]
+               (loop [i 0 k 0] (if (= i n) k (recur (inc i) (if (< (u01) p) (inc k) k))))))
+  (-logpdf [_ k]
+    (if (and (whole? k) (<= 0 k n))
+      (+ (- (lgamma (+ n 1.0)) (lgamma (+ k 1.0)) (lgamma (+ (- n k) 1.0)))
+         (* k (log-sigmoid logit-p)) (* (- n k) (log-sigmoid (- logit-p))))
+      ##-Inf))
+  Univariate
+  (-cdf [d x] (lattice-cdf d n x))
+  (-quantile [d p] (lattice-quantile d n p))
+  Moments
+  (-mean [_] (* n (sigmoid logit-p)))
+  (-variance [_] (* n (sigmoid logit-p) (sigmoid (- logit-p)))))
+
+;; =============================================================================
 ;; Truncated and censored laws, zero inflation and hurdles
 ;; =============================================================================
 
@@ -1020,6 +1064,20 @@
   (check! (and (whole? n) (>= n 0) (positive? alpha) (positive? beta)) :beta-binomial {:n n :alpha alpha :beta beta})
   (->BetaBinomial (long n) (double alpha) (double beta)))
 
+(defn bernoulli-logit
+  "1 with probability σ(logit-p), else 0: a Bernoulli on the log-odds, whose
+  density stays finite where σ would round p to 0 or 1 (logistic regression)."
+  [logit-p]
+  (check! (finite? logit-p) :bernoulli-logit {:logit-p logit-p})
+  (->BernoulliLogit (double logit-p)))
+
+(defn binomial-logit
+  "Successes in n ≥ 0 trials of success probability σ(logit-p): a binomial on
+  the log-odds, whose density stays finite where σ would round p to 0 or 1."
+  [n logit-p]
+  (check! (and (whole? n) (>= n 0) (finite? logit-p)) :binomial-logit {:n n :logit-p logit-p})
+  (->BinomialLogit (long n) (double logit-p)))
+
 (defn gamma-mean-sd
   "The gamma with mean m > 0 and standard deviation sd > 0 (shape (m/sd)²,
   scale sd²/m)."
@@ -1073,6 +1131,8 @@
 
 (extend-protocol Finite
   BetaBinomial (-support [d] (vec (range (inc (:n d)))))
+  BernoulliLogit (-support [_] [0 1])
+  BinomialLogit (-support [d] (vec (range (inc (:n d)))))
   Truncated (-support [{:keys [d lo hi]}] (some->> (-support d) (filterv #(<= lo % hi))))
   ZeroInflated (-support [{:keys [d]}] (some->> (-support d) (cons 0) distinct vec))
   Hurdle (-support [{:keys [d]}] (some->> (-support d) (cons 0) distinct vec)))

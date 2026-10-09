@@ -45,7 +45,10 @@
    :successes [1346 577 337 208 149 136 111 69 67 75 52 46 54 28 27 31 33 20 24]})
 
 ;; **A logistic regression** says the log-odds of success fall linearly
-;; with distance, with Normal(0, 1) priors on both coefficients as in PyMC:
+;; with distance, with Normal(0, 1) priors on both coefficients as in PyMC.
+;; `binomial-logit` takes the log-odds itself: a prior draw like b = 2 puts
+;; them near 40 at 20 feet, where σ rounds p to 1.0 and a plain `binomial`
+;; would call every miss impossible.
 
 (defn sigmoid [x] (/ 1.0 (+ 1.0 (Math/exp (- x)))))
 
@@ -55,7 +58,7 @@
          b (sample (dist/normal 0.0 1.0) :id :b)]
      (loop [i 0]
        (when (< i 19)
-         (observe (dist/binomial (nth (:tries golf) i) (sigmoid (+ a (* b (nth (:distance golf) i)))))
+         (observe (dist/binomial-logit (nth (:tries golf) i) (+ a (* b (nth (:distance golf) i))))
                   (nth (:successes golf) i) :id [:putt i])
          (recur (inc i))))
      {:a a :b b})))

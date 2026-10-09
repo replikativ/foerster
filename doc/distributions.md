@@ -40,6 +40,8 @@ the exponential takes a rate and `discrete` counts from 0.)
 | `(gumbel mu beta)` | reals | location, scale |
 | `(gamma-mean-sd m sd)` | x > 0 | the gamma with that mean and standard deviation |
 | `(beta-binomial n alpha beta)` | 0 … n | trials, shapes of the success probability's Beta |
+| `(bernoulli-logit logit-p)` | 0 or 1 | log-odds of 1 |
+| `(binomial-logit n logit-p)` | 0 … n | trials, log-odds of success |
 | `(zero-sum-normal sigma n)` | n-vectors summing to 0 | scale, length (PyMC's ZeroSumNormal) |
 
 Laws built from others:
@@ -72,14 +74,14 @@ and some of
 | normal, uniform, exponential, Poisson | ✓ | ✓ | ✓ |
 | log-normal, half-normal, uniform-discrete | ✓ | ✓ | ✓ |
 | Cauchy, half-Cauchy | ✓ | ✓ | — (no moments) |
-| binomial, beta-binomial | ✓ | ✓ | ✓ |
+| binomial, beta-binomial, binomial-logit | ✓ | ✓ | ✓ |
 | Weibull, Laplace, Gumbel | ✓ | ✓ | ✓ |
 | inverse gamma | ✓ | — (throws) | ✓ |
 | truncated | ✓ | ✓ (when d has one) | — |
 | half-Student-t, zero-inflated | — | — | ✓ |
 | gamma, χ² | ✓ | — (throws) | ✓ |
 | discrete | ✓ | ✓ | — |
-| beta, Bernoulli, Dirichlet, Student-t | — | — | ✓ |
+| beta, Bernoulli, Bernoulli-logit, Dirichlet, Student-t | — | — | ✓ |
 | mvn | — | — | ✓ (`variance`: the diagonal) |
 | flip, categorical | — | — | — |
 
