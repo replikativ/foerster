@@ -98,7 +98,8 @@
                 #(d/beta 1.0 0.0) #(d/poisson -2.0) #(d/bernoulli 1.5) #(d/flip -0.1)
                 #(d/discrete []) #(d/discrete [1.0 -1.0]) #(d/discrete [0.0 0.0])
                 #(d/dirichlet [1.0 0.0]) #(d/categorical {}) #(d/student-t 0.0)
-                #(d/chi-squared -1.0) #(d/mvn [0.0 0.0] [[1.0]])]]
+                #(d/chi-squared -1.0) #(d/mvn [0.0 0.0] [[1.0]])
+                #(d/bernoulli-logit ##Inf) #(d/binomial-logit 10 ##NaN) #(d/binomial-logit 2.5 0.0)]]
     (is (= ::d/invalid-parameters
            (try (make) nil
                 (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
@@ -108,3 +109,19 @@
   (is (every? d/continuous? [(d/normal 0 1) (d/gamma 2 1) (d/beta 2 2) (d/uniform 0 1)]))
   (is (not-any? d/continuous? [(d/poisson 3) (d/discrete [1 1]) (d/flip 0.5)
                                (d/bernoulli 0.5) (d/dirichlet [1 1])])))
+
+(deftest logit-laws-keep-their-density-where-sigma-rounds
+  (let [sigmoid (fn [t] (/ 1.0 (+ 1.0 (Math/exp (- t)))))]
+    (testing "they agree with the probability parameterization"
+      (doseq [eta [-3.0 -0.4 0.0 0.7 5.0] k [0 3 10]]
+        (is (close? (d/logpdf (d/binomial-logit 10 eta) k) (d/logpdf (d/binomial 10 (sigmoid eta)) k))))
+      (doseq [eta [-2.0 0.0 1.5] x [0 1]]
+        (is (close? (d/logpdf (d/bernoulli-logit eta) x) (d/logpdf (d/bernoulli (sigmoid eta)) x))))
+      (is (close? (d/mean (d/binomial-logit 10 0.7)) (* 10 (sigmoid 0.7))))
+      (is (= (range 11) (d/support (d/binomial-logit 10 0.7)))))
+    (testing "σ(40) rounds to 1.0, so the binomial says a miss is impossible; the logit law does not"
+      (is (= 1.0 (sigmoid 40.0)))
+      (is (= ##-Inf (d/logpdf (d/binomial 10 (sigmoid 40.0)) 9)))
+      (is (close? (d/logpdf (d/binomial-logit 10 40.0) 9) (- (Math/log 10.0) 40.0)))
+      (is (close? (d/logpdf (d/bernoulli-logit -40.0) 1) -40.0))
+      (is (close? (d/logpdf (d/bernoulli-logit 800.0) 0) -800.0)))))
