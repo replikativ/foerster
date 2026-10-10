@@ -145,7 +145,7 @@
                         (run-briefly
                          (fn []
                            (@#'smc/retained-stages (model) retained nil rejuvenate
-                                                   (@#'smc/anchor-predicate anchors) (:lag anchors) seed)))))]
+                                                   (@#'smc/anchor-predicate anchors) (:lag anchors) seed nil)))))]
         (reduce-kv (fn [law paths p]
                      (merge-with + law (update-vals (forward {::smc/retained-paths paths}) #(* p %))))
                    {} backward))

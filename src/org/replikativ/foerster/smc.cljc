@@ -246,7 +246,7 @@
   to, and after the last barrier on `retained` itself. Keeping the retained
   particle unmoved instead leaves the conditional target off (an exact
   enumeration of one sweep: 2·10⁻⁴ to 3·10⁻³ in total variation)."
-  [model retained policy rejuvenate anchor? lag seed]
+  [model retained policy rejuvenate anchor? lag seed executor]
   (fn [resolve reject]
     (let [;; a session runs one computation: one per run, all closed at the end
           sessions (atom [])
@@ -264,7 +264,9 @@
           moves (:moves rejuvenate 1)
           particle-policy (or policy (itrace/policy))
           run-to (fn [path k]
-                   (let [session (sp/open! (ctx/create-execution-context)
+                   (let [session (sp/open! (if executor
+                                             (ctx/create-execution-context :executor executor)
+                                             (ctx/create-execution-context))
                                            {:purpose :smc-retained
                                             :seed (sp/derive-seed seed ::retained (or k 0))
                                             :fork-opts {:systems :none}
@@ -966,7 +968,7 @@
               ;; for tests that enumerate the two halves of a sweep apart
               ((if-let [paths (::retained-paths opts)]
                  (fn [resolve _] (resolve paths))
-                 (retained-stages model retained policy rejuvenate anchor? lag seed))
+                 (retained-stages model retained policy rejuvenate anchor? lag seed executor))
                (fn [paths]
                  (try
                    (reset! stages paths)
