@@ -28,6 +28,7 @@
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.trace :as trace]))
 
@@ -98,24 +99,30 @@
         (itrace/prior-proposal sp old-entry)))))
 
 (defn- all-settled
-  "Run `(start i resolve reject)` for i < n together; resolves the results in
-  order, or rejects with the first failure."
-  [n start]
+  "Run `(start i resolve reject)` for i < n together, spread over `executor`'s
+  threads (`executor/spread!`; on this thread when nil); resolves the results
+  in order, or rejects with the first failure."
+  [executor n start]
   (fn [resolve reject]
     (if (zero? n)
       (resolve [])
       (let [out (object-array n)
             remaining (atom n)
-            failed? (atom false)]
-        (dotimes [i n]
-          (start i
-                 (fn [v]
-                   (aset out i v)
-                   (when (zero? (swap! remaining dec))
-                     (resolve (vec out))))
-                 (fn [e]
-                   (when (compare-and-set! failed? false true)
-                     (reject e)))))))))
+            failed? (atom false)
+            launch (fn [i]
+                     (start i
+                            (fn [v]
+                              (aset out i v)
+                              (when (zero? (swap! remaining dec))
+                                (resolve (vec out))))
+                            (fn [e]
+                              (when (compare-and-set! failed? false true)
+                                (reject e)))))]
+        (if executor
+          (ex/spread! executor n launch)
+          (dotimes [i n] (launch i)))))))
+
+(defn- executor-of [trace] (:executor (:trace/world trace)))
 
 (defn- anchor-ids [traces]
   (into #{} (comp (mapcat (comp vals :trace/entries))
@@ -286,7 +293,7 @@
   (fn [resolve reject]
     (let [distinct-qs (vec (distinct qs))
           policy (fn [q] (itrace/policy {:constraints {address q}}))]
-      ((all-settled (count distinct-qs)
+      ((all-settled (executor-of template) (count distinct-qs)
                     (fn [i res rej]
                       ((trace/replay template address (policy (nth distinct-qs i)) {:anchor? itrace/anchor?})
                        res rej)))
@@ -359,7 +366,7 @@
                           propose (adaptive-proposal (population-scales starts) scale)
                           bscales (block-scales starts scale)
                           steps-per-chain (if waste-free (dec waste-free) 1)]
-                      ((all-settled chains
+                      ((all-settled (executor-of (first starts)) chains
                                     (fn [i res rej]
                                       ((move-chain (nth starts i) steps-per-chain moves beta' propose bscales [k i])
                                        res rej)))
@@ -406,7 +413,7 @@
                                      (catch #?(:clj Throwable :cljs :default) e (fail! e))))
                     fail!))
                  (let [operations (vec (repeatedly (dec n) run!))]
-                   ((all-settled (dec n) (fn [i res rej] ((nth operations i) res rej)))
+                   ((all-settled (executor-of template) (dec n) (fn [i res rej] ((nth operations i) res rej)))
                     (fn [more]
                       (try
                         (let [ts (into [template] more)]

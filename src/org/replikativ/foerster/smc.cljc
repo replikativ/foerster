@@ -17,6 +17,7 @@
   (see docs/forking.md) and inherit whatever world state the program holds."
   (:require [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.foerster.trace :as itrace]
@@ -131,6 +132,19 @@
   [trace]
   (into {} (keep (fn [[a e]] (when (:constrained? (:note e)) [a (:value e)])))
         (:trace/entries trace)))
+
+;; Inline dispatch keeps resumed particles on this thread; spreading them over
+;; the executor's threads is what runs a population on several cores.
+(defn- resume-all!
+  "Resume each [savepoint value] of `pairs`, spread over the threads of the
+  first savepoint's world's executor (`executor/spread!`); a resume that
+  throws goes to `fail!`."
+  [pairs fail!]
+  (let [pairs (vec pairs)]
+    (when (seq pairs)
+      (ex/spread! (:executor (:savepoint/world (ffirst pairs))) (count pairs)
+                  (fn [i] (try (let [[sp value] (nth pairs i)] (sp/resume sp value))
+                               (catch #?(:clj Throwable :cljs :default) e (fail! e))))))))
 
 (defn- all-forked
   "Fork each of `sps` (a vector) into a world; resolves the child savepoints
@@ -450,7 +464,7 @@
                 (swap! state update :history conj {:stage k :batch index :size size
                                                    :ess ess :resampled? resample?})
                 (if-not resample?
-                  (doseq [{:keys [sp value]} entries] (sp/resume sp value))
+                  (resume-all! (map (juxt :sp :value) entries) fail!)
                   (let [ancestors (random/with-stream* seed [::batch k index]
                                     #(m/resample resampling weights size))
                         sources (mapv #(:sp (nth entries %)) ancestors)]
@@ -462,8 +476,7 @@
                          (rtp/swap-state! w [:inference :log-weight] (constantly mean)))
                        (doseq [{:keys [sp]} entries :when (sp/pending? sp)]
                          (sp/abandon sp))
-                       (doseq [[child a] (map vector children ancestors)]
-                         (sp/resume child (:value (nth entries a)))))
+                       (resume-all! (map (fn [child a] [child (:value (nth entries a))]) children ancestors) fail!))
                      fail!)))))
 
             (batch-finished! [stage]
@@ -642,8 +655,7 @@
                 (if-not resample?
                   (do (when lag (gc! parked streaming))
                       (swap! state assoc :parked {} :in-barrier? false)
-                      (doseq [[_ {:keys [sp value]}] (sort-by key parked)]
-                        (sp/resume sp value)))
+                      (resume-all! (map (fn [[_ {:keys [sp value]}]] [sp value]) (sort-by key parked)) fail!))
                   (let [ancestors (random/with-stream*
                                     seed [::resample k]
                                     #(if retained
@@ -691,8 +703,9 @@
                                         :in-barrier? false)
                                  (if (empty? parked')
                                    (arrived!)
-                                   (doseq [[_ {:keys [sp value]}] (sort-by key parked')]
-                                     (sp/resume sp value))))]
+                                   (resume-all! (map (fn [[_ {:keys [sp value]}]] [sp value])
+                                                     (sort-by key parked'))
+                                                fail!)))]
                            (if (and rejuvenate (seq parked'))
                              (rejuvenate! parked' continue!)
                              (continue! parked')))))
