@@ -722,12 +722,14 @@
   Args:
     model-task, num-particles (per sweep, including the retained one),
     num-iterations (sweeps)
-    opts: :executor
+    opts: the particle methods' options, and :anchors, :rejuvenate for
+          resample-move inside each sweep, the retained particle included
+          (`foerster.smc/smc`; :fresh only)
 
   Returns: Spin<EmpiricalMeasure> of every sweep's particles, each sweep
   normalized to total weight one."
   [model-task num-particles num-iterations & [opts]]
-  (check-options! opts particle-options)
+  (check-options! opts (into particle-options #{:anchors :rejuvenate}))
   (if (on-savepoints? opts)
     (on-savepoints (smc/pgibbs model-task num-particles num-iterations opts))
     (csmc-chain model-task num-particles num-iterations opts)))

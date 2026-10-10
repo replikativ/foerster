@@ -134,15 +134,71 @@
   []
   (next-double! (current)))
 
+(def ^:dynamic *stream-id*
+  "`(volatile! [id n])`: the identity of the current keyed stream and the
+  number of decisions drawn from it so far, or nil on the process generator."
+  nil)
+
 (defn with-stream*
   "Call `f` with draws coming from the stream keyed by `seed` and `key`. A nil
   seed (no session) leaves draws on the process generator. The keyed
   generator is seeded only when a draw actually needs it."
   [seed key f]
   (if (some? seed)
-    (binding [*stream* (delay (generator [seed key]))]
+    (binding [*stream* (delay (generator [seed key]))
+              *stream-id* (volatile! [[seed key] -1])]
       (f))
     (f)))
+
+;; -----------------------------------------------------------------------------
+;; Decisions
+;; -----------------------------------------------------------------------------
+;; A draw that DECIDES something among finitely many outcomes — a discrete
+;; site's value, a resampled ancestor, the site a move selects, its
+;; acceptance — goes through `decide` with the outcomes' probabilities. In a
+;; run it draws exactly as before (`default`). An oracle installed with
+;; `with-oracle` answers instead: given the decision's key (its stream and
+;; position in it) and probabilities, it returns the outcome. That is how
+;; `foerster.enumerate-sweeps` follows every path of an inference step with
+;; its exact probability.
+
+(defonce ^:private oracle (atom nil))
+(defonce ^:private process-decisions (atom -1))
+
+(defn- decision-key []
+  (if-let [v *stream-id*]
+    (let [[id n] (vswap! v (fn [[id n]] [id (inc n)]))] [id n])
+    [::process (swap! process-decisions inc)]))
+
+(defn decide
+  "The index of the outcome drawn with probabilities `(probs)` (normalized),
+  computed by `default` from the current generator, or by the installed
+  oracle. `probs` is a thunk: a run never builds it."
+  [probs default]
+  (if-let [o @oracle]
+    (o (decision-key) (vec (probs)))
+    (default)))
+
+(defn below?
+  "True with probability `p`, drawn as `(< u p)`."
+  [p]
+  (= 1 (decide #(vector (- 1.0 p) p) #(if (< (uniform01) p) 1 0))))
+
+(defn accept-log?
+  "The Metropolis–Hastings accept test for a log ratio below zero, drawn as
+  `(< (log u) log-ratio)`: true with probability exp(log-ratio)."
+  [log-ratio]
+  (= 1 (decide #(let [p (Math/exp (min 0.0 log-ratio))] [(- 1.0 p) p])
+               #(if (< (Math/log (uniform01)) log-ratio) 1 0))))
+
+(defn with-oracle
+  "Call `f` with every decision answered by `(oracle key probs)`. For
+  enumeration in tests: one oracle at a time, process-wide."
+  [oracle-fn f]
+  (when-not (compare-and-set! oracle nil oracle-fn)
+    (throw (ex-info "An oracle is already installed" {:type ::oracle-installed})))
+  (reset! process-decisions -1)
+  (try (f) (finally (reset! oracle nil))))
 
 (defn in-world-stream
   "Call `f` drawing from `world`'s stream for `key`."

@@ -578,10 +578,9 @@
                                             (when temperature (tempered-score temperature))))
                       accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
                                    (or (>= ratio 0.0)
-                                       (< (Math/log (random/in-world-stream
-                                                     (:trace/world proposed) ::accept
-                                                     m/uniform01))
-                                          ratio)))]
+                                       (random/in-world-stream
+                                        (:trace/world proposed) ::accept
+                                        #(random/accept-log? ratio))))]
                   (cond
                     (not accept?) (trace/release! proposed trace)
                     keep-old? nil

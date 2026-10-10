@@ -39,3 +39,12 @@
         pb (/ (count (filter second born)) (double (count born)))]
     (is (< (Math/abs (- pk 0.5)) 0.04) (str "P(k = 1) " pk))
     (is (< (Math/abs (- pb 0.5)) 0.04) (str "P(b | k = 1) " pb))))
+
+(deftest particle-gibbs-with-moves-recovers-the-posterior
+  ;; the retained particle moves too (`smc/retained-stages`); its exactness is
+  ;; checked by enumeration in `sweep-enumeration-test`, this is the API path
+  (let [measure (b/run-infer 23 #(infer/infer (model) {:method :pgibbs :particles 3 :iterations 3000
+                                                       :anchors :all :rejuvenate {:moves 1}
+                                                       :policy (itrace/policy {:constraints {:y true}})}))
+        {:keys [mean]} (d/summary measure identity)]
+    (is (< (Math/abs (- mean 0.9)) 0.03) (str "P(x = 1) " mean))))

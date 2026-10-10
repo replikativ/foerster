@@ -24,7 +24,8 @@
 (defn pick-uniformly
   "A uniformly chosen element of a vector, drawn through `uniform01`."
   [v]
-  (nth v (int (* (uniform01) (count v)))))
+  (let [n (count v)]
+    (nth v (random/decide #(repeat n (/ 1.0 n)) #(int (* (uniform01) n))))))
 
 ;; =============================================================================
 ;; PMeasure Protocol
@@ -102,7 +103,7 @@
 (defn sample-categorical
   "One index drawn from normalized weights, through `uniform01`."
   [weights]
-  (search-cumulative (cumulative weights) (uniform01)))
+  (random/decide (constantly weights) #(search-cumulative (cumulative weights) (uniform01))))
 
 (defn normalize-log-weights
   "Convert log-weights to normalized linear weights, summing to 1. All
@@ -189,7 +190,8 @@
   "`n` indices drawn independently from the normalized `weights`."
   [weights n]
   (let [cumsum (cumulative weights)]
-    (vec (repeatedly n #(search-cumulative cumsum (uniform01))))))
+    (vec (repeatedly n (fn [] (random/decide (constantly weights)
+                                             #(search-cumulative cumsum (uniform01))))))))
 
 (defn stratified-resample
   "Stratified resampling: one uniform draw in each of the n strata [i/n,
