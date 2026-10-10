@@ -209,6 +209,95 @@
                                      (dist/logpdf proposal v)
                                      (dist/draw-logpdf dist v))}))))))))
 
+(defn- move-options
+  "The options of a rejuvenation move of `t`, a trace standing at its k-th
+  barrier: one latent site of the window selected uniformly, `rejuvenate`'s
+  proposal (default the prior), `policy`'s options, and the trace's
+  constrained values kept. Replays stop at the k-th barrier."
+  [t k lag rejuvenate policy anchor?]
+  (let [count-movable #(count (movable % k lag))]
+    {:select (fn [t _]
+               (let [ms (movable t k lag)]
+                 (if (empty? ms)
+                   {:targets #{} :log-selection (constantly 0.0)}
+                   {:targets #{(m/pick-uniformly ms)}
+                    :log-selection #(- (Math/log (double (count-movable %))))})))
+     :propose (or (:propose rejuvenate) itrace/prior-proposal)
+     :policy-options (itrace/policy-options policy)
+     :constraints (constrained-values
+                   (if lag
+                     {:trace/entries (into {} (map (juxt :address identity))
+                                           (window-entries t k lag))}
+                     t))
+     :until (until-barrier k)
+     :anchor? anchor?}))
+
+(defn- retained-stages
+  "Conditional SMC with resample-move, made exact: the retained trajectory
+  is the state AFTER each barrier's move, and its state before the move is
+  drawn backwards through the move's reversal. The moves are reversible
+  Metropolis-Hastings kernels, so the reversal is the move itself: from the
+  last barrier back to the first, the path's prefix is run to barrier k and
+  moved there exactly as every other particle moves.
+
+  Resolves {k path}: the full path the retained particle follows into
+  barrier k (its values up to k before the move there). After the move it
+  continues on the next barrier's path, which agrees with the one it moved
+  to, and after the last barrier on `retained` itself. Keeping the retained
+  particle unmoved instead leaves the conditional target off (an exact
+  enumeration of one sweep: 2·10⁻⁴ to 3·10⁻³ in total variation)."
+  [model retained policy rejuvenate anchor? lag seed]
+  (fn [resolve reject]
+    (let [;; a session runs one computation: one per run, all closed at the end
+          sessions (atom [])
+          end (fn [f x]
+                (let [ss @sessions]
+                  (if (empty? ss)
+                    (f x)
+                    ((reduce (fn [op session]
+                               (fn [res rej] (op (fn [_] ((sp/close! session) res res)) rej)))
+                             (fn [res _] (res nil))
+                             ss)
+                     (fn [_] (f x))
+                     (fn [_] (f x))))))
+          fail #(end reject %)
+          moves (:moves rejuvenate 1)
+          particle-policy (or policy (itrace/policy))
+          run-to (fn [path k]
+                   (let [session (sp/open! (ctx/create-execution-context)
+                                           {:purpose :smc-retained
+                                            :seed (sp/derive-seed seed ::retained (or k 0))
+                                            :fork-opts {:systems :none}
+                                            :retain-released? false})]
+                     (swap! sessions conj session)
+                     (trace/run session model (retained-policy path policy)
+                                (cond-> {:anchor? anchor?} k (assoc :until (until-barrier k))))))]
+      ((run-to retained nil)
+       (fn [t]
+         (letfn [(stage [k path paths]
+                   (if (zero? k)
+                     (end resolve paths)
+                     ((run-to path k)
+                      (fn [t0]
+                        (letfn [(step [j t]
+                                  (if (= j moves)
+                                    (let [before (merge path (itrace/choices t))]
+                                      (stage (dec k) before (assoc paths k before)))
+                                    ((itrace/mh-step t (assoc (move-options t k lag rejuvenate
+                                                                            particle-policy anchor?)
+                                                              :iteration j))
+                                     (fn [{t' :trace}] (step (inc j) t'))
+                                     fail)))]
+                          (if (:trace/pending t0)
+                            (step 0 t0)
+                            (fail (ex-info "The retained trajectory ends before a barrier it passed"
+                                           {:type ::retained-path :barrier k})))))
+                      fail)))]
+           (if (:trace/error t)
+             (fail (:trace/error t))
+             (stage (or (rtp/get-state (:trace/world t) [:inference :barriers]) 0) retained {}))))
+       fail))))
+
 (defn- stream-site?
   "A sample site whose value arrives from outside (`(sample d :stream true)`),
   see `stream`."
@@ -245,11 +334,12 @@
   (when (and rejuvenate policy (not (contains? (meta policy) :org.replikativ.foerster.trace/options)))
     (throw (ex-info ":rejuvenate repeats the particles' policy in its moves: pass one made by foerster.trace/policy"
                     {:type ::opaque-policy})))
-  (when (and rejuvenate retained)
-    ;; the moves are not invariant for the conditional (particle Gibbs)
+  (when (and rejuvenate retained ancestor-sampling?)
+    ;; PGAS redraws the retained particle's past from the particles' pre-move
+    ;; states; its exact construction with moves is not implemented
     ;; target: an exact enumeration puts the stationary law off by TV ~ 1e-3
-    (throw (ex-info ":rejuvenate is not supported in conditional SMC (:retained)"
-                    {:type ::rejuvenate-with-retained})))
+    (throw (ex-info ":rejuvenate is not supported with :ancestor-sampling?"
+                    {:type ::rejuvenate-with-ancestor-sampling})))
   (when (and smcp3 (not anchors))
     (throw (ex-info ":smcp3 needs :anchors to replay from"
                     {:type ::smcp3-without-anchors})))
@@ -265,10 +355,13 @@
         ;; {anchor-id anchor}: every anchor that may still be pending
         registry (atom {})
         handler-table (volatile! nil)
+        ;; the retained particle's policy; with moves it changes at every
+        ;; barrier to the path of the next stage (`retained-stages`)
+        retained-now (atom (when retained (retained-policy retained policy)))
+        stages (atom nil)
         policy-of (if retained
-                    (let [rp (retained-policy retained policy)
-                          policy (or policy (itrace/policy))]
-                      (fn [slot] (if (= 0 slot) rp policy)))
+                    (let [policy (or policy (itrace/policy))]
+                      (fn [slot] (if (= 0 slot) @retained-now policy)))
                     (constantly (or policy (itrace/policy))))
         root (cond
                adopt (:root adopt)
@@ -291,7 +384,8 @@
                                            :retain-released? false}
                                           (dissoc opts :resample-threshold :policy :executor :retained
                                                   :resampling :genealogy? :smcp3 :batch
-                                                  :ancestor-sampling? :root :copy? :anchors :rejuvenate :adopt))))
+                                                  :ancestor-sampling? :root :copy? :anchors :rejuvenate :adopt
+                                                  ::retained-paths))))
         ;; {:parked {slot {:sp sp :value v}}  at an observe (or a supplied stream
         ;;                                    site), resumed with v after the barrier
         ;;  :streaming {slot sp}               at a stream site, waiting for a value
@@ -714,18 +808,56 @@
                 (swap! state update-in [:rejuvenation :max-anchors] (fnil max 0) (count live))))
 
             (rejuvenate! [parked done!]
-              ;; every resampled particle moves, the retained one excepted
-              (let [slots (vec (remove #(and retained (= 0 %)) (keys parked)))
+              ;; every resampled particle moves; the retained one takes the
+              ;; state its path has after this barrier's move
+              (let [slots (vec (keys parked))
                     results (atom parked)
                     remaining (atom (count slots))]
                 (if (empty? slots)
                   (done! parked)
                   (doseq [slot slots]
-                    (move-particle! slot (get parked slot)
-                                    (fn [entry]
-                                      (swap! results assoc slot entry)
-                                      (when (zero? (swap! remaining dec))
-                                        (done! @results))))))))
+                    ((if (and retained (= 0 slot)) move-retained! move-particle!)
+                     slot (get parked slot)
+                     (fn [entry]
+                       (swap! results assoc slot entry)
+                       (when (zero? (swap! remaining dec))
+                         (done! @results))))))))
+
+            (move-retained! [slot {:keys [sp value] :as entry} done]
+              (try
+                (let [world0 (:savepoint/world sp)
+                      k (rtp/get-state world0 [:inference :barriers])
+                      ;; the path after this barrier's move: the next stage's,
+                      ;; or after the last barrier the retained trajectory
+                      after (get @stages (inc k) retained)
+                      w0 (weight-of world0)
+                      t0 (assoc (particle-trace session world0) :trace/pending sp :trace/pending-value value)
+                      changed (filterv #(not= (get after %) (get-in t0 [:trace/entries % :value]))
+                                       (itrace/latent-addresses t0))]
+                  (reset! retained-now (retained-policy after policy))
+                  (if (empty? changed)
+                    (done entry)
+                    ((trace/replay t0 (trace/earliest t0 changed) @retained-now
+                                   {:anchor? anchor?
+                                    :until (until-barrier k)
+                                    :seed (sp/derive-seed (sp/seed world0) ::retained k)})
+                     (fn [t1]
+                       (try
+                         (if (or (:trace/error t1) (not (:trace/pending t1)))
+                           (fail! (ex-info "The retained trajectory cannot be replayed to its moved state"
+                                           {:type ::retained-path :barrier k}))
+                           (let [w1 (:trace/world t1)]
+                             (rtp/swap-state! w1 [:inference :slot] (constantly slot))
+                             (rtp/swap-state! w1 [:inference :log-weight] (constantly w0))
+                             (rtp/swap-state! w1 [:engine/reuse-source] (constantly nil))
+                             (sp/install-handlers! w1 @handler-table)
+                             (swap! registry merge (anchors-of t1 k lag))
+                             (when (sp/pending? sp) (sp/abandon sp))
+                             (sp/release-world! session world0)
+                             (done {:sp (:trace/pending t1) :value (:trace/pending-value t1)})))
+                         (catch #?(:clj Throwable :cljs :default) e (fail! e))))
+                     fail!)))
+                (catch #?(:clj Throwable :cljs :default) e (fail! e))))
 
             (move-particle! [slot {:keys [sp value]} done]
               (try
@@ -733,24 +865,9 @@
                       k (rtp/get-state world0 [:inference :barriers])
                       w0 (weight-of world0)
                       t0 (assoc (particle-trace session world0) :trace/pending sp :trace/pending-value value)
-                      count-movable #(count (movable % k lag))
-                      opts {:select (fn [t _]
-                                      (let [ms (movable t k lag)]
-                                        (if (empty? ms)
-                                          {:targets #{} :log-selection (constantly 0.0)}
-                                          {:targets #{(m/pick-uniformly ms)}
-                                           :log-selection #(- (Math/log (double (count-movable %))))})))
-                            :propose (or (:propose rejuvenate) itrace/prior-proposal)
-                            :policy-options (itrace/policy-options (policy-of slot))
-                            :constraints (constrained-values
-                                          (if lag
-                                            {:trace/entries (into {} (map (juxt :address identity))
-                                                                  (window-entries t0 k lag))}
-                                            t0))
-                            ;; stop at this particle's own k-th barrier
-                            :until (until-barrier k)
-                            :anchor? anchor?
-                            :shared-anchors? true}
+                      ;; stops at this particle's own k-th barrier
+                      opts (assoc (move-options t0 k lag rejuvenate (policy-of slot) anchor?)
+                                  :shared-anchors? true)
                       steps (:moves rejuvenate 1)
                       finish (fn [t]
                                (if (= (:fork-id (:trace/world t)) (:fork-id world0))
@@ -842,8 +959,22 @@
                       :in-barrier? true :idle? true)
                (idle! (measure @state)))
              fail!))
-          (do (sp/install-handlers! root @handler-table)
-              (sp/start! session model)))
+          (let [start! #(do (sp/install-handlers! root @handler-table)
+                            (sp/start! session model))]
+            (if (and retained rejuvenate)
+              ;; `::retained-paths` hands in the backward pass's outcome:
+              ;; for tests that enumerate the two halves of a sweep apart
+              ((if-let [paths (::retained-paths opts)]
+                 (fn [resolve _] (resolve paths))
+                 (retained-stages model retained policy rejuvenate anchor? lag seed))
+               (fn [paths]
+                 (try
+                   (reset! stages paths)
+                   (reset! retained-now (retained-policy (get paths 1 retained) policy))
+                   (start!)
+                   (catch #?(:clj Throwable :cljs :default) e (fail! e))))
+               fail!)
+              (start!))))
         (catch #?(:clj Throwable :cljs :default) e
           (log/error :smc/start-failed {:error e})
           (fail! e)))
@@ -891,9 +1022,12 @@
   each replaying from an anchor up to the particle's current barrier (`p` a
   proposal as for `foerster.trace/mh-step`, default the prior). The moves
   leave the target up to that barrier invariant, so the weights and the
-  evidence estimate are unchanged. Not in copied worlds or with
-  `:retained`. The measure's `:rejuvenation` counts `:moves`, `:accepted`
-  and `:max-anchors`, the most anchors alive at a barrier.
+  evidence estimate are unchanged. Not in copied worlds. With `:retained`
+  the retained particle moves too, exactly: its trajectory is the state
+  after each barrier's move, and its state before is drawn backwards
+  through the move (`retained-stages`); not with `:ancestor-sampling?`.
+  The measure's `:rejuvenation` counts `:moves`, `:accepted` and
+  `:max-anchors`, the most anchors alive at a barrier.
 
   SMCP3 (Lew et al. 2023): `:smcp3 {:forward K :backward L}` gives every
   particle parked at a barrier a move-reweight step before the resampling

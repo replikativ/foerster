@@ -214,9 +214,21 @@ trade-off:
 Moves happen only when the population is resampled, so with the default
 `:resample-threshold` they become rare as a static posterior concentrates
 (Chopin 2002). The measure's `:rejuvenation` reports `:moves`, `:accepted`
-and `:max-anchors`. Resample-move runs in fresh worlds only, and not in
-conditional SMC (particle Gibbs, PGAS). A model whose moves reach effects
-(a model call) runs them again on every replay.
+and `:max-anchors`. Resample-move runs in fresh worlds only. A model whose
+moves reach effects (a model call) runs them again on every replay.
+
+In particle Gibbs (`:retained`, `pgibbs-infer` with `:anchors` and
+`:rejuvenate`) the retained particle moves too. Leaving it unmoved while the
+others move puts the sweep's stationary law slightly off the posterior (an
+exact enumeration of a three-step chain: 1.7·10⁻⁴ in total variation, far
+below what a statistical test sees). Instead its trajectory is taken as the
+state *after* each barrier's move, and its state *before* the move is drawn
+backwards through the move: the moves are reversible Metropolis–Hastings
+kernels, so that is the move itself, run from the last barrier back to the
+first before the sweep starts. The retained particle enters each barrier
+with its pre-move values and leaves it with the post-move ones. The same
+enumeration puts this construction at rounding error (`clojure
+-M:test:enumerate`). Not with ancestor sampling (PGAS).
 
 ## SMCP3: move-reweight steps
 

@@ -369,7 +369,7 @@
 
 (defrecord Bernoulli [p]
   Distribution
-  (-draw [_] (if (< (u01) p) 1 0))
+  (-draw [_] (if (random/below? p) 1 0))
   (-logpdf [_ x]
     (cond (not (number? x)) ##-Inf
           (== x 1) (Math/log p)
@@ -381,7 +381,7 @@
 
 (defrecord Flip [p]
   Distribution
-  (-draw [_] (< (u01) p))
+  (-draw [_] (random/below? p))
   (-logpdf [_ x]
     (case x true (Math/log p) false (Math/log (- 1.0 p)) ##-Inf)))
 

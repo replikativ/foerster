@@ -86,8 +86,8 @@
     (is (= ::smc/rejuvenate-without-anchors (refusal {:rejuvenate {:moves 1}})))
     (is (= ::smc/opaque-policy (refusal {:anchors :all :rejuvenate {} :policy (fn [_ _] nil)})))
     (is (= ::smc/invalid-anchors (refusal {:anchors 3})))
-    (is (= ::smc/rejuvenate-with-retained
-           (refusal {:anchors :all :rejuvenate {} :retained {:mu 0.0}})))))
+    (is (= ::smc/rejuvenate-with-ancestor-sampling
+           (refusal {:anchors :all :rejuvenate {} :retained {:mu 0.0} :ancestor-sampling? true})))))
 
 (deftest a-move-may-change-how-many-observations-there-are
   ;; b = true adds an observation: a move flipping b at the second barrier
