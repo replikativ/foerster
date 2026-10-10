@@ -247,58 +247,57 @@
   particle unmoved instead leaves the conditional target off (an exact
   enumeration of one sweep: 2·10⁻⁴ to 3·10⁻³ in total variation)."
   [model retained policy rejuvenate anchor? lag seed executor]
-  (fn [resolve reject]
-    (let [;; a session runs one computation: one per run, all closed at the end
-          sessions (atom [])
-          end (fn [f x]
-                (let [ss @sessions]
-                  (if (empty? ss)
-                    (f x)
-                    ((reduce (fn [op session]
-                               (fn [res rej] (op (fn [_] ((sp/close! session) res res)) rej)))
-                             (fn [res _] (res nil))
-                             ss)
-                     (fn [_] (f x))
-                     (fn [_] (f x))))))
-          fail #(end reject %)
-          moves (:moves rejuvenate 1)
-          particle-policy (or policy (itrace/policy))
-          run-to (fn [path k]
-                   (let [session (sp/open! (if executor
-                                             (ctx/create-execution-context :executor executor)
-                                             (ctx/create-execution-context))
-                                           {:purpose :smc-retained
-                                            :seed (sp/derive-seed seed ::retained (or k 0))
-                                            :fork-opts {:systems :none}
-                                            :retain-released? false})]
-                     (swap! sessions conj session)
-                     (trace/run session model (retained-policy path policy)
-                                (cond-> {:anchor? anchor?} k (assoc :until (until-barrier k))))))]
-      ((run-to retained nil)
-       (fn [t]
-         (letfn [(stage [k path paths]
-                   (if (zero? k)
-                     (end resolve paths)
-                     ((run-to path k)
-                      (fn [t0]
-                        (letfn [(step [j t]
-                                  (if (= j moves)
-                                    (let [before (merge path (itrace/choices t))]
-                                      (stage (dec k) before (assoc paths k before)))
-                                    ((itrace/mh-step t (assoc (move-options t k lag rejuvenate
-                                                                            particle-policy anchor?)
-                                                              :iteration j))
-                                     (fn [{t' :trace}] (step (inc j) t'))
-                                     fail)))]
-                          (if (:trace/pending t0)
-                            (step 0 t0)
-                            (fail (ex-info "The retained trajectory ends before a barrier it passed"
-                                           {:type ::retained-path :barrier k})))))
-                      fail)))]
+  (let [moves (:moves rejuvenate 1)
+        particle-policy (or policy (itrace/policy))
+        ;; one run of `path` (to barrier k, or whole) in a session of its
+        ;; own — a session runs one computation — closed as soon as `use`
+        ;; has what it needs: (use trace ok fail)
+        with-run (fn [path k use]
+                   (fn [resolve reject]
+                     (let [session (sp/open! (if executor
+                                               (ctx/create-execution-context :executor executor)
+                                               (ctx/create-execution-context))
+                                             {:purpose :smc-retained
+                                              :seed (sp/derive-seed seed ::retained (or k 0))
+                                              :fork-opts {:systems :none}
+                                              :retain-released? false})
+                           closing (fn [f] (fn [x] ((sp/close! session) (fn [_] (f x)) (fn [_] (f x)))))
+                           ok (closing resolve)
+                           fail (closing reject)]
+                       ((trace/run session model (retained-policy path policy)
+                                   (cond-> {:anchor? anchor?} k (assoc :until (until-barrier k))))
+                        (fn [t]
+                          (try (use t ok fail)
+                               (catch #?(:clj Throwable :cljs :default) e (fail e))))
+                        fail))))]
+    (fn [resolve reject]
+      ((with-run retained nil
+         (fn [t ok fail]
            (if (:trace/error t)
              (fail (:trace/error t))
-             (stage (or (rtp/get-state (:trace/world t) [:inference :barriers]) 0) retained {}))))
-       fail))))
+             (ok (or (rtp/get-state (:trace/world t) [:inference :barriers]) 0)))))
+       (fn [barriers]
+         (letfn [(stage [k path paths]
+                   (if (zero? k)
+                     (resolve paths)
+                     ((with-run path k
+                        (fn [t0 ok fail]
+                          (letfn [(step [j t]
+                                    (if (= j moves)
+                                      (ok (merge path (itrace/choices t)))
+                                      ((itrace/mh-step t (assoc (move-options t k lag rejuvenate
+                                                                              particle-policy anchor?)
+                                                                :iteration j))
+                                       (fn [{t' :trace}] (step (inc j) t'))
+                                       fail)))]
+                            (if (:trace/pending t0)
+                              (step 0 t0)
+                              (fail (ex-info "The retained trajectory ends before a barrier it passed"
+                                             {:type ::retained-path :barrier k}))))))
+                      (fn [before] (stage (dec k) before (assoc paths k before)))
+                      reject)))]
+           (stage barriers retained {})))
+       reject))))
 
 (defn- stream-site?
   "A sample site whose value arrives from outside (`(sample d :stream true)`),
@@ -336,6 +335,11 @@
   (when (and rejuvenate policy (not (contains? (meta policy) :org.replikativ.foerster.trace/options)))
     (throw (ex-info ":rejuvenate repeats the particles' policy in its moves: pass one made by foerster.trace/policy"
                     {:type ::opaque-policy})))
+  (when (and rejuvenate retained on-idle)
+    ;; the retained trajectory is drawn backwards through every barrier's
+    ;; move before the sweep: it needs the values of stream sites not yet seen
+    (throw (ex-info ":rejuvenate with :retained needs the whole trajectory: not with smc/stream"
+                    {:type ::rejuvenate-retained-stream})))
   (when (and rejuvenate retained ancestor-sampling?)
     ;; PGAS redraws the retained particle's past from the particles' pre-move
     ;; states; its exact construction with moves is not implemented

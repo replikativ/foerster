@@ -180,3 +180,17 @@
     (is (< (Math/abs (- var kvar)) 0.08) (str var " vs " kvar))
     (is (every? (fn [[s _]] (= stream-ys (mapv #(:value (get (m/get-trace s) [:y %])) (range 5)))) ps)
         "no move changed the data")))
+
+(deftest conditional-moves-are-refused-in-a-stream
+  ;; the retained trajectory is drawn backwards through the moves before the
+  ;; sweep, which needs stream values not yet seen
+  (let [root (context/create-execution-context)
+        model (binding [ec/*execution-context* root]
+                (spin (let [x (sample (dist/bernoulli 0.5) :id :x)]
+                        (sample (dist/flip 0.5) :id :y :stream true)
+                        x)))
+        p (promise)]
+    (try ((smc/stream model 2 {:retained {:x 1} :anchors :all :rejuvenate {}})
+          #(deliver p %) #(deliver p %))
+         (catch clojure.lang.ExceptionInfo e (deliver p e)))
+    (is (= ::smc/rejuvenate-retained-stream (:type (ex-data (deref p 5000 nil)))))))
