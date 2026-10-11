@@ -130,3 +130,14 @@
     (is (some #(= :org.replikativ.foerster.block-mh/coarse-support (:type (ex-data %)))
               (take-while some? (iterate ex-cause error)))
         (str error))))
+
+(deftest scales-must-match-the-block
+  (let [error (try (b/run-infer 3 #(infer/kernel-infer (model)
+                                                       (k/delayed-acceptance-kernel 10 {:theta (constantly 0.0)}
+                                                                                    {:scales [0.15]})
+                                                       1))
+                   nil
+                   (catch Exception e e))]
+    (is (some #(= :org.replikativ.foerster.block-mh/scales-dimension (:type (ex-data %)))
+              (take-while some? (iterate ex-cause error)))
+        (str error))))

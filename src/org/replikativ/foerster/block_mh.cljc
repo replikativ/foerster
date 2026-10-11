@@ -190,7 +190,11 @@
 
                         address
                         (let [dim (count (get-in t [:trace/entries address :value]))
-                              sc (if (number? scales) (vec (repeat dim scales)) (vec scales))]
+                              sc (if (number? scales) (vec (repeat dim scales)) (vec scales))
+                              _ (when-not (= dim (count sc))
+                                  (throw (ex-info "One scale per coordinate of the block, or one number for all"
+                                                  {:type ::scales-dimension :address address
+                                                   :dimension dim :scales (count sc)})))]
                           ((da-move t address (merge (select-keys chain-opts [:policy-options :constraints :until :anchor?])
                                                      {:coarse (get coarse address) :scales sc
                                                       :steps (or steps dim) :key [iteration]}))
