@@ -118,3 +118,10 @@
     (is (= 50 (count (:particles r))))
     (testing "the first batch was scored before the last one was realized"
       (is (< (first @seen) 10)))))
+
+(deftest a-batch-no-particle-explains-is-refused
+  (random/set-seed! 7)
+  (let [m (assoc (model (regression 40 8) 20)
+                 :log-lik (fn [_ [x _]] (if (> x 100.0) 0.0 ##-Inf)))]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"zero likelihood"
+                          (scmc/scmc m {:particles 20 :memory 10 :seed [4]})))))

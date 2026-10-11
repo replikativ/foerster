@@ -131,7 +131,8 @@
   Returns {:particles [θ …] (equally weighted) :log-z (the evidence estimate,
   its increments exact, its moves approximate) :coreset [[w datum] …] (at
   most M) :coreset-sizes (per step, before recompression) :moves
-  :accepted}."
+  :accepted}. Throws `::zero-evidence` when a batch has zero likelihood
+  under every particle."
   [{:keys [prior-sample prior-log-density log-lik batches]}
    & [{:keys [particles memory scale seed] :or {particles 1000 memory 100 scale 2.38}}]]
   (when-not (pos-int? particles)
@@ -156,8 +157,11 @@
                                _ (swap! remaining next)
                                expanded (into coreset (map (fn [x] [1.0 x])) batch)]
                            (swap! sizes conj (count expanded))
-                           {:pos {:t (inc t) :coreset expanded}
-                            :log-incr (mapv (fn [q] (reduce + 0.0 (map #(log-lik q %) batch))) qs)}))
+                           (let [incr (mapv (fn [q] (reduce + 0.0 (map #(log-lik q %) batch))) qs)]
+                             (when (every? #(or (= ##-Inf %) (NaN? %)) incr)
+                               (throw (ex-info "Every particle has zero likelihood for a batch: no posterior population"
+                                               {:type ::zero-evidence :batch t})))
+                             {:pos {:t (inc t) :coreset expanded} :log-incr incr})))
               :density (fn [{:keys [coreset]}]
                          (fn [q]
                            (let [lp (prior-log-density q)]
