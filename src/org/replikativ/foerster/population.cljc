@@ -111,7 +111,8 @@
 
 (defn write-back-all
   "Traces of `template` with the block site at `address` set to each of `qs`
-  (one replay per distinct θ); resolves them in order."
+  (one replay per distinct θ); resolves them in order, or rejects when the
+  program fails on one of them."
   [template address qs]
   (fn [resolve reject]
     (let [distinct-qs (vec (distinct qs))
@@ -120,7 +121,10 @@
                     (fn [i res rej]
                       ((trace/replay template address (policy (nth distinct-qs i)) {:anchor? itrace/anchor?})
                        res rej)))
-       (fn [ts] (let [by-q (zipmap distinct-qs ts)] (resolve (mapv by-q qs))))
+       (fn [ts]
+         (if-let [error (some :trace/error ts)]
+           (reject (ex-info "The program failed on a final state" {:type ::model-failed} error))
+           (let [by-q (zipmap distinct-qs ts)] (resolve (mapv by-q qs)))))
        reject))))
 
 (defn theta-smc

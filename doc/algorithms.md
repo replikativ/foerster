@@ -16,7 +16,8 @@ A reference for every inference entry point in `org.replikativ.foerster.core`
 (infer/infer (model) {:method :pmmh :particles 100 :iterations 2000 :params #{:sigma}})
 ```
 
-Methods: `:enumerate` (exact, see below); `:importance`, `:smc`, `:tempered` (`:particles`); `:pimh`,
+Methods: `:enumerate` (exact, see below); `:importance`, `:smc`, `:tempered` (`:particles`);
+`:parallel-tempering` (`:chains`, one block site); `:pimh`,
 `:pgibbs`, `:pgas`, `:ipmcmc`, `:bbvi` (`:particles`, `:iterations`); `:mh`,
 `:rmh`, `:nuts` (`:iterations` per chain, `:chains`, `:burn`; `:step-size` for
 `:rmh`); `:kernel` (`:kernel`, `:chains`; the kernel carries its own `:burn`
@@ -131,6 +132,32 @@ the moved site, so a step costs N sweeps of the model; fresh worlds only.
 
 For data that arrive one observation at a time — IBIS (Chopin 2002) — use
 SMC with resample-move on the static parameters, below.
+
+## Parallel tempering
+
+`(parallel-tempering-infer model chains opts)`
+(`org.replikativ.foerster.parallel-tempering`) runs non-reversible parallel
+tempering (Syed, Bouchard-Côté, Deligiannidis & Doucet 2022) on a model that
+is one block site with a `:sample` and `:sample-log-density`. `chains`
+Markov chains sit on the path q^(1−β)·t^β from that draw density q to the
+posterior t; every scan moves each chain at its own β (an exact draw at
+β = 0, random-walk Metropolis elsewhere) and then offers swaps to neighbours,
+even pairs and odd pairs in turn, so states travel through the temperatures
+in one direction instead of diffusing. The schedule is tuned over `:rounds`
+rounds of doubling length, spacing the temperatures evenly in the
+communication barrier Λ the swap rejections measure.
+
+```clojure
+(infer/infer (model) {:method :parallel-tempering :chains 10 :rounds 11})
+```
+
+The last round's states of the β = 1 chain are the sample (2^(rounds−1) of
+them, written back to traces once per distinct θ); `m/log-marginal` is the
+stepping-stone evidence. `:barrier` reports Λ: about 2Λ chains is enough,
+and `:round-trips` counts the states that went from the reference to the
+posterior and back. Where tempered SMC spends its budget on many particles,
+parallel tempering spends it on long chains, and its result improves with
+more rounds without rerunning.
 
 ## Arrival-batched SMC: no waiting for the slowest
 
