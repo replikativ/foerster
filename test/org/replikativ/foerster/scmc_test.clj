@@ -100,3 +100,21 @@
 (deftest refusals
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #":memory" (scmc/scmc (model [] 1) {:memory 0})))
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #":particles" (scmc/scmc (model [] 1) {:particles 0}))))
+
+(deftest batches-are-consumed-as-they-come
+  ;; a lazy stream of batches: each is realized when its step reaches it
+  (random/set-seed! 6)
+  (let [data (regression 200 7)
+        realized (atom 0)
+        batches (map (fn [b] (swap! realized inc) b) (partition 20 data))
+        seen (atom [])
+        m (model data 20)
+        log-lik (:log-lik m)
+        r (scmc/scmc (assoc m
+                            :batches batches
+                            :log-lik (fn [q d] (swap! seen conj @realized) (log-lik q d)))
+                     {:particles 50 :memory 30 :seed [3]})]
+    (is (= 10 @realized))
+    (is (= 50 (count (:particles r))))
+    (testing "the first batch was scored before the last one was realized"
+      (is (< (first @seen) 10)))))

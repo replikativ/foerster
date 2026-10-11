@@ -122,7 +122,9 @@
     :prior-sample        (fn []) θ ~ p₀, a vector
     :prior-log-density   (fn [θ]) log p₀(θ)
     :log-lik             (fn [θ datum]) log p(datum | θ)
-    :batches             the data, a sequence of batches (sequences of data)
+    :batches             the data, a sequence of batches (sequences of data),
+                         consumed lazily: a stream of batches runs in memory
+                         bounded by the core-set and the population
   with options `:particles` (1000), `:memory` M (100), `:scale` (2.38, the
   random walk in population standard deviations), `:seed`.
 
@@ -137,18 +139,21 @@
   (when-not (pos-int? memory)
     (throw (ex-info ":memory is a positive count" {:type ::invalid-memory :memory memory})))
   (let [seed (or seed (random/fresh-seed))
-        batches (vec batches)
+        ;; consumed one batch at a time, never holding the sequence's head:
+        ;; a stream of batches runs in bounded memory
+        remaining (atom (seq batches))
         stats (atom {:moves 0 :accepted 0})
         sizes (atom [])
         qs0 (mapv (fn [i] (random/with-stream* seed [::init i] #(vec (prior-sample)))) (range particles))
         path {:start {:t 0 :coreset []}
-              :done? #(= (:t %) (count batches))
+              :done? (fn [_] (nil? @remaining))
               :advance (fn [qs lw {:keys [t coreset]}]
                          ;; lw: the population's normalized log weights
                          (let [coreset (if (> (count coreset) memory)
                                          (recompress qs lw coreset log-lik memory)
                                          coreset)
-                               batch (nth batches t)
+                               batch (first @remaining)
+                               _ (swap! remaining next)
                                expanded (into coreset (map (fn [x] [1.0 x])) batch)]
                            (swap! sizes conj (count expanded))
                            {:pos {:t (inc t) :coreset expanded}
@@ -161,7 +166,8 @@
                                (+ lp (reduce + 0.0 (map (fn [[w u]] (* w (log-lik q u))) coreset)))))))
               :exhausted (fn [pos] (ex-info "SCMC ran out of steps" {:type ::exhausted :t (:t pos)}))}
         {:keys [qs log-z positions]} (pop/theta-smc qs0 path {:n particles :scale scale :seed seed
-                                                              :max-steps (inc (count batches))
+                                                              :max-steps #?(:clj Long/MAX_VALUE :cljs js/Number.MAX_SAFE_INTEGER)
+                                                              :positions? false
                                                               :stats stats
                                                               :keys {:resample ::resample :move ::move}})
         final (:coreset (peek positions))

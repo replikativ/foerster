@@ -143,9 +143,10 @@
   `opts`: `:n` particles, `:waste-free` P (resample n/P and keep every state
   of their P-step chains), `:scale` of the population random walk,
   `:max-steps`, `:seed`, `:stats` (an atom counting `:moves` and
-  `:accepted`), and `:keys` {:resample k :move k}, the stream keys of step
-  k's resampling ([k-resample k]) and chain i's moves ([k-move k i])."
-  [qs path {:keys [n waste-free scale max-steps seed stats keys]}]
+  `:accepted`), `:keys` {:resample k :move k}, the stream keys of step
+  k's resampling ([k-resample k]) and chain i's moves ([k-move k i]), and
+  `:positions?` (true): false keeps only the last position in `:positions`."
+  [qs path {:keys [n waste-free scale max-steps seed stats keys positions?] :or {positions? true}}]
   (let [steps-per-chain (if waste-free (dec waste-free) 1)
         chains (if waste-free (quot n waste-free) n)
         dim (count (first qs))
@@ -178,4 +179,4 @@
               qs' (vec (mapcat (fn [start states] (if waste-free (into [start] states) states))
                                starts moved))]
           (recur qs' (vec (repeat (count qs') (- (Math/log (count qs'))))) pos' log-z'
-                 (conj positions pos') (inc k)))))))
+                 (if positions? (conj positions pos') [pos']) (inc k)))))))
