@@ -124,6 +124,12 @@
   (fn [resolve reject]
     (try
       (let [q0 (get-in trace [:trace/entries address :value])
+            _ (let [c0 (coarse q0)]
+                ;; outside the coarse support the subchain cannot leave and
+                ;; the correction is infinite: the chain would freeze
+                (when-not (and (number? c0) (< ##-Inf c0 ##Inf))
+                  (throw (ex-info "The coarse density must be positive wherever the program's posterior is: it is not finite at the chain's state"
+                                  {:type ::coarse-support :address address :coarse c0}))))
             {:keys [q accepted]} (random/in-world-stream (:trace/world trace) [::da-walk address key]
                                                          #(walk coarse q0 scales steps))]
         (if (zero? accepted)

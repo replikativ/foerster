@@ -122,3 +122,11 @@
         y2 (/ (reduce + (map #(* % %) ys)) (count ys))]
     (is (< (Math/abs (- p 0.5)) 0.02) (str "P(x0 > 0) " p))
     (is (< (Math/abs (- y2 1.0)) 0.05) (str "E[y0²] " y2))))
+
+(deftest a-coarse-density-without-the-posterior-s-support-is-refused
+  ;; a half-line surrogate at a state outside it would freeze the chain
+  (let [half-line (fn [[a]] (if (pos? a) 0.0 ##-Inf))
+        error (try (run half-line) nil (catch Exception e e))]
+    (is (some #(= :org.replikativ.foerster.block-mh/coarse-support (:type (ex-data %)))
+              (take-while some? (iterate ex-cause error)))
+        (str error))))
