@@ -298,22 +298,24 @@
      :sample-log-density (fn [th _] (let [z (whiten (vec th))]
                                       (- (* -0.5 (reduce + (map sq z))) (* 0.5 log-det) (* n half-log-2pi))))}))
 
-(defn- make-block [posterior extra]
+(defn- make-block [posterior log-density extra]
   (block/block {:block/id (keyword posterior)
                 :block/latents [{:name :theta :shape [(dimensions posterior)]}]
                 :block/target :complete-conditional}
-               (merge (block/with-numeric-gradient {:log-density (:log-density (models posterior))}) extra)))
+               (merge (block/with-numeric-gradient {:log-density log-density}) extra)))
 
 (defn- setup
-  "The block of `posterior` at its data, with a Laplace reference."
-  [posterior]
-  (let [{:keys [prepare]} (models posterior)
+  "The block of `posterior` at its data, with a Laplace reference. The
+  samplers target `log-density` (default the posterior's); the reference
+  always comes from the posterior's own."
+  [posterior log-density]
+  (let [{:keys [prepare] own :log-density} (models posterior)
         inputs (prepare (posterior-data posterior))
         init (vec (repeat (dimensions posterior) 0.0))
-        approx (optimize/laplace (block/block-dist (make-block posterior nil) inputs) {:init init})
+        approx (optimize/laplace (block/block-dist (make-block posterior own nil) inputs) {:init init})
         reference (gaussian-reference (vec (:theta approx))
                                       (mapv (fn [row] (mapv #(* reference-inflation %) row)) (:covariance approx)))]
-    {:block (make-block posterior reference) :inputs inputs :mode (vec (:theta approx))}))
+    {:block (make-block posterior (or log-density own) reference) :inputs inputs :mode (vec (:theta approx))}))
 
 ;; --- methods ----------------------------------------------------------------
 
@@ -340,9 +342,9 @@
                           :pass? (and (< (Math/abs z) mean-tolerance) (< (Math/abs (- ratio 1.0)) sd-tolerance))}
                    (:ess-bulk s) (assoc :ess-bulk (:ess-bulk s) :rhat (:rhat s)))])))
 
-(defn- run-posterior [posterior]
+(defn- run-posterior [posterior log-density]
   (let [reference (reference-stats posterior)
-        s (setup posterior)]
+        s (setup posterior log-density)]
     (vec (for [method (keys method-options)
                :let [{:keys [measure seconds error]}
                      (try (run-method posterior s method)
@@ -392,7 +394,7 @@
   "Run `posteriors` (default all) and return the result rows."
   ([] (run (sort (keys models))))
   ([posteriors]
-   (vec (mapcat (fn [p] (println "running" p) (flush) (run-posterior p)) posteriors))))
+   (vec (mapcat (fn [p] (println "running" p) (flush) (run-posterior p nil)) posteriors))))
 
 (defn record!
   "Run `posteriors` (default all), write the results and print them next to
@@ -400,8 +402,9 @@
   [posteriors]
   (let [previous (previous-results)
         rows (run (or (seq posteriors) (sort (keys models))))
-        stamp (.format (java.text.SimpleDateFormat. "yyyy-MM-dd-HHmm") (java.util.Date.))
-        out (io/file results-dir (str stamp "-" (git-sha) ".edn"))]
+        stamp (.format (java.text.SimpleDateFormat. "yyyy-MM-dd-HHmmss") (java.util.Date.))
+        out (first (remove #(.exists %) (map #(io/file results-dir (str stamp "-" (git-sha) (when (pos? %) (str "-" %)) ".edn"))
+                                             (range))))]
     (io/make-parents out)
     (spit out (with-out-str (pp/pprint {:commit (git-sha) :posteriordb commit :date stamp
                                         :tolerances {:mean mean-tolerance :sd sd-tolerance}
@@ -416,9 +419,8 @@
   Every method must fail; true when they all do."
   []
   (let [p "eight_schools-eight_schools_noncentered"
-        broken (update (models p) :log-density
-                       (fn [f] (fn [^doubles th inputs] (- (double (f th inputs)) (aget th 9)))))
-        rows (with-redefs [models (assoc models p broken)] (run [p]))]
+        own (:log-density (models p))
+        rows (run-posterior p (fn [^doubles th inputs] (- (double (own th inputs)) (aget th 9))))]
     (report rows nil)
     (not-any? :pass? rows)))
 
