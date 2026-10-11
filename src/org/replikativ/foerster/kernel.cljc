@@ -134,7 +134,9 @@
   poor coarse density lowers acceptance. Other latents get single-site
   random-walk moves (`:step-size`). Output options as for every chain kernel."
   [num-iterations coarse & [{:keys [scales steps step-size] :or {scales 0.1 step-size 0.1} :as opts}]]
-  {:pre [(pos-int? num-iterations) (map? coarse) (seq coarse) (every? fn? (vals coarse))]}
+  {:pre [(pos-int? num-iterations) (map? coarse) (seq coarse) (every? fn? (vals coarse))
+         (or (nil? steps) (pos-int? steps)) (pos? step-size)
+         (if (number? scales) (pos? scales) (and (seq scales) (every? pos? scales)))]}
   (chain-output (->DelayedAcceptanceKernel num-iterations coarse scales steps step-size) opts))
 
 ;; =============================================================================

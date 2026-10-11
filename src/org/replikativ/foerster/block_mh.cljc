@@ -162,7 +162,13 @@
         (let [named (filterv #(contains? coarse %) (itrace/latent-addresses trace))]
           (letfn [(others [t] (vec (remove #(contains? coarse %) (itrace/latent-addresses t))))
                   (go [t [address & more] moves accepted screened]
-                      (if address
+                      (cond
+                        ;; an earlier accepted move may have taken this site
+                        ;; out of the program's path
+                        (and address (not (some #{address} (itrace/latent-addresses t))))
+                        (go t more moves accepted screened)
+
+                        address
                         (let [dim (count (get-in t [:trace/entries address :value]))
                               sc (if (number? scales) (vec (repeat dim scales)) (vec scales))]
                           ((da-move t address {:coarse (get coarse address) :scales sc
@@ -171,6 +177,8 @@
                              (go t' more (inc moves) (if a? (inc accepted) accepted)
                                  (if s? (inc screened) screened)))
                            reject))
+
+                        :else
                         (let [done (fn [t moves accepted]
                                      (resolve {:trace t :accepted? (pos? accepted) :moves moves
                                                :accepted-moves accepted :screened screened}))]

@@ -68,3 +68,33 @@
       (is (< (Math/abs (- (:mean a) (:a exact))) (* 0.2 (:a-sd exact))) (str a " vs " exact))
       (is (< (Math/abs (- (:mean bs) (:b exact))) (* 0.2 (:b-sd exact))) (str bs " vs " exact))
       (is (< (Math/abs (- (:sd a) (:a-sd exact))) (* 0.15 (:a-sd exact))) "the program's spread, not the coarse one"))))
+
+(def ^:private pair-block
+  (block/block {:block/id :pair :block/target :complete-conditional
+                :block/latents [{:name :u :shape []} {:name :v :shape []}]}
+               {:log-density (fn [th _] (let [[u v] (vec th)] (* -0.5 (+ (* u u) (* v v)))))
+                :value+grad (fn [th _] (let [[u v] (vec th)]
+                                         [(* -0.5 (+ (* u u) (* v v))) (double-array [(- u) (- v)])]))
+                ;; a replay that brings :y back draws it afresh
+                :sample (fn [_] [(dist/draw (dist/normal 0.0 1.0)) (dist/draw (dist/normal 0.0 1.0))])
+                :sample-log-density (fn [th _] (let [[u v] (vec th)] (* -0.5 (+ (* u u) (* v v)))))}))
+
+(deftest a-block-a-move-removed-is-skipped
+  ;; :y exists only while x's first coordinate is positive: a move of :x
+  ;; that makes it negative takes :y out of the path
+  (let [coarse (fn [th] (let [[u v] th] (* -0.5 (+ (* u u) (* v v)))))
+        model #(spin (let [[x0] (sample (block/block-dist pair-block nil) :id :x :init [0.5 0.0])]
+                       (when (pos? x0)
+                         (sample (block/block-dist pair-block nil) :id :y :init [0.0 0.0]))
+                       x0))
+        measure (b/run-infer 5 #(infer/kernel-infer (model)
+                                                    (k/delayed-acceptance-kernel 200 {:x coarse :y coarse}
+                                                                                 {:scales 1.0 :samples :all})
+                                                    2))]
+    (is (some neg? (map (comp org.replikativ.foerster.measure/get-value first)
+                        (org.replikativ.foerster.measure/get-particles measure)))
+        "x crossed zero, so :y came and went")))
+
+(deftest invalid-step-counts-are-refused
+  (is (thrown? AssertionError (k/delayed-acceptance-kernel 10 {:theta identity} {:steps -1})))
+  (is (thrown? AssertionError (k/delayed-acceptance-kernel 10 {:theta identity} {:steps 0.5}))))
