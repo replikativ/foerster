@@ -1,4 +1,4 @@
-(ns org.replikativ.foerster.enumerate
+(ns org.replikativ.foerster.pgibbs-exactness
   "Exactness of particle Gibbs with resample-move, by enumeration.
 
   Not part of the test suite (it takes about 20 minutes): `clojure -M:test:enumerate`.
