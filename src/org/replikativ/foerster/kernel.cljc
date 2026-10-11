@@ -241,7 +241,7 @@
   (chain-output (->BlockGibbsKernel num-iterations block-selector block-kernels address-classifier)
                 opts))
 
-(defrecord NUTSKernel [num-iterations target-accept max-depth]
+(defrecord NUTSKernel [num-iterations target-accept max-depth metric]
   PInferenceKernel
   (kernel-id [_] :nuts))
 
@@ -249,11 +249,13 @@
   "The No-U-Turn sampler on block sites (`foerster.nuts`), within Gibbs: the
   first `:burn` iterations adapt the step size (to `:target-accept`, default
   0.8) and a diagonal metric, and are dropped; `:max-depth` (10) bounds a
-  trajectory at 2^depth leapfrog steps. A block's target must be its
+  trajectory at 2^depth leapfrog steps; `:metric` estimates the metric from
+  the warm-up positions' variance (`:variance`, Stan's) or from positions
+  and gradients (`:fisher`, nutpie's). A block's target must be its
   complete conditional. Output options as for every chain kernel."
-  [num-iterations & [{:keys [target-accept max-depth] :or {target-accept 0.8 max-depth 10} :as opts}]]
-  {:pre [(pos-int? num-iterations)]}
-  (chain-output (->NUTSKernel num-iterations target-accept max-depth) (select-keys opts [:samples :burn])))
+  [num-iterations & [{:keys [target-accept max-depth metric] :or {target-accept 0.8 max-depth 10 metric :variance} :as opts}]]
+  {:pre [(pos-int? num-iterations) (#{:variance :fisher} metric)]}
+  (chain-output (->NUTSKernel num-iterations target-accept max-depth metric) (select-keys opts [:samples :burn])))
 
 ;; =============================================================================
 ;; Composing Markov-chain kernels

@@ -8,6 +8,7 @@
             [org.replikativ.foerster.diagnostics :as d]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
+            [org.replikativ.foerster.kernel :as k]
             [org.replikativ.foerster.nuts :as nuts]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
@@ -30,6 +31,24 @@
       (let [cs (d/chains measure #(nth % j))]
         (is (< (d/rhat cs) 1.01) (str j))
         (is (< (Math/abs (- 1.0 (/ (:sd (d/summary measure #(nth % j))) (nth scales j)))) 0.1) (str j))))))
+
+(deftest the-fisher-metric-is-exact-for-a-gaussian
+  ;; with g = −q/s², √(Var q / Var g) = s² for any sample
+  (let [rng (java.util.Random. 5)
+        qs (vec (repeatedly 30 (fn [] (mapv #(* % (.nextGaussian rng)) scales))))
+        gs (mapv (fn [q] (mapv (fn [x s] (- (/ x (* s s)))) q scales)) qs)]
+    (is (every? true? (map #(< (Math/abs (- 1.0 (/ %1 (* %2 %2)))) 1e-9)
+                           (@#'nuts/fisher-variance qs gs) scales)))))
+
+(deftest nuts-adapts-a-fisher-metric
+  (let [measure (b/run-infer 122 #(infer/infer (spin (sample (block/block-dist scaled-gaussian nil) :id :x
+                                                             :init (vec (repeat 10 0.5))))
+                                               {:method :nuts :iterations 1000 :chains 4 :burn 500 :metric :fisher}))]
+    (doseq [j (range 10)]
+      (let [cs (d/chains measure #(nth % j))]
+        (is (< (d/rhat cs) 1.01) (str j))
+        (is (< (Math/abs (- 1.0 (/ (:sd (d/summary measure #(nth % j))) (nth scales j)))) 0.1) (str j)))))
+  (is (thrown? AssertionError (k/nuts-kernel 100 {:metric :dense}))))
 
 (def ^:private ys [2.1 3.4 1.7 2.9 2.5 3.8 2.2 3.1])
 

@@ -126,8 +126,8 @@
 (defn transition
   "One NUTS transition of `dist` (a block distribution) from position `q0`
   with step size `eps` and diagonal inverse metric `inv-metric`, drawing from
-  the current generator. Returns {:q :accept-stat :depth :n-leapfrog
-  :divergent?}."
+  the current generator. Returns {:q :g (∇ log density at q) :accept-stat
+  :depth :n-leapfrog :divergent?}."
   [dist q0 eps inv-metric max-depth]
   (let [inv-metric (double-array inv-metric)
         q0 (double-array q0)
@@ -139,13 +139,13 @@
         h0 (hamiltonian z0)]
     (loop [depth 0 fwd z0 bck z0 sample z0 log-w 0.0 rho (:p z0) n 0 metro 0.0 divergent? false]
       (if (>= depth max-depth)
-        {:q (vec (:q sample)) :accept-stat (/ metro (max 1 n)) :depth depth :n-leapfrog n :divergent? divergent?}
+        {:q (vec (:q sample)) :g (vec (:g sample)) :accept-stat (/ metro (max 1 n)) :depth depth :n-leapfrog n :divergent? divergent?}
         (let [forward? (> (random/uniform01) 0.5)
               from (if forward? fwd bck)
               sub (build-tree dist inv-metric eps (if forward? 1 -1) depth from h0)
               n (+ n (:n sub)) metro (+ metro (:metro sub))]
           (if-not (:valid? sub)
-            {:q (vec (:q sample)) :accept-stat (/ metro (max 1 n)) :depth (inc depth) :n-leapfrog n
+            {:q (vec (:q sample)) :g (vec (:g sample)) :accept-stat (/ metro (max 1 n)) :depth (inc depth) :n-leapfrog n
              :divergent? (boolean (:divergent? sub))}
             (let [sample (if (or (> (:log-w sub) log-w)
                                  (< (random/uniform01) (Math/exp (- (:log-w sub) log-w))))
@@ -166,7 +166,7 @@
                                        (criterion (:p-sharp bck-end) (:p-sharp from) (v+ new-rho (:p from))))))]
               (if persist?
                 (recur (inc depth) fwd bck sample log-w rho' n metro divergent?)
-                {:q (vec (:q sample)) :accept-stat (/ metro (max 1 n)) :depth (inc depth) :n-leapfrog n
+                {:q (vec (:q sample)) :g (vec (:g sample)) :accept-stat (/ metro (max 1 n)) :depth (inc depth) :n-leapfrog n
                  :divergent? divergent?}))))))))
 
 ;; =============================================================================
@@ -213,20 +213,43 @@
                     (+ (* (/ n (+ n 5.0)) v) (* 1e-3 (/ 5.0 (+ n 5.0))))))
           (range d))))
 
+(defn- variance [xs j]
+  (let [n (count xs) mean (/ (reduce + (map #(nth % j) xs)) n)]
+    (/ (reduce + (map #(let [e (- (nth % j) mean)] (* e e)) xs)) (dec n))))
+
+(defn- fisher-variance
+  "The diagonal inverse metric minimizing the Fisher divergence between the
+  target and its Gaussian approximation, from positions `qs` and the log
+  density's gradients `gs` there: √(Var q_j / Var g_j) per coordinate
+  (Seyboldt, Carlson & Carpenter 2024, nutpie). Exact with a Gaussian
+  target's draws; a coordinate whose gradient does not vary keeps its
+  position variance."
+  [qs gs]
+  (mapv (fn [j]
+          (let [vq (variance qs j) vg (variance gs j)]
+            (min 1e10 (max 1e-10 (if (pos? vg) (Math/sqrt (/ vq vg)) vq)))))
+        (range (count (first qs)))))
+
 (defn- adapt
   "The adaptation state after warm-up iteration `i`, which ended at position
-  `q` with accept statistic `stat`: the step size by dual averaging; within a
-  window the positions are collected, and at its end they give the metric
-  and the step size restarts."
-  [{:keys [da windows draws] :as st} i q stat target]
+  `q` with gradient `g` and accept statistic `stat`: the step size by dual
+  averaging; within a window the positions (and gradients) are collected,
+  and at its end they give the metric — their regularized variance, or the
+  Fisher estimate with `metric` :fisher — and the step size restarts."
+  [{:keys [da windows draws metric] :as st} i q g stat target]
   (let [[da eps] (da-update da stat target)
         st (assoc st :da da :eps eps)
-        window (first (filter (fn [[a b]] (and (<= a i) (< i b))) windows))]
+        window (first (filter (fn [[a b]] (and (<= a i) (< i b))) windows))
+        draws' (conj draws [q g])]
     (cond
       (nil? window) st
       (= (inc i) (second window))
-      (assoc st :inv-metric (regularized-variance (conj draws q)) :draws [] :da (da-init eps))
-      :else (assoc st :draws (conj draws q)))))
+      (assoc st
+             :inv-metric (if (= metric :fisher)
+                           (fisher-variance (mapv first draws') (mapv second draws'))
+                           (regularized-variance (mapv first draws')))
+             :draws [] :da (da-init eps))
+      :else (assoc st :draws draws'))))
 
 ;; =============================================================================
 ;; Within Gibbs
@@ -238,19 +261,19 @@
 (defn- nuts-move
   "Move the block site at `address` by one NUTS transition and replay; the
   chain's adaptation state is in the atom `adaptation`."
-  [trace address iteration {:keys [burn target-accept max-depth constraints]} adaptation]
+  [trace address iteration {:keys [burn target-accept max-depth metric constraints]} adaptation]
   (fn [resolve reject]
     (try
       (let [{q0 :value {dist :dist} :note} (get-in trace [:trace/entries address])
             dim (count q0)
             st (or (get @adaptation address)
                    {:eps 0.1 :da (da-init 0.1) :inv-metric (vec (repeat dim 1.0))
-                    :windows (windows burn) :draws []})
-            {:keys [q accept-stat divergent?] :as tr}
+                    :windows (windows burn) :draws [] :metric metric})
+            {:keys [q g accept-stat divergent?] :as tr}
             (random/in-world-stream (:trace/world trace) [::transition address iteration]
                                     #(transition dist q0 (:eps st) (:inv-metric st) max-depth))
             st' (if (< iteration burn)
-                  (cond-> (adapt st iteration q accept-stat target-accept)
+                  (cond-> (adapt st iteration q g accept-stat target-accept)
                     ;; warm-up over: the averaged step size
                     (= (inc iteration) burn) (as-> s (assoc s :eps (Math/exp (:x-bar (:da s))))))
                   st)]
@@ -280,13 +303,15 @@
   "A step for `foerster.trace/mh-chain` (`:step`): a NUTS move of every block
   site, then one single-site MH move of a latent that is not a block site, if
   there is one. A fresh adaptation state per call (per chain). `opts`:
-  `:burn`, `:target-accept` (0.8), `:max-depth` (10)."
-  [{:keys [burn target-accept max-depth] :or {burn 0 target-accept 0.8 max-depth 10}}]
+  `:burn`, `:target-accept` (0.8), `:max-depth` (10), `:metric` (`:variance`,
+  Stan's estimate from the positions, or `:fisher`, from positions and
+  gradients)."
+  [{:keys [burn target-accept max-depth metric] :or {burn 0 target-accept 0.8 max-depth 10 metric :variance}}]
   (let [adaptation (atom {})
         divergences (atom 0)]
     (fn [trace {:keys [iteration] :as chain-opts}]
       (fn [resolve reject]
-        (let [opts (assoc chain-opts :burn burn :target-accept target-accept :max-depth max-depth)
+        (let [opts (assoc chain-opts :burn burn :target-accept target-accept :max-depth max-depth :metric metric)
               blocks (filterv #(block-site? trace %) (itrace/latent-addresses trace))]
           (letfn [(others [t] (vec (remove #(block-site? t %) (itrace/latent-addresses t))))
                   (go [t [address & more] moves]
