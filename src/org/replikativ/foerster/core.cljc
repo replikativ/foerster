@@ -156,6 +156,9 @@
     :random-walk-mh {:iterations (:num-iterations kernel)
                      :step (block-mh/within-gibbs {:step-size (:step-size kernel)
                                                    :burn (:burn kernel 0)})}
+    :delayed-acceptance {:iterations (:num-iterations kernel)
+                         :step (block-mh/delayed-acceptance
+                                (select-keys kernel [:coarse :scales :steps :step-size]))}
     :block-gibbs (assoc (block-gibbs-options kernel)
                         :iterations (:num-iterations kernel))
     :hmc {:iterations (:num-iterations kernel)

@@ -98,6 +98,93 @@
       (catch #?(:clj Throwable :cljs :default) e (reject e)))))
 
 ;; -----------------------------------------------------------------------------
+;; Delayed acceptance: a coarse density screens, the program decides
+;; -----------------------------------------------------------------------------
+
+(defn da-move
+  "One two-stage delayed-acceptance move of the block site at `address`
+  (Christen & Fox 2005; Lykkegaard et al. 2023, Lemma 2.4): `steps` random-walk
+  steps of `scales` against the COARSE log density `coarse` of θ, then one
+  replay of the program from the site with the subchain's end state, accepted
+  on the program's own MH ratio less the coarse density's change:
+
+    log α = [log π(x') − log π(x)] − [coarse(θ') − coarse(θ)]
+
+  π is the program's joint (`foerster.trace/mh-log-ratio`, which also scores
+  any site the replay reaches afresh). The subchain is reversible for the
+  coarse density, so the move leaves the PROGRAM's posterior invariant
+  whatever `coarse` is: a poor coarse density costs acceptance, not
+  exactness. The coarse density never enters a trace. Resolves
+  {:trace :accepted? :screened}: `:screened` true when the subchain did not
+  move and the program was not run."
+  [trace address {:keys [coarse scales steps key]}]
+  (fn [resolve reject]
+    (try
+      (let [q0 (get-in trace [:trace/entries address :value])
+            {:keys [q accepted]} (random/in-world-stream (:trace/world trace) [::da-walk address key]
+                                                         #(walk coarse q0 scales steps))]
+        (if (zero? accepted)
+          (resolve {:trace trace :accepted? false :screened true})
+          (let [move (itrace/policy {:keep? true
+                                     :draw (fn [sp _] (when (= address (:savepoint/address sp))
+                                                        {:value q :symmetric? true}))})]
+            ((trace/replay trace address move {:anchor? itrace/anchor?})
+             (fn [proposed]
+               (try
+                 (let [ratio (if (:trace/error proposed)
+                               ##-Inf
+                               (- (itrace/mh-log-ratio trace proposed (constantly 0.0) address)
+                                  (- (coarse q) (coarse q0))))
+                       accept? (and (== ratio ratio)
+                                    (or (>= ratio 0.0)
+                                        (random/in-world-stream (:trace/world proposed) [::da-accept address key]
+                                                                #(random/accept-log? ratio))))]
+                   (if accept?
+                     (trace/release! trace proposed)
+                     (trace/release! proposed trace))
+                   (resolve {:trace (if accept? proposed trace) :accepted? accept? :screened false}))
+                 (catch #?(:clj Throwable :cljs :default) e (reject e))))
+             reject))))
+      (catch #?(:clj Throwable :cljs :default) e (reject e)))))
+
+(defn delayed-acceptance
+  "A step for `foerster.trace/mh-chain` (`:step`): a delayed-acceptance move
+  (`da-move`) of every block site that `coarse` ({address (fn [θ] log
+  density)}) names, then one single-site random-walk MH move of another
+  latent, if there is one. `opts`: `:scales` (per coordinate, or one number
+  for all), `:steps` (coarse steps per move; default the dimension),
+  `:step-size` for the single-site moves. Scales are fixed: an adapted
+  subchain would break the move's reversibility."
+  [{:keys [coarse scales steps step-size] :or {step-size 0.1}}]
+  (let [propose (itrace/random-walk-proposal step-size)]
+    (fn [trace {:keys [iteration] :as chain-opts}]
+      (fn [resolve reject]
+        (let [named (filterv #(contains? coarse %) (itrace/latent-addresses trace))]
+          (letfn [(others [t] (vec (remove #(contains? coarse %) (itrace/latent-addresses t))))
+                  (go [t [address & more] moves accepted screened]
+                      (if address
+                        (let [dim (count (get-in t [:trace/entries address :value]))
+                              sc (if (number? scales) (vec (repeat dim scales)) (vec scales))]
+                          ((da-move t address {:coarse (get coarse address) :scales sc
+                                               :steps (or steps dim) :key [iteration]})
+                           (fn [{t' :trace a? :accepted? s? :screened}]
+                             (go t' more (inc moves) (if a? (inc accepted) accepted)
+                                 (if s? (inc screened) screened)))
+                           reject))
+                        (let [done (fn [t moves accepted]
+                                     (resolve {:trace t :accepted? (pos? accepted) :moves moves
+                                               :accepted-moves accepted :screened screened}))]
+                          (if (seq (others t))
+                            ((itrace/mh-step t (assoc chain-opts :propose propose
+                                                      :select (fn [t' _]
+                                                                {:targets #{(m/pick-uniformly (others t'))}
+                                                                 :log-selection #(- (Math/log (double (count (others %)))))})))
+                             (fn [r] (done (:trace r) (inc moves) (+ accepted (if (:accepted? r) 1 0))))
+                             reject)
+                            (done t moves accepted)))))]
+            (go trace named 0 0 0)))))))
+
+;; -----------------------------------------------------------------------------
 ;; Adaptation: diagonal adaptive Metropolis during burn-in
 ;; -----------------------------------------------------------------------------
 
