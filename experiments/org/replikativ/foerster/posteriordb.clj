@@ -416,13 +416,14 @@
 (defn control!
   "The negative control: eight schools with τ's log-Jacobian dropped, a
   classic transform bug that leaves the posterior improper towards τ = 0.
-  Every method must fail; true when they all do."
+  Every method must run and fail the comparison; true when they all do."
   []
   (let [p "eight_schools-eight_schools_noncentered"
         own (:log-density (models p))
         rows (run-posterior p (fn [^doubles th inputs] (- (double (own th inputs)) (aget th 9))))]
     (report rows nil)
-    (not-any? :pass? rows)))
+    ;; detected by the comparison, not by a run that failed for another reason
+    (every? #(and (not (:error %)) (not (:pass? %))) rows)))
 
 (defn -main [& posteriors]
   (let [ok? (if (= ["control"] posteriors) (control!) (record! posteriors))]
