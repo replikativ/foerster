@@ -117,6 +117,31 @@
   (chain-output (->RandomWalkMHKernel num-iterations step-size) opts))
 
 ;; =============================================================================
+;; DelayedAcceptanceKernel
+;; =============================================================================
+
+(defrecord DelayedAcceptanceKernel [num-iterations coarse scales steps step-size]
+  PInferenceKernel
+  (kernel-id [_] :delayed-acceptance))
+
+(defn delayed-acceptance-kernel
+  "Two-stage delayed acceptance on block sites (`foerster.block-mh/da-move`):
+  `coarse` {address (fn [θ] log density)} is a cheap approximation of the
+  posterior of each named block (a surrogate, a coarser model, a Laplace
+  fit). Each iteration walks `:steps` random-walk steps of `:scales` on it,
+  then runs the program once and accepts on the program's ratio corrected by
+  the coarse one, so the chain targets the program's exact posterior; a
+  poor coarse density lowers acceptance. It must be positive wherever the
+  posterior is: a chain at a state of zero coarse density is refused
+  (`foerster.block-mh/coarse-support`). Other latents get single-site
+  random-walk moves (`:step-size`). Output options as for every chain kernel."
+  [num-iterations coarse & [{:keys [scales steps step-size] :or {scales 0.1 step-size 0.1} :as opts}]]
+  {:pre [(pos-int? num-iterations) (map? coarse) (seq coarse) (every? fn? (vals coarse))
+         (or (nil? steps) (pos-int? steps)) (pos? step-size)
+         (if (number? scales) (pos? scales) (and (seq scales) (every? pos? scales)))]}
+  (chain-output (->DelayedAcceptanceKernel num-iterations coarse scales steps step-size) opts))
+
+;; =============================================================================
 ;; HMCKernel
 ;; =============================================================================
 
@@ -235,7 +260,7 @@
 ;; =============================================================================
 
 (def ^:private chain-kernel-ids
-  #{:single-site-mh :random-walk-mh :block-gibbs :hmc :nuts :cycle :mixture})
+  #{:single-site-mh :random-walk-mh :delayed-acceptance :block-gibbs :hmc :nuts :cycle :mixture})
 
 (defn- check-chain-kernels! [kernels]
   (when-let [bad (seq (remove #(and (satisfies? PInferenceKernel %) (chain-kernel-ids (kernel-id %))) kernels))]
