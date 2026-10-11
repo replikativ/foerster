@@ -270,7 +270,7 @@
   gives a draw from the best Gaussian, mapped back to the latents. A k̂
   above 0.7 says the Gaussians miss part of the target: use them to start a
   sampler, not as the posterior. Throws `::no-approximation` when no path
-  yields a Gaussian."
+  yields a Gaussian or none of its draws has positive target density."
   [d & [{:keys [init paths draws elbo-draws history]
          :or {paths 4 draws 1000 elbo-draws 30 history 6}
          :as opts}]]
@@ -290,6 +290,9 @@
       (throw (ex-info "Pathfinder found no Gaussian approximation" {:type ::no-approximation})))
     (let [proposals (vec (for [q qs _ (range per-path)]
                            (let [[x lq] ((:draw q))] [x (- (log-target d x) lq)])))
+          _ (when (every? #(= ##-Inf (second %)) proposals)
+              (throw (ex-info "Pathfinder's draws all have zero target density"
+                              {:type ::no-approximation :proposals (count proposals)})))
           ;; one proposal has nothing to smooth
           [lw k] (if (= 1 (count proposals)) [[0.0] ##NaN] (diagnostics/psis (mapv second proposals) 1.0))
           picks (m/systematic-resample (mapv #(Math/exp %) lw) draws)

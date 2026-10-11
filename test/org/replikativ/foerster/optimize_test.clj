@@ -99,3 +99,12 @@
     (is (= 1 (count (:draws (opt/pathfinder (block/block-dist gaussian nil) {:paths 1 :draws 1}))))))
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #":draws"
                         (opt/pathfinder (block/block-dist gaussian nil) {:draws 0}))))
+
+(deftest pathfinder-refuses-draws-of-zero-density
+  ;; the L-BFGS path sees the Gaussian, but every draw scores −∞ (a target
+  ;; with hard exclusions the Gaussians miss)
+  (random/set-seed! 6)
+  (with-redefs [opt/log-target (constantly ##-Inf)]
+    (doseq [opts [{:paths 1 :draws 1} {:paths 2 :draws 10}]]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"zero target density"
+                            (opt/pathfinder (block/block-dist gaussian nil) opts))))))
