@@ -92,3 +92,10 @@
         gaussian (mean-of (map :s (repeatedly 4000 draw)))]
     (is (close? 1.5 resampled 0.05))
     (is (> gaussian 1.65))))
+
+(deftest pathfinder-options
+  (random/set-seed! 5)
+  (testing "one path, one draw"
+    (is (= 1 (count (:draws (opt/pathfinder (block/block-dist gaussian nil) {:paths 1 :draws 1}))))))
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo #":draws"
+                        (opt/pathfinder (block/block-dist gaussian nil) {:draws 0}))))

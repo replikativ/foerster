@@ -274,6 +274,9 @@
   [d & [{:keys [init paths draws elbo-draws history]
          :or {paths 4 draws 1000 elbo-draws 30 history 6}
          :as opts}]]
+  (doseq [[k v] {:paths paths :draws draws :elbo-draws elbo-draws :history history}]
+    (when-not (pos-int? v)
+      (throw (ex-info (str k " is a positive count") {:type ::invalid-option k v}))))
   (let [b (:block d)
         n (or (some-> init count) (:dimension b))
         base (or init (vec (repeat n 0.0)))
@@ -287,7 +290,8 @@
       (throw (ex-info "Pathfinder found no Gaussian approximation" {:type ::no-approximation})))
     (let [proposals (vec (for [q qs _ (range per-path)]
                            (let [[x lq] ((:draw q))] [x (- (log-target d x) lq)])))
-          [lw k] (diagnostics/psis (mapv second proposals) 1.0)
+          ;; one proposal has nothing to smooth
+          [lw k] (if (= 1 (count proposals)) [[0.0] ##NaN] (diagnostics/psis (mapv second proposals) 1.0))
           picks (m/systematic-resample (mapv #(Math/exp %) lw) draws)
           best (apply max-key :elbo qs)]
       {:mean (:mean best)
