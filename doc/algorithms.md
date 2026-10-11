@@ -178,7 +178,7 @@ current particles are:
             :log-lik (fn [[a b] [x y]] …)       ; one datum
             :batches (partition 20 data)}
            {:particles 500 :memory 50})
-;; => {:particles [θ …] :log-z … :coreset [[w datum] …] :coreset-sizes […]}
+;; => {:particles [θ …] :log-z … :coreset [[w datum] …] :steps … :max-coreset-size …}
 ```
 
 The reweighting by each batch is exact, and only the moves use the

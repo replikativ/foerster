@@ -130,7 +130,8 @@
 
   Returns {:particles [θ …] (equally weighted) :log-z (the evidence estimate,
   its increments exact, its moves approximate) :coreset [[w datum] …] (at
-  most M) :coreset-sizes (per step, before recompression) :moves
+  most M) :steps :max-coreset-size (the largest core-set the moves used,
+  before recompression: at most M plus a batch) :moves
   :accepted}. Throws `::zero-evidence` when a batch has zero likelihood
   under every particle."
   [{:keys [prior-sample prior-log-density log-lik batches]}
@@ -144,7 +145,8 @@
         ;; a stream of batches runs in bounded memory
         remaining (atom (seq batches))
         stats (atom {:moves 0 :accepted 0})
-        sizes (atom [])
+        ;; [steps, the largest expanded core-set]: bounded, unlike a history
+        sizes (atom [0 0])
         qs0 (mapv (fn [i] (random/with-stream* seed [::init i] #(vec (prior-sample)))) (range particles))
         path {:start {:t 0 :coreset []}
               :done? (fn [_] (nil? @remaining))
@@ -156,7 +158,7 @@
                                batch (first @remaining)
                                _ (swap! remaining next)
                                expanded (into coreset (map (fn [x] [1.0 x])) batch)]
-                           (swap! sizes conj (count expanded))
+                           (swap! sizes (fn [[k top]] [(inc k) (max top (count expanded))]))
                            (let [incr (mapv (fn [q] (reduce + 0.0 (map #(log-lik q %) batch))) qs)]
                              (when (every? #(or (= ##-Inf %) (NaN? %)) incr)
                                (throw (ex-info "Every particle has zero likelihood for a batch: no posterior population"
@@ -179,6 +181,7 @@
     {:particles qs
      :log-z log-z
      :coreset (if (> (count final) memory) (recompress qs uniform final log-lik memory) final)
-     :coreset-sizes @sizes
+     :steps (first @sizes)
+     :max-coreset-size (second @sizes)
      :moves (:moves @stats)
      :accepted (:accepted @stats)}))

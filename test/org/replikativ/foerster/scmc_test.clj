@@ -87,7 +87,8 @@
     (is (< (Math/abs (- (:log-z r) log-z)) 0.5))
     (testing "the memory bound"
       (is (<= (count (:coreset r)) 50))
-      (is (<= (reduce max (:coreset-sizes r)) 70)))))
+      (is (<= (:max-coreset-size r) 70))
+      (is (= 100 (:steps r))))))
 
 (deftest with-memory-for-all-data-nothing-is-compressed
   (random/set-seed! 4)
