@@ -299,6 +299,30 @@ close to independent — thin a chain by its effective sample size, or use
 `infer/predict` on a particle measure. A few hundred simulations detect
 gross errors; subtle ones need more.
 
+SBC checks a sampler on models it simulates from. posteriordb
+([Magnusson et al. 2025](https://proceedings.mlr.press/v258/magnusson25a.html))
+checks it on real models and data, against reference posteriors computed
+with long Stan runs. `experiments/org/replikativ/foerster/posteriordb.clj`
+writes ten of its posteriors as foerster blocks: regressions, an AR(5)
+series, GARCH(1,1), a two-component mixture, a learning model, and eight
+schools. Each block uses unconstrained coordinates and numeric gradients.
+It runs NUTS, tempered SMC and parallel tempering on each one:
+
+```bash
+clojure -M:test:posteriordb                 # every posterior; exits 1 if one fails
+clojure -M:test:posteriordb sblrc-blr       # some of them
+clojure -M:test:posteriordb control         # negative control: eight schools with
+                                            # a dropped log-Jacobian, which must fail
+```
+
+A parameter passes when its posterior mean is within 0.2 reference standard
+deviations and its standard deviation within 20%. Tempered SMC and parallel
+tempering start from the block's Laplace approximation with its covariance
+inflated four times. The results go to `experiments/results/posteriordb/`
+and print next to the previous run's, with wall times and, for NUTS, bulk
+ESS per second. The data and reference draws come from posteriordb at a
+pinned commit, cached in `~/.cache/foerster/posteriordb`.
+
 ## Further reading
 
 - A. Gelman et al. *Bayesian Workflow.* 2020.

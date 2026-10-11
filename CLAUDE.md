@@ -31,6 +31,8 @@ src/org/replikativ/foerster/
   effects may be random without a sample site.
 - Records read from a forked world's state are copies (the overlay backend
   marks them with metadata): compare ids, never `identical?`.
-- JVM tests: `clojure -M:test`; SBC calibration: `clojure -M:test:sbc`.
+- JVM tests: `clojure -M:test`; SBC calibration: `clojure -M:test:sbc`;
+  posteriordb accuracy and speed: `clojure -M:test:posteriordb` (results in
+  `experiments/results/posteriordb/`, compare against the previous run).
   ClojureScript: `npx shadow-cljs release ci && node out/ci-tests.js`.
 - Formatting: `clojure -M:ffix` before committing (CI checks it).
