@@ -167,7 +167,8 @@
     :nuts {:iterations (:num-iterations kernel)
            :step (nuts/within-gibbs {:burn (:burn kernel 0)
                                      :target-accept (:target-accept kernel)
-                                     :max-depth (:max-depth kernel)})}
+                                     :max-depth (:max-depth kernel)
+                                     :metric (:metric kernel)})}
     nil))
 
 (defn- project-posterior-context
@@ -1182,8 +1183,8 @@
       :mh (kernel-infer model (k/single-site-mh-kernel iterations chain-output) (or chains 4) rest-opts)
       :rmh (kernel-infer model (k/random-walk-mh-kernel iterations (merge chain-output (when step-size {:step-size step-size})))
                          (or chains 4) rest-opts)
-      :nuts (kernel-infer model (k/nuts-kernel iterations (merge chain-output (select-keys rest-opts [:target-accept :max-depth])))
-                          (or chains 4) (dissoc rest-opts :target-accept :max-depth))
+      :nuts (kernel-infer model (k/nuts-kernel iterations (merge chain-output (select-keys rest-opts [:target-accept :max-depth :metric])))
+                          (or chains 4) (dissoc rest-opts :target-accept :max-depth :metric))
       :kernel (kernel-infer model kernel (or chains particles 4) rest-opts)
       :pmmh (on-savepoints (smc2/pmmh model particles iterations (cond-> rest-opts burn (assoc :burn burn)))))))
 
