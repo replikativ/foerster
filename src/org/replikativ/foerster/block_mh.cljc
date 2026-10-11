@@ -143,7 +143,7 @@
                            (cond-> {:anchor? (or anchor-pred itrace/anchor?)}
                              until (assoc :until until)
                              (sp/seed (:trace/world trace))
-                             (assoc :seed (sp/derive-seed (sp/seed (:trace/world trace)) ::da-move key))))
+                             (assoc :seed (sp/derive-seed (sp/seed (:trace/world trace)) ::da-move [address key]))))
              (fn [proposed]
                (try
                  (let [ratio (if (or (:trace/error proposed)
