@@ -10,6 +10,7 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.parallel-tempering :as pt]
             [org.replikativ.foerster.population :as pop]
+            [org.replikativ.foerster.tempering :as tempering]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn- lnorm [x mu s] (dist/logpdf (dist/normal mu s) x))
@@ -81,3 +82,33 @@
                  nil
                  (catch Exception e e))]
       (is (= ::pt/not-one-block (:type (ex-data (or (ex-cause e) e))))))))
+
+(deftest invalid-steps
+  (doseq [steps [0 -1 1.5]]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #":steps" (pt/parallel-tempering nil {:steps steps})))))
+
+(deftest a-program-that-fails-on-a-final-state
+  ;; the program after the block throws for a < 0, which the posterior
+  ;; reaches: the run must fail rather than report nil results
+  (let [blk (block/block {:block/id :pt :block/target :complete-conditional
+                          :block/latents [{:name :a :shape []} {:name :b :shape []}]}
+                         (merge {:log-density (fn [th _] (let [[a b] (vec th)] (+ (lnorm a 0.0 1.0) (lnorm b 0.0 1.0))))
+                                 :value+grad (fn [th _] (let [[a b] (vec th)]
+                                                          [(+ (lnorm a 0.0 1.0) (lnorm b 0.0 1.0)) (double-array [(- a) (- b)])]))}
+                                reference))
+        model (fn [] (spin (let [[a _] (sample (block/block-dist blk nil) :id :theta :init [0.5 0.0])]
+                             (when (neg? a) (throw (ex-info "negative" {})))
+                             a)))
+        failure (fn [run] (let [e (try (b/run-infer 3 run) nil (catch Exception e e))]
+                            (some #(:type (ex-data %)) (take-while some? (iterate ex-cause e)))))]
+    (is (= ::pop/model-failed (failure #(pt/parallel-tempering (model) {:chains 4 :rounds 4}))))
+    (testing "tempered SMC's θ path writes back the same way"
+      (is (= ::pop/model-failed (failure #(tempering/tempered (model) 64)))))))
+
+(deftest round-trips-start-at-the-reference
+  ;; a replica first seen at the target and then at the reference has not
+  ;; completed a round trip
+  (let [visit @#'pt/end-visit]
+    (is (= 0 (:trips (-> {:last nil :trips 0} (visit 3 3) (visit 0 3)))))
+    (is (= 1 (:trips (-> {:last nil :trips 0} (visit 0 3) (visit 3 3) (visit 0 3)))))
+    (is (= 1 (:trips (-> {:last :reference :trips 0} (visit 2 3) (visit 3 3) (visit 1 3) (visit 0 3)))))))

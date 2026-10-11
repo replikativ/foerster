@@ -62,11 +62,12 @@
   (* (- b1 b0) (- v0 v1)))
 
 (defn- end-visit
-  "A replica's record after it sits on `chain` of `n`: a round trip counts
-  when it returns to the reference after reaching the target."
+  "A replica's record after it sits on `chain` of `n`: it reaches the target
+  only coming from the reference, and a round trip counts when it returns to
+  the reference from there."
   [{:keys [last trips] :as rec} chain n]
   (cond
-    (= chain n) (assoc rec :last :target)
+    (and (= chain n) (= last :reference)) (assoc rec :last :target)
     (zero? chain) (cond-> (assoc rec :last :reference)
                     (= last :target) (assoc :trips (inc trips)))
     :else rec))
@@ -128,7 +129,9 @@
   (let [n (dec (count xs))]
     (loop [r 0 betas (mapv #(/ (double %) n) (range (inc n))) xs (mapv vec xs)
            log-scales (vec (repeat (inc n) (Math/log (/ 0.5 (Math/sqrt dim)))))
-           replicas (vec (repeat (inc n) {:last nil :trips 0})) labels (vec (range (inc n)))]
+           ;; replica i starts on chain i: the one on the reference is there
+           replicas (assoc (vec (repeat (inc n) {:last nil :trips 0})) 0 {:last :reference :trips 0})
+           labels (vec (range (inc n)))]
       (let [scans (bit-shift-left 1 r)
             st (reduce (fn [st s] (scan st r s v (explore-at (mapv #(Math/exp %) log-scales)) seed))
                        {:xs xs :betas betas :labels labels :replicas replicas
@@ -174,6 +177,8 @@
     (throw (ex-info ":chains is at least 2" {:type ::invalid-chains :chains chains})))
   (when-not (pos-int? n-rounds)
     (throw (ex-info ":rounds is a positive count" {:type ::invalid-rounds :rounds n-rounds})))
+  (when-not (or (nil? steps) (pos-int? steps))
+    (throw (ex-info ":steps is a positive count" {:type ::invalid-steps :steps steps})))
   (fn [resolve reject]
     (let [seed (random/fresh-seed)
           {:keys [session operation]} (gfi/run-policy* model (itrace/policy {:temperature 0.0})
@@ -182,8 +187,13 @@
       (operation
        (fn [template]
          (try
-           (if-let [{:keys [address dist]} (pop/single-block [template])]
-             (let [dim (count (get-in template [:trace/entries address :value]))
+           (cond
+             (:trace/error template)
+             (end reject (ex-info "The program failed" {:type ::model-failed} (:trace/error template)))
+
+             (pop/single-block [template])
+             (let [{:keys [address dist]} (pop/single-block [template])
+                   dim (count (get-in template [:trace/entries address :value]))
                    steps (or steps dim)
                    v (rest-of #(dist/logpdf dist %) #(dist/-draw-logpdf dist %))
                    explore-at (fn [scales]
@@ -207,6 +217,8 @@
                               :round-trips (:round-trips res)
                               :swap-acceptance (:swap-acceptance res))))
                 #(end reject %)))
+
+             :else
              (end reject (ex-info "Parallel tempering runs a model that is one block site (with :sample and :sample-log-density) for now"
                                   {:type ::not-one-block})))
            (catch #?(:clj Throwable :cljs :default) e (end reject e))))
