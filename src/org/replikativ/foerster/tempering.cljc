@@ -25,10 +25,10 @@
             [org.replikativ.foerster.block-mh :as block-mh]
             [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.population :as pop]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.trace :as trace]))
 
@@ -36,36 +36,6 @@
   "Σ untempered log-likelihood of `t`'s observations and factors."
   [t]
   (transduce (keep (comp :log-lik :note)) + 0.0 (itrace/entries t)))
-
-(defn- log-sum-exp [xs]
-  (let [top (reduce max ##-Inf xs)]
-    (if (= ##-Inf top)
-      ##-Inf
-      (+ top (Math/log (reduce + (map #(Math/exp (- % top)) xs)))))))
-
-(defn- relative-cess
-  "The conditional ESS of the incremental weights exp(δ·ℓ) under the
-  normalized log weights `lw`, as a fraction of N."
-  [lw ls delta]
-  (let [a (mapv (fn [w l] (+ w (* delta l))) lw ls)
-        b (mapv (fn [w l] (+ w (* 2.0 delta l))) lw ls)
-        r (- (* 2.0 (log-sum-exp a)) (log-sum-exp b))]
-    (if (#?(:clj Double/isNaN :cljs js/isNaN) r) 0.0 (Math/exp r))))
-
-(defn- next-delta
-  "The temperature increment whose conditional ESS is `target`: the rest of
-  the way to 1 when that keeps it, else by bisection."
-  [lw ls beta target]
-  (let [rest (- 1.0 beta)]
-    (if (>= (relative-cess lw ls rest) target)
-      rest
-      (loop [lo 0.0 hi rest i 0]
-        (let [mid (* 0.5 (+ lo hi))]
-          (if (or (= i 60) (< (- hi lo) 1e-12))
-            (max mid 1e-12)
-            (if (>= (relative-cess lw ls mid) target)
-              (recur mid hi (inc i))
-              (recur lo mid (inc i)))))))))
 
 (defn- population-scales
   "{address sd} of the continuous latent sites of `traces`, over the
@@ -97,32 +67,6 @@
       (if (and sd (number? v) (dist/continuous? (:dist (:savepoint/payload sp))))
         {:value (+ v (* scale sd (dist/draw (dist/normal 0.0 1.0)))) :symmetric? true}
         (itrace/prior-proposal sp old-entry)))))
-
-(defn- all-settled
-  "Run `(start i resolve reject)` for i < n together, spread over `executor`'s
-  threads (`executor/spread!`; on this thread when nil); resolves the results
-  in order, or rejects with the first failure."
-  [executor n start]
-  (fn [resolve reject]
-    (if (zero? n)
-      (resolve [])
-      (let [out (object-array n)
-            remaining (atom n)
-            failed? (atom false)
-            launch (fn [i]
-                     (start i
-                            (fn [v]
-                              (aset out i v)
-                              (when (zero? (swap! remaining dec))
-                                (resolve (vec out))))
-                            (fn [e]
-                              (when (compare-and-set! failed? false true)
-                                (reject e)))))]
-        (if executor
-          (ex/spread! executor n launch)
-          (dotimes [i n] (launch i)))))))
-
-(defn- executor-of [trace] (:executor (:trace/world trace)))
 
 (defn- anchor-ids [traces]
   (into #{} (comp (mapcat (comp vals :trace/entries))
@@ -215,90 +159,25 @@
       (go t 0 [] [] 0 0))))
 
 ;; -----------------------------------------------------------------------------
-;; A model that is one block: particles are θ vectors
+;; A model that is one block: particles are θ vectors (`foerster.population`)
 ;; -----------------------------------------------------------------------------
 
-(defn- single-block
-  "{:address :dist} when every trace in `ts` is one latent block site and
-  nothing else (no other choice, observation or factor), all under one law:
-  then a particle is its θ, and tempering needs no world until the end."
-  [ts]
-  (let [shape (fn [t]
-                (let [es (itrace/entries t)]
-                  (when (and (= 1 (count es)) (itrace/latent? (first es))
-                             (block-mh/block-site? t (:address (first es))))
-                    {:address (:address (first es)) :dist (:dist (:note (first es)))})))
-        s (shape (first ts))]
-    (when (and s (every? #(= s (shape %)) (rest ts)))
-      s)))
-
-(defn- theta-scales
-  "The block random walk of `block-scales`, over θ vectors."
-  [qs scale]
-  (let [n (count qs) dim (count (first qs))
-        mean (apply mapv (fn [& xs] (/ (reduce + xs) n)) qs)
-        sd (apply mapv (fn [mu & xs]
-                         (Math/sqrt (/ (reduce + (map #(let [d (- % mu)] (* d d)) xs))
-                                       (max 1 (dec n)))))
-                  mean qs)]
-    (mapv #(* (/ scale (Math/sqrt dim)) (max % 1e-9)) sd)))
-
-(defn- theta-tempered
-  "Tempered SMC of a one-block model on θ: weights from the block's rest
-  log t − log q, resampling and population-scaled random walks at each
-  temperature on the vectors, the same seeded streams as the world path.
-  The final particles are written back to traces by one replay each from
-  `template`'s anchor (equal θ once). Resolves what `finish` takes."
-  [template {:keys [address dist]} qs {:keys [ess-target scale waste-free max-steps n seed stats]}]
-  (let [rest-of (fn [q] (let [lq (dist/-draw-logpdf dist q)] (- (dist/logpdf dist q) lq)))
-        steps-per-chain (if waste-free (dec waste-free) 1)
-        chains (if waste-free (quot n waste-free) n)
-        dim (count (first qs))]
-    (loop [qs qs ls (mapv rest-of qs) lw (vec (repeat n (- (Math/log n)))) beta 0.0 log-z 0.0
-           temperatures [0.0] k 0]
-      (cond
-        (>= beta 1.0) {:qs qs :log-z log-z :temperatures temperatures}
-        (>= k max-steps) (throw (ex-info "Tempering did not reach β = 1" {:type ::too-many-steps :beta beta}))
-        :else
-        (let [delta (next-delta lw ls beta ess-target)
-              beta' (min 1.0 (+ beta delta))
-              delta (- beta' beta)
-              inc-lw (mapv (fn [w l] (if (zero? delta) w (+ w (* delta l)))) lw ls)
-              log-z' (+ log-z (log-sum-exp inc-lw))
-              weights (m/normalize-log-weights inc-lw)
-              ancestors (random/with-stream* seed [::resample k]
-                          #(m/systematic-resample weights chains))
-              starts (mapv #(nth qs %) ancestors)
-              scales (theta-scales starts scale)
-              f (block-mh/density dist beta')
-              moved (vec (map-indexed
-                          (fn [i q0]
-                            (random/with-stream* seed [::move k i]
-                              #(loop [s 0 q q0 states []]
-                                 (if (= s steps-per-chain)
-                                   states
-                                   (let [{q' :q a :accepted} (block-mh/walk f q scales dim)]
-                                     (swap! stats (fn [st] (-> st (update :moves + dim) (update :accepted + a))))
-                                     (recur (inc s) q' (conj states q')))))))
-                          starts))
-              qs' (vec (mapcat (fn [start states] (if waste-free (into [start] states) states))
-                               starts moved))]
-          (recur qs' (mapv rest-of qs') (vec (repeat (count qs') (- (Math/log (count qs')))))
-                 beta' log-z' (conj temperatures beta') (inc k)))))))
-
-(defn- write-back-all
-  "Traces of `template` with the block site at `address` set to each of `qs`
-  (one replay per distinct θ); resolves them in order."
-  [template address qs]
-  (fn [resolve reject]
-    (let [distinct-qs (vec (distinct qs))
-          policy (fn [q] (itrace/policy {:constraints {address q}}))]
-      ((all-settled (executor-of template) (count distinct-qs)
-                    (fn [i res rej]
-                      ((trace/replay template address (policy (nth distinct-qs i)) {:anchor? itrace/anchor?})
-                       res rej)))
-       (fn [ts] (let [by-q (zipmap distinct-qs ts)] (resolve (mapv by-q qs))))
-       reject))))
+(defn- tempered-path
+  "The geometric path q^(1-β)·t^β of a block law `dist`, from its draw density
+  q to its target t, for `population/theta-smc`: β advances by the
+  conditional-ESS rule, each particle's incremental log weight is δβ times
+  its log t − log q, and the moves at β target the path's density."
+  [dist ess-target]
+  (let [rest-of (fn [q] (let [lq (dist/-draw-logpdf dist q)] (- (dist/logpdf dist q) lq)))]
+    {:start 0.0
+     :done? #(>= % 1.0)
+     :advance (fn [qs lw beta]
+                (let [ls (mapv rest-of qs)
+                      beta' (min 1.0 (+ beta (pop/next-delta lw ls beta ess-target)))
+                      delta (- beta' beta)]
+                  {:pos beta' :log-incr (mapv (fn [l] (if (zero? delta) 0.0 (* delta l))) ls)}))
+     :density #(block-mh/density dist %)
+     :exhausted (fn [beta] (ex-info "Tempering did not reach β = 1" {:type ::too-many-steps :beta beta}))}))
 
 (defn tempered
   "Tempered SMC of `model` (a spin) with `n` particles. Options:
@@ -353,11 +232,11 @@
                   (if (>= k max-steps)
                     (fail! (ex-info "Tempering did not reach β = 1" {:type ::too-many-steps
                                                                      :beta beta}))
-                    (let [delta (next-delta lw ls beta ess-target)
+                    (let [delta (pop/next-delta lw ls beta ess-target)
                           beta' (min 1.0 (+ beta delta))
                           delta (- beta' beta)
                           inc-lw (mapv (fn [w l] (if (zero? delta) w (+ w (* delta l)))) lw ls)
-                          log-z' (+ log-z (log-sum-exp inc-lw))
+                          log-z' (+ log-z (pop/log-sum-exp inc-lw))
                           weights (m/normalize-log-weights inc-lw)
                           chains (if waste-free (quot n waste-free) n)
                           ancestors (random/with-stream* seed [::resample k]
@@ -366,10 +245,10 @@
                           propose (adaptive-proposal (population-scales starts) scale)
                           bscales (block-scales starts scale)
                           steps-per-chain (if waste-free (dec waste-free) 1)]
-                      ((all-settled (executor-of (first starts)) chains
-                                    (fn [i res rej]
-                                      ((move-chain (nth starts i) steps-per-chain moves beta' propose bscales [k i])
-                                       res rej)))
+                      ((pop/all-settled (pop/executor-of (first starts)) chains
+                                        (fn [i res rej]
+                                          ((move-chain (nth starts i) steps-per-chain moves beta' propose bscales [k i])
+                                           res rej)))
                        (fn [results]
                          (try
                            (let [ts' (vec (mapcat (fn [start {:keys [states]}]
@@ -400,20 +279,21 @@
            (try
              (if-let [error (:trace/error template)]
                (fail! (ex-info "A particle's program failed" {:type ::model-failed} error))
-               (if-let [{:keys [address dist] :as blk} (single-block [template])]
+               (if-let [{:keys [address dist]} (pop/single-block [template])]
                  (let [qs (into [(get-in template [:trace/entries address :value])]
                                 (map (fn [i] (random/with-stream* seed [::init i] #(vec (dist/draw dist)))))
                                 (range 1 n))
-                       {:keys [qs log-z temperatures]}
-                       (theta-tempered template blk qs
-                                       {:ess-target ess-target :scale scale :waste-free waste-free
-                                        :max-steps max-steps :n n :seed seed :stats stats})]
-                   ((write-back-all template address qs)
+                       {:keys [qs log-z] temperatures :positions}
+                       (pop/theta-smc qs (tempered-path dist ess-target)
+                                      {:scale scale :waste-free waste-free :max-steps max-steps
+                                       :n n :seed seed :stats stats
+                                       :keys {:resample ::resample :move ::move}})]
+                   ((pop/write-back-all template address qs)
                     (fn [final] (try (finish final log-z temperatures)
                                      (catch #?(:clj Throwable :cljs :default) e (fail! e))))
                     fail!))
                  (let [operations (vec (repeatedly (dec n) run!))]
-                   ((all-settled (executor-of template) (dec n) (fn [i res rej] ((nth operations i) res rej)))
+                   ((pop/all-settled (pop/executor-of template) (dec n) (fn [i res rej] ((nth operations i) res rej)))
                     (fn [more]
                       (try
                         (let [ts (into [template] more)]
