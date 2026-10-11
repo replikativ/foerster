@@ -25,6 +25,7 @@
             [org.replikativ.foerster.smc2 :as smc2]
             [org.replikativ.foerster.enumerate :as enumerate]
             [org.replikativ.foerster.gfi :as gfi]
+            [org.replikativ.foerster.parallel-tempering :as parallel-tempering]
             [org.replikativ.foerster.tempering :as tempering]
             [org.replikativ.foerster.gradient :as grad]
             [org.replikativ.foerster.trace :as itrace]
@@ -568,6 +569,27 @@
                                                          :world-policy :fork :supported #{:fresh}})))
   (on-savepoints (tempering/tempered model-task num-particles (dissoc opts :world-policy))))
 
+(defn parallel-tempering-infer
+  "Non-reversible parallel tempering (`foerster.parallel-tempering`) of a
+  `model-task` that is one block site with a `:sample` and
+  `:sample-log-density`: `num-chains` chains on the path from that draw
+  density to the posterior, swapping states between neighbours, with the
+  schedule tuned over `:rounds` rounds of doubling length (default 10).
+
+  Options: `:rounds`, `:steps` (random-walk steps per chain per scan),
+  `:executor`; fresh worlds only.
+
+  Returns a spin resolving the EmpiricalMeasure of the last round's
+  target-chain states; `m/log-marginal` is the stepping-stone evidence and
+  `:temperatures`, `:barrier`, `:local-barrier`, `:round-trips` and
+  `:swap-acceptance` diagnose the run."
+  [model-task num-chains & [opts]]
+  (check-options! opts #{:rounds :steps :executor :world-policy})
+  (when (= :fork (world-policy opts))
+    (throw (ex-info "Parallel tempering runs in fresh worlds" {:type ::invalid-world-policy
+                                                               :world-policy :fork :supported #{:fresh}})))
+  (on-savepoints (parallel-tempering/parallel-tempering model-task (assoc (dissoc opts :world-policy) :chains num-chains))))
+
 (defn importance-sampling
   "Importance sampling: `num-samples` runs of `model-task`, each weighted by
   its observations, never resampled (savepoint SMC with
@@ -1090,7 +1112,7 @@
 ;; =============================================================================
 
 (def ^:private infer-methods
-  #{:enumerate :importance :smc :tempered :pimh :pgibbs :pgas :ipmcmc :bbvi :mh :rmh :nuts :kernel :pmmh})
+  #{:enumerate :importance :smc :tempered :parallel-tempering :pimh :pgibbs :pgas :ipmcmc :bbvi :mh :rmh :nuts :kernel :pmmh})
 
 (def ^:private sizes-of-every-method
   {:particles true :iterations true :chains true :burn true :step-size true :kernel true})
@@ -1102,6 +1124,7 @@
         sweeps #{:particles :iterations}
         chains #{:iterations :chains :burn}]
     {:enumerate #{} :importance particles :smc particles :tempered particles
+     :parallel-tempering #{:chains}
      :pimh sweeps :pgibbs sweeps :pgas sweeps :ipmcmc sweeps :bbvi sweeps
      :mh chains :rmh (conj chains :step-size) :nuts chains
      :kernel #{:kernel :chains :particles}
@@ -1120,6 +1143,8 @@
     :enumerate                          (exact; finite supports only,
                                         :max-branches)
     :importance :smc :tempered          :particles
+    :parallel-tempering                 :chains (temperatures, default 10),
+                                        :rounds; one block site
     :pimh :pgibbs :pgas :ipmcmc :bbvi   :particles :iterations
     :mh :rmh :nuts                      :iterations per chain, :chains (default
                                         4), :burn, :step-size (:rmh); every
@@ -1148,6 +1173,7 @@
       :importance (importance-sampling model particles rest-opts)
       :smc (smc-infer model particles rest-opts)
       :tempered (tempered-infer model particles rest-opts)
+      :parallel-tempering (parallel-tempering-infer model (or chains 10) rest-opts)
       :pimh (pimh-infer model particles iterations rest-opts)
       :pgibbs (pgibbs-infer model particles iterations rest-opts)
       :pgas (pgas-infer model particles iterations rest-opts)
