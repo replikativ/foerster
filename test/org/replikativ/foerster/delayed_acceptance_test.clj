@@ -98,3 +98,27 @@
 (deftest invalid-step-counts-are-refused
   (is (thrown? AssertionError (k/delayed-acceptance-kernel 10 {:theta identity} {:steps -1})))
   (is (thrown? AssertionError (k/delayed-acceptance-kernel 10 {:theta identity} {:steps 0.5}))))
+
+(deftest a-block-an-earlier-move-creates-is-moved-in-its-turn
+  ;; no observations, so the posterior is the prior: P(x₀ > 0) = ½ and :y,
+  ;; when it exists, is N(0, I). Which blocks move must not depend on the
+  ;; state before the iteration's first move (a fixed order, each block
+  ;; moved if it exists in its turn); the bias a state-dependent schedule
+  ;; causes here is below what this sample size can see, so this is a
+  ;; sanity check of the conditional-block path, not a detector of it.
+  (let [coarse (fn [th] (let [[u v] th] (* -0.5 (+ (* u u) (* v v)))))
+        model #(spin (let [[x0] (sample (block/block-dist pair-block nil) :id :x :init [0.5 0.0])
+                           y (when (pos? x0) (sample (block/block-dist pair-block nil) :id :y :init [0.0 0.0]))]
+                       {:x0 x0 :y0 (first y)}))
+        measure (b/run-infer 9 #(infer/kernel-infer (model)
+                                                    (k/delayed-acceptance-kernel 20000 {:x coarse :y coarse}
+                                                                                 {:scales 1.2 :samples :all :burn 500})
+                                                    4))
+        vs (map (comp org.replikativ.foerster.measure/get-value first)
+                (org.replikativ.foerster.measure/get-particles measure))
+        n (double (count vs))
+        ys (keep :y0 vs)
+        p (/ (count (filter #(pos? (:x0 %)) vs)) n)
+        y2 (/ (reduce + (map #(* % %) ys)) (count ys))]
+    (is (< (Math/abs (- p 0.5)) 0.02) (str "P(x0 > 0) " p))
+    (is (< (Math/abs (- y2 1.0)) 0.05) (str "E[y0²] " y2))))

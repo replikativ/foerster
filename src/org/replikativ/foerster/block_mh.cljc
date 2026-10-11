@@ -22,6 +22,7 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.trace :as trace]))
 
 (defn block-site? [trace address]
@@ -114,10 +115,12 @@
   any site the replay reaches afresh). The subchain is reversible for the
   coarse density, so the move leaves the PROGRAM's posterior invariant
   whatever `coarse` is: a poor coarse density costs acceptance, not
-  exactness. The coarse density never enters a trace. Resolves
-  {:trace :accepted? :screened}: `:screened` true when the subchain did not
-  move and the program was not run."
-  [trace address {:keys [coarse scales steps key]}]
+  exactness. The coarse density never enters a trace. As in
+  `foerster.trace/mh-step`, the replay repeats the chain's `:policy-options`
+  and `:constraints` and stops at `:until`. Resolves {:trace :accepted?
+  :screened}: `:screened` true when the subchain did not move and the
+  program was not run."
+  [trace address {:keys [coarse scales steps key policy-options constraints until] anchor-pred :anchor?}]
   (fn [resolve reject]
     (try
       (let [q0 (get-in trace [:trace/entries address :value])
@@ -125,13 +128,21 @@
                                                          #(walk coarse q0 scales steps))]
         (if (zero? accepted)
           (resolve {:trace trace :accepted? false :screened true})
-          (let [move (itrace/policy {:keep? true
-                                     :draw (fn [sp _] (when (= address (:savepoint/address sp))
-                                                        {:value q :symmetric? true}))})]
-            ((trace/replay trace address move {:anchor? itrace/anchor?})
+          (let [move (itrace/policy (assoc policy-options
+                                           :keep? true
+                                           :constraints (merge (:constraints policy-options) constraints)
+                                           :draw (fn [s _] (when (= address (:savepoint/address s))
+                                                             {:value q :symmetric? true}))))]
+            ((trace/replay trace address move
+                           (cond-> {:anchor? (or anchor-pred itrace/anchor?)}
+                             until (assoc :until until)
+                             (sp/seed (:trace/world trace))
+                             (assoc :seed (sp/derive-seed (sp/seed (:trace/world trace)) ::da-move key))))
              (fn [proposed]
                (try
-                 (let [ratio (if (:trace/error proposed)
+                 (let [ratio (if (or (:trace/error proposed)
+                                     ;; a partial move must end where the trace did
+                                     (and until (not (:trace/pending proposed))))
                                ##-Inf
                                (- (itrace/mh-log-ratio trace proposed (constantly 0.0) address)
                                   (- (coarse q) (coarse q0))))
@@ -156,10 +167,13 @@
   `:step-size` for the single-site moves. Scales are fixed: an adapted
   subchain would break the move's reversibility."
   [{:keys [coarse scales steps step-size] :or {step-size 0.1}}]
-  (let [propose (itrace/random-walk-proposal step-size)]
+  (let [propose (itrace/random-walk-proposal step-size)
+        ;; the order of the moves is fixed, never read off the state: a
+        ;; block an earlier move brings into the program is moved in its turn
+        order (vec (keys coarse))]
     (fn [trace {:keys [iteration] :as chain-opts}]
       (fn [resolve reject]
-        (let [named (filterv #(contains? coarse %) (itrace/latent-addresses trace))]
+        (let [named order]
           (letfn [(others [t] (vec (remove #(contains? coarse %) (itrace/latent-addresses t))))
                   (go [t [address & more] moves accepted screened]
                       (cond
@@ -171,8 +185,9 @@
                         address
                         (let [dim (count (get-in t [:trace/entries address :value]))
                               sc (if (number? scales) (vec (repeat dim scales)) (vec scales))]
-                          ((da-move t address {:coarse (get coarse address) :scales sc
-                                               :steps (or steps dim) :key [iteration]})
+                          ((da-move t address (merge (select-keys chain-opts [:policy-options :constraints :until :anchor?])
+                                                     {:coarse (get coarse address) :scales sc
+                                                      :steps (or steps dim) :key [iteration]}))
                            (fn [{t' :trace a? :accepted? s? :screened}]
                              (go t' more (inc moves) (if a? (inc accepted) accepted)
                                  (if s? (inc screened) screened)))
