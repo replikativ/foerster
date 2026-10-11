@@ -304,9 +304,12 @@
     (* sigma (- (Math/log1p (- p))))
     (* sigma (/ (Math/expm1 (* (- k) (Math/log1p (- p)))) k))))
 
-(defn- psis
-  "Pareto-smoothed log weights of `log-weights` (unnormalized) and the tail
-  shape k̂ (ArviZ `_psislw` with normalize)."
+(defn psis
+  "Pareto-smoothed importance sampling (Vehtari et al. 2024): [normalized
+  smoothed log weights, the tail shape k̂] of the unnormalized `log-weights`,
+  as ArviZ's `_psislw` with normalize. `reff` is the draws' relative
+  efficiency (1 for independent draws). k̂ above 0.7 marks weights too
+  heavy-tailed to trust."
   [log-weights reff]
   (let [s (count log-weights)
         top (reduce max log-weights)

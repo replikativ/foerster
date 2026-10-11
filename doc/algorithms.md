@@ -446,6 +446,26 @@ differences of the gradient (as Stan's `laplace`), and refuses a mode that
 is not a strict maximum. It is exact for a Gaussian target and fast; check
 it against NUTS when the posterior may be skewed or multimodal in θ.
 
+`pathfinder` (Zhang, Carpenter, Gelman & Vehtari 2022) needs no mode. It
+follows L-BFGS from a few jittered starts. At every iterate, the optimizer's
+own inverse-Hessian estimate gives a Gaussian. A Monte Carlo ELBO, computed
+with the same standard normals for every iterate, picks the best one. The
+paths' Gaussians then propose draws, which are importance-resampled against
+the target with Pareto-smoothed weights:
+
+```clojure
+(def pf (optimize/pathfinder (block/block-dist b inputs) {:paths 4 :draws 1000}))
+(:draws pf)     ; θ vectors, resampled towards the target
+(:pareto-k pf)  ; above 0.7: the Gaussians miss part of the target
+[(:mean pf) (:covariance pf)]  ; the best Gaussian, e.g. to start NUTS
+                               ; or as a tempering reference
+```
+
+It costs a few hundred gradient evaluations per path. On posteriordb's
+regressions its means and standard deviations come within a few percent of
+the reference. Where k̂ is high, use it to initialize a sampler, not as the
+posterior.
+
 ## Streaming
 
 `(smc/stream model n opts)` (`org.replikativ.foerster.smc`) is a CPS

@@ -304,18 +304,26 @@
                 :block/target :complete-conditional}
                (merge (block/with-numeric-gradient {:log-density log-density}) extra)))
 
+(def ^:dynamic *reference*
+  "How tempered SMC and parallel tempering get their reference: the block's
+  `:laplace` approximation or its `:pathfinder` Gaussian, either with its
+  covariance inflated `reference-inflation` times."
+  :laplace)
+
 (defn- setup
-  "The block of `posterior` at its data, with a Laplace reference. The
-  samplers target `log-density` (default the posterior's); the reference
-  always comes from the posterior's own."
+  "The block of `posterior` at its data, with a Gaussian reference (see
+  `*reference*`). The samplers target `log-density` (default the
+  posterior's); the reference always comes from the posterior's own."
   [posterior log-density]
   (let [{:keys [prepare] own :log-density} (models posterior)
         inputs (prepare (posterior-data posterior))
+        d (block/block-dist (make-block posterior own nil) inputs)
         init (vec (repeat (dimensions posterior) 0.0))
-        approx (optimize/laplace (block/block-dist (make-block posterior own nil) inputs) {:init init})
-        reference (gaussian-reference (vec (:theta approx))
-                                      (mapv (fn [row] (mapv #(* reference-inflation %) row)) (:covariance approx)))]
-    {:block (make-block posterior (or log-density own) reference) :inputs inputs :mode (vec (:theta approx))}))
+        [mean cov] (case *reference*
+                     :laplace (let [a (optimize/laplace d {:init init})] [(vec (:theta a)) (:covariance a)])
+                     :pathfinder (let [a (optimize/pathfinder d {:init init})] [(:mean a) (:covariance a)]))
+        reference (gaussian-reference mean (mapv (fn [row] (mapv #(* reference-inflation %) row)) cov))]
+    {:block (make-block posterior (or log-density own) reference) :inputs inputs :mode mean}))
 
 ;; --- methods ----------------------------------------------------------------
 

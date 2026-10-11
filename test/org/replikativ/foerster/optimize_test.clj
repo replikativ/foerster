@@ -63,3 +63,32 @@
                                                               (double-array [(* -2.0 (aget th 0)) (* 2.0 (aget th 1))])])})]
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not negative definite"
                           (opt/laplace (block/block-dist saddle nil) {:init [0.0 0.0] :max-iterations 0})))))
+
+(defn- mean-of [xs] (/ (reduce + xs) (count xs)))
+
+(deftest pathfinder-on-a-gaussian
+  ;; on a quadratic target the L-BFGS path ends at the mean with an inverse
+  ;; Hessian estimate close to the covariance; a block without :sample and
+  ;; without :init starts at 0
+  (random/set-seed! 4)
+  (let [{:keys [mean covariance draws elbo paths]} (opt/pathfinder (block/block-dist gaussian nil) {})
+        sigma [[0.27380952380952384 -0.09523809523809525 0.023809523809523808]
+               [-0.09523809523809525 0.38095238095238093 -0.09523809523809523]
+               [0.023809523809523808 -0.09523809523809523 0.5238095238095238]]]
+    (is (every? true? (map #(close? %1 %2 0.02) mean m)))
+    (is (every? true? (map #(close? %1 %2 0.1) (flatten covariance) (flatten sigma))))
+    (is (= 1000 (count draws)))
+    (is (every? true? (map #(close? (mean-of (map % draws)) %2 0.06) [first second #(nth % 2)] m)))
+    (testing "the ELBO is at most log Z = 2.5346, up to Monte Carlo error"
+      (is (< elbo 2.6)))
+    (is (= 4 (count paths)))))
+
+(deftest pathfinder-resamples-towards-the-target
+  ;; in θ = log σ the Gamma(3, 2) target is skewed: the Gaussian's draws
+  ;; overshoot E σ = 1.5, the importance-resampled draws do not
+  (random/set-seed! 3)
+  (let [{:keys [draws draw]} (opt/pathfinder (block/block-dist gamma-3-2 nil) {:draws 4000})
+        resampled (mean-of (map #(Math/exp (first %)) draws))
+        gaussian (mean-of (map :s (repeatedly 4000 draw)))]
+    (is (close? 1.5 resampled 0.05))
+    (is (> gaussian 1.65))))
