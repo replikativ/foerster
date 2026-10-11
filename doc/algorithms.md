@@ -159,6 +159,46 @@ posterior and back. Where tempered SMC spends its budget on many particles,
 parallel tempering spends it on long chains, and its result improves with
 more rounds without rerunning.
 
+## Sequential core-set Monte Carlo: bounded memory for streaming data
+
+`(scmc/scmc model opts)` (`org.replikativ.foerster.scmc`) is SMC over data
+that arrive in batches, for a model given as a prior and a per-datum
+log-likelihood on θ vectors (Beronov, Weilbach, Wood & Campbell 2021).
+Resample-move SMC over all past data (IBIS) must score every past
+observation in each move, so its step t costs O(t) and the run O(T²).
+SCMC keeps at most `:memory` past points with weights, a core-set whose
+weighted log-likelihood approximates that of all data so far. The particles
+move against the core-set. After each step, the core-set plus the new batch
+is recompressed with GIGA (Campbell & Broderick 2018), fitted where the
+current particles are:
+
+```clojure
+(scmc/scmc {:prior-sample (fn [] [a b])
+            :prior-log-density (fn [[a b]] …)
+            :log-lik (fn [[a b] [x y]] …)       ; one datum
+            :batches (partition 20 data)}
+           {:particles 500 :memory 50})
+;; => {:particles [θ …] :log-z … :coreset [[w datum] …] :coreset-sizes […]}
+```
+
+The reweighting by each batch is exact, and only the moves use the
+core-set. The result therefore carries the core-set's approximation error,
+which is small when the log-likelihoods compress well (few parameters,
+exchangeable data). With `:memory` at least the amount of data, nothing is
+compressed and SCMC is resample-move SMC.
+
+On a two-parameter Bayesian regression in batches of 20, with 500
+particles:
+
+| data | `:memory 50` | all data | posterior error (`:memory 50`) |
+|---|---|---|---|
+| 1000 | 1.2 s | 3.5 s | means within 0.08 sd, sds within 2% |
+| 2000 | 2.4 s | 12.6 s | within 0.03 sd and 4% |
+| 4000 | 4.7 s | 48.7 s | within 0.02 sd and 3% |
+
+`scmc/giga` is available on its own: nonnegative, at most m-sparse weights
+over a set of vectors that approximate a target vector.
+
 ## Arrival-batched SMC: no waiting for the slowest
 
 SMC resamples at each observation once *every* particle has arrived, so a
