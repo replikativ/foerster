@@ -310,8 +310,11 @@
                           #?(:clj (sched/thread-pool-executor {:threads 2}) :cljs nil))
            executor (or (:executor opts) own-executor)]
        (try
-         (let [;; drawn here, in order: the chains then run concurrently
-               seeds (vec (repeatedly num-chains random/fresh-seed))
+         (let [;; derived from :seed, else drawn here in order: the chains
+               ;; then run concurrently
+               seeds (if-let [seed (:seed opts)]
+                       (mapv #(sp/derive-seed seed ::chain %) (range num-chains))
+                       (vec (repeatedly num-chains random/fresh-seed)))
                chains (await (apply comb/parallel
                                     (mapv #(run-markov-chain model-task kernel executor %) seeds)))]
            ;; the draws in chain order, each chain's count kept: the
@@ -358,6 +361,9 @@
       sampling)
     - :resample-threshold - ESS threshold (default 0.5)
     - :executor - Shared executor for all particles
+    - :seed - the run's seed: the same seed, the same draws, whatever the
+      executor; without it the process generator (`random/set-seed!`) seeds
+      the run
     - :world-policy - :fresh (default) for pure inference, or :fork to
       execute each particle in a frozen canonical Yggdrasil world that is
       discarded after the final particle values are captured
@@ -375,7 +381,7 @@
         (query measure identity)))"
   [model-task kernel num-particles & [opts]]
   (check-options! opts (if (mh-options kernel)
-                         #{:executor :world-policy}
+                         #{:executor :world-policy :seed}
                          (conj particle-options :barrier-policy)))
   (let [smc-opts (cond-> (dissoc opts :barrier-policy)
                    (= :none (:barrier-policy opts)) (assoc :resample-threshold 0.0))]

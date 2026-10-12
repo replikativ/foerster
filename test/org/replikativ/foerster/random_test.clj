@@ -70,6 +70,16 @@
     (is (= a b c) "the same seed, the same chains")
     (is (not= a (first (runs 1 14 make))) "another seed, other chains")))
 
+(deftest a-seed-option-seeds-the-chains
+  ;; :seed, not the process generator: the process seed (run-infer's) varies
+  (let [make (fn [seed] (fn [exec] (infer/kernel-infer (model)
+                                                       (k/random-walk-mh-kernel 200 {:step-size 0.5 :samples :all :burn 50})
+                                                       3 {:executor exec :seed seed})))
+        a (first (runs 1 13 (make 5)))
+        b (first (runs 1 14 (make 5)))]
+    (is (= a b))
+    (is (not= a (first (runs 1 13 (make 6)))))))
+
 (deftest parallel-particles-are-reproducible
   (let [make (fn [exec] (smc/smc (model) 200 {:executor exec}))
         [a b c] (runs 3 21 make)]
