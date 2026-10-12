@@ -62,6 +62,14 @@
       (is (< (:rhat s) 1.1))
       (is (< (Math/abs (- (:mean s) 1.125)) 0.15)))))
 
+(deftest the-host-world-policy-is-for-particle-methods
+  (let [seen (atom [])]
+    (with-redefs [org.replikativ.foerster.core/infer (fn [_ opts] (swap! seen conj opts) (spin nil))]
+      (let [nss (sb/namespaces {:world-policy :fork})]
+        (in-context #(do ((get-in nss ['infer 'run]) (conjugate) {:method :smc :particles 10})
+                         ((get-in nss ['infer 'run]) (conjugate) {:method :nuts :iterations 10 :chains 1})))))
+    (is (= [:fork nil] (map :world-policy @seen)))))
+
 (deftest the-host-sets-defaults-and-limits
   (in-context
    (fn []

@@ -135,6 +135,10 @@
 ;; tell; tempering, parallel tempering and enumeration have costs their
 ;; sizes do not bound.
 
+(def ^:private particle-methods
+  "The methods whose particles can run in canonical forks (`:world-policy`)."
+  #{:importance :smc})
+
 (def ^:private run-options
   "Options a sandbox may pass: data only, no functions, kernels or worlds."
   #{:method :particles :iterations :chains :burn :seed :world-policy :resampling
@@ -175,7 +179,9 @@
         (refuse (str "Inference larger than this sandbox allows: " work " > " max-work)
                 {:type ::too-large :work work :max-work max-work})))
     (cond-> (assoc opts :seed (next-seed (:seed opts)))
-      (and world-policy (not (contains? opts :world-policy))) (assoc :world-policy world-policy))))
+      ;; Markov chains run in fresh worlds of their own (foerster.core)
+      (and world-policy (particle-methods method) (not (contains? opts :world-policy)))
+      (assoc :world-policy world-policy))))
 
 (defn- sanitized
   "`e` without its data or causes, which may hold host handles: its message
@@ -346,7 +352,8 @@
 
 (defn namespaces
   "{ns-sym {sym value}} for a sandbox. Host options: `:world-policy` (the
-  default for runs that do not choose one), `:max-work` (the largest
+  default for particle runs that do not choose one; Markov chains always
+  run in fresh worlds), `:max-work` (the largest
   particles or iterations × chains a run may ask for), `:max-optimizer-work`
   (the same for optimizers, in target evaluations, `optimizer-work`),
   `:seed` (the
