@@ -50,6 +50,15 @@
                 :extra-deps {cheshire/cheshire {:mvn/version "5.11.0"}}
                 :main-opts ["-m" "org.replikativ.foerster.posteriordb"]}
 
+  ;; Bayesian-workflow environments for dvergr agents: tasks verified against
+  ;; posteriordb reference posteriors. Not part of the suite or the jar.
+  ;; Spindel at the version dvergr is built against; dvergr's own (older)
+  ;; foerster is excluded, this checkout's src stands in for it.
+  :workflow {:extra-paths ["test" "experiments"]
+             :extra-deps {org.replikativ/dvergr {:mvn/version "0.1.257" :exclusions [org.replikativ/foerster]}
+                          org.replikativ/spindel {:mvn/version "0.1.111"}
+                          cheshire/cheshire {:mvn/version "5.11.0"}}}
+
   :repl {:extra-deps {nrepl/nrepl {:mvn/version "1.1.2"}
                       cider/cider-nrepl {:mvn/version "0.49.3"}}}
 

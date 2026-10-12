@@ -39,9 +39,9 @@
             [org.replikativ.foerster.optimize :as optimize]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
-(def ^:private commit "91027f9cdd13b7e76283fec3f2898f59d4b83ec4")
-(def ^:private mean-tolerance 0.2)
-(def ^:private sd-tolerance 0.2)
+(def commit "91027f9cdd13b7e76283fec3f2898f59d4b83ec4")
+(def mean-tolerance 0.2)
+(def sd-tolerance 0.2)
 (def ^:private reference-inflation 4.0)
 
 ;; --- posteriordb files ------------------------------------------------------
@@ -49,7 +49,7 @@
 (def ^:private cache-dir
   (io/file (System/getProperty "user.home") ".cache" "foerster" "posteriordb" commit))
 
-(defn- fetch
+(defn fetch-file
   "The posteriordb file at `path` (relative to posterior_database/), from the
   cache or downloaded into it; a .zip holds one file, which is kept."
   [path]
@@ -66,22 +66,41 @@
               (io/copy z tmp))
             (io/copy in tmp)))
         (.renameTo tmp f)))
-    (json/parse-string (slurp f))))
+    f))
 
-(defn- posterior-data [posterior]
-  (fetch (str "data/data/" (get (fetch (str "posteriors/" posterior ".json")) "data_name") ".json.zip")))
+(defn- fetch [path] (json/parse-string (slurp (fetch-file path))))
 
-(defn- reference-stats
-  "{param {:mean :sd}} of the pooled reference draws."
+(defn posterior-info
+  "posteriordb's description of `posterior`: its model_name, data_name, …"
+  [posterior]
+  (fetch (str "posteriors/" posterior ".json")))
+
+(defn posterior-data [posterior]
+  (fetch (str "data/data/" (get (posterior-info posterior) "data_name") ".json.zip")))
+
+(defn stan-program
+  "The Stan program of `posterior`, as text."
+  [posterior]
+  (slurp (fetch-file (str "models/stan/" (get (posterior-info posterior) "model_name") ".stan"))))
+
+(defn reference-draws
+  "{param [draw …]}: the reference chains of `posterior`, pooled in one order
+  for every parameter (draws at one index are one joint draw)."
   [posterior]
   (let [chains (fetch (str "reference_posteriors/draws/draws/" posterior ".json.zip"))]
     (into (sorted-map)
-          (for [param (keys (first chains))
-                :let [xs (vec (mapcat #(get % param) chains))
-                      n (count xs)
-                      mu (/ (reduce + xs) n)]]
-            [param {:mean mu
-                    :sd (Math/sqrt (/ (reduce + (map #(let [e (- % mu)] (* e e)) xs)) (dec n)))}]))))
+          (for [param (keys (first chains))]
+            [param (mapv double (mapcat #(get % param) chains))]))))
+
+(defn reference-stats
+  "{param {:mean :sd}} of the pooled reference draws."
+  [posterior]
+  (into (sorted-map)
+        (for [[param xs] (reference-draws posterior)
+              :let [n (count xs)
+                    mu (/ (reduce + xs) n)]]
+          [param {:mean mu
+                  :sd (Math/sqrt (/ (reduce + (map #(let [e (- % mu)] (* e e)) xs)) (dec n)))}])))
 
 ;; --- densities --------------------------------------------------------------
 
