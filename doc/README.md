@@ -12,6 +12,7 @@ Each runs as it renders, in CI on every pull request.
 |---|---|
 | [Getting Started](../notebooks/foerster/getting_started.clj) | a first model, `sample` and `observe`, SMC, the posterior and the evidence |
 | [Choosing an Inference Algorithm](../notebooks/foerster/algorithms.clj) | importance sampling, SMC, particle MCMC, MCMC and BBVI on known posteriors; which to use when |
+| [Inference Methods](../notebooks/foerster/methods.clj) | every inference method foerster implements — what it does, when to use it, its options and cost, a run on a model with a known answer, and the papers it comes from |
 | [Models in Worlds](../notebooks/foerster/worlds.clj) | `:world-policy :fork`, systems in the world, budgets, what cannot be copied |
 | [Blocks and HMC](../notebooks/foerster/blocks.clj) | numerical blocks, HMC-within-Gibbs, checking a gradient |
 | [Streaming SMC](../notebooks/foerster/streaming.clj) | online filtering against the Kalman filter |
@@ -26,7 +27,7 @@ Each runs as it renders, in CI on every pull request.
 | Guide | |
 |---|---|
 | [Language](language.md) | sites and their options, addresses, selectors, the rules of the spin macro |
-| [Algorithms](algorithms.md) | every inference entry point and its options |
+| [Algorithms](algorithms.md) | every inference entry point and its options; foerster in an interpreter sandbox |
 | [Posteriors](posteriors.md) | reading a measure: particles, traces, summaries, ESS, evidence, training data |
 | [Checking a Model and its Inference](workflow.md) | prior predictive simulation, several methods, R-hat/ESS/MCSE and SMC diagnostics, posterior predictive checks, model comparison, simulation-based calibration |
 | [Coming from Other PPLs](coming-from.md) | Stan, PyMC, Turing, Gen, Anglican and WebPPL concepts in foerster, and what foerster does not have yet |
@@ -34,7 +35,7 @@ Each runs as it renders, in CI on every pull request.
 | [Worlds](worlds.md) | canonical worlds, their lifecycle, failure and recovery, resources |
 | [Distributions and Reproducibility](distributions.md) | `foerster.dist`, writing a distribution, seeds and streams |
 | [Design](design.md) | inference as handlers of spindel savepoints; how each algorithm works |
-| [Literature](literature.md) | the systems and papers foerster builds on |
+| [Literature](literature.md) | the systems and papers foerster builds on, by method |
 
 ## Reference
 
