@@ -37,6 +37,8 @@ Three differences hold for all of them:
 | bridge sampling (evidence) | `(m/log-marginal measure)` of an SMC or importance-sampling run |
 | ADVI | `{:method :bbvi}`: mean-field, score-function gradients |
 | `optimize()`, `laplace()` | `optimize/map-estimate`, `optimize/laplace` on a block site |
+| `pathfinder()` | `optimize/pathfinder` on a block site: the same algorithm, PSIS-resampled draws and k̂ |
+| nutpie's Fisher-divergence metric (via `nutpie`, not Stan) | `{:method :nuts :metric :fisher}` |
 
 Not in foerster yet:
 
@@ -212,6 +214,10 @@ MH, and variational inference with guide programs and trainable parameters
 - Particle MCMC (PIMH, particle Gibbs, PGAS, IPMCMC), PMMH and SMC² over
   general programs, with evidence estimates from every SMC method.
 - SMC without barriers: arrival-batched SMC and the particle cascade.
+- Non-reversible parallel tempering with a tuned schedule and its
+  stepping-stone evidence, and delayed acceptance with any coarse density.
+- Sequential core-set Monte Carlo: resample-move SMC over a stream in
+  bounded memory, with GIGA core-sets.
 - Streaming SMC with a population that can be forked.
 - Interventions and twin-world counterfactuals
   ([counterfactuals notebook](https://replikativ.github.io/foerster/foerster.counterfactuals.html)).

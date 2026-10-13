@@ -19,8 +19,9 @@ walks through it with runnable examples.
 `importance-sampling`, `pimh-infer`, `pgibbs-infer`, `pgas-infer`,
 `ipmcmc-infer`, `bbvi-infer`, and `kernel-infer` with the prior kernel or a
 custom `PInferenceKernel`. Markov-chain kernels (`single-site-mh-kernel`,
-`random-walk-mh-kernel`, `block-gibbs-kernel`, `hmc-kernel`) run in fresh
-worlds only and refuse `:fork`.
+`random-walk-mh-kernel`, `block-gibbs-kernel`, `hmc-kernel`, `nuts-kernel`,
+`delayed-acceptance-kernel`), tempered SMC and parallel tempering run in
+fresh worlds only and refuse `:fork`.
 
 ```clojure
 (sp/with-context world
@@ -104,6 +105,15 @@ and `:grant`:
 Because shares are re-split at every resampling, a lineage that is copied
 often runs on less; size the grant for the number of particles and the
 expected spend per particle.
+
+## Cost
+
+A canonical particle is a copy of the caller's world, so `:fork` costs more
+than fresh worlds, but by a constant factor: since spindel 0.1.112 the
+worlds an inference retires are released without scanning the others, and
+SMC with 1000 particles under `:fork` takes about three times as long as in
+fresh worlds (1.6 s against 164 s before, when release grew quadratically
+with the number of worlds).
 
 ## ClojureScript
 

@@ -20,10 +20,17 @@ Methods: `:enumerate` (exact, see below); `:importance`, `:smc`, `:tempered` (`:
 `:parallel-tempering` (`:chains`, one block site); `:pimh`,
 `:pgibbs`, `:pgas`, `:ipmcmc`, `:bbvi` (`:particles`, `:iterations`); `:mh`,
 `:rmh`, `:nuts` (`:iterations` per chain, `:chains`, `:burn`; `:step-size` for
-`:rmh`); `:kernel` (`:kernel`, `:chains`; the kernel carries its own `:burn`
-and output options); `:pmmh` (`:particles`, `:iterations`, `:burn`,
-`:params`). A size option a method does not take is refused; other options
-go to the method's own function, described below.
+`:rmh`; `:target-accept`, `:max-depth`, `:metric` for `:nuts`); `:kernel`
+(`:kernel`, `:chains`; the kernel carries its own `:burn` and output
+options); `:pmmh` (`:particles`, `:iterations`, `:burn`, `:params`). A size
+option a method does not take is refused; other options go to the method's
+own function, described below. `:seed` makes a run reproducible without
+touching the process generator, for the particle methods (importance
+sampling, SMC, particle MCMC, BBVI) and the Markov chains alike: chain i is seeded by `(derive-seed seed ::chain i)`,
+so several sessions sharing a JVM do not disturb each other's draws.
+The papers behind each method are in [literature](literature.md), and the
+[inference methods notebook](https://replikativ.github.io/foerster/foerster.methods.html)
+runs each on a model with a known answer.
 
 Which to start with:
 
@@ -35,7 +42,16 @@ Which to start with:
   R-hat and ESS
   ([posteriors](posteriors.md#diagnostics)).
 - **Static parameters of a sequential model**: `:pmmh`, or SMC² online;
-  **a multimodal posterior**: `:tempered`.
+  **a multimodal posterior**: `:tempered`, or `:parallel-tempering` for a
+  model that is one block.
+- **A fast approximation, or a starting point for a sampler**:
+  `optimize/pathfinder` or `optimize/laplace` on a block site.
+- **Exact answers for small discrete models**: `:enumerate`, the reference
+  to check the others against.
+
+SMC and tempered SMC spread their particles over the executor's threads
+(about one worker per processor); the results per seed do not depend on how
+many threads ran them.
 
 ## Exact enumeration
 
@@ -129,6 +145,19 @@ cross and SMC in program order only reaches if its early particles happen to:
 
 `m/log-marginal` estimates the evidence. Every move re-runs the program from
 the moved site, so a step costs N sweeps of the model; fresh worlds only.
+
+Block sites are tempered too. A block keeps its observations inside its
+target, so a block site with a draw density q (its `:sample-log-density`)
+follows the geometric path q^(1−β)·t^β from q to its target t, and is moved
+by random walks on its θ vector scaled by the population's spread at the
+step's temperature (`foerster.block-mh`). A block without
+`:sample-log-density` is refused (`::block/no-sample-density`). A model
+that is **one block site and nothing else** never makes a world per
+particle: the population is a set of θ vectors that are reweighted,
+resampled and moved directly (`foerster.population`), and only the distinct
+final θ are written back to traces, by one replay each. On golf putting as
+one block, 1000 particles take about a second and estimate log Z within
+0.2 of the exact −191.93.
 
 For data that arrive one observation at a time — IBIS (Chopin 2002) — use
 SMC with resample-move on the static parameters, below.
@@ -461,7 +490,16 @@ own iterations.
 The Markov-chain kernels run in fresh worlds only (they refuse `:fork`) and
 take output options: `:samples :final` (default) emits each chain's last
 state; `:samples :all` emits every state after the first `:burn` moves,
-equally weighted.
+equally weighted. `kernel-infer` takes `:seed`, from which each chain's
+seed is derived.
+
+Random-walk MH moves a block site on its θ vector (`foerster.block-mh`):
+several Gaussian steps against the block's own density, written back to the
+trace by one replay, as NUTS does. The per-coordinate scales adapt during
+`:burn`, steering the acceptance towards 0.234. The block's target must be
+its complete conditional; a write-back that changes the log probability of
+anything outside the block is refused (`::block-mh/incomplete-target`).
+Other latents take single-site random-walk moves as before.
 
 ## Point estimates and the Laplace approximation
 
@@ -526,3 +564,34 @@ waiting particle's world forked — to be pushed and closed on its own.
 See the [programmable](https://replikativ.github.io/foerster/foerster.programmable.html)
 and [counterfactuals](https://replikativ.github.io/foerster/foerster.counterfactuals.html)
 notebooks.
+
+## In an interpreter sandbox
+
+`org.replikativ.foerster.sandbox` is what code running in an interpreter
+sandbox — dvergr's SCI sandbox for agents — gets of foerster: namespace maps
+the host installs (`(sandbox/namespaces host-opts)`) and their help text
+(`sandbox/docs`).
+
+| Namespace | Functions |
+|---|---|
+| `infer/` | `run` (a spin of the posterior as plain data), `start`/`status`/`result`/`cancel`/`forget` for background jobs, and `summary`, `query`, `values`, `weights`, `log-weights`, `ess`, `log-marginal` |
+| `model/` | `block`, `site`, `constrain`, `numeric-gradient` |
+| `opt/` | `map-estimate`, `laplace` (with `:draws`), `pathfinder` |
+| `diag/` | `rhat`, `ess-bulk`, `ess-tail`, `mcse`, `chains`, `summary` |
+| `lp/` | `normal`, `normal-glm`, `bernoulli-logit-glm`, `poisson-log-glm`: log densities summed over data vectors on the host, about 5× faster than the same sum interpreted |
+
+The methods available there are `:importance`, `:smc`, `:mh`, `:rmh` and
+`:nuts`; the options are a data-only allowlist (no `:policy`, `:kernel`,
+`:executor` or `:world-opts`). Results are plain data with metadata
+stripped, and errors cross as their message and `:type` only. The host
+decides the default `:world-policy`, caps the work of a run (`:max-work`:
+particles, or iterations × chains) and of an optimizer
+(`:max-optimizer-work`), and gives a session `:seed` from which every run
+without its own seed derives one. A posterior whose particles all have zero
+weight is refused (`::sandbox/zero-likelihood`).
+
+Particle MCMC is not offered there yet: particle Gibbs resets the weights of
+each sweep, so a model with zero likelihood everywhere comes back as a
+uniform posterior rather than an error, and a sandboxed caller could not
+tell. Tempering, parallel tempering and enumeration are left out because
+their sizes do not bound their cost.
