@@ -366,8 +366,10 @@ exact
                 {:keys [mean sd]} (d/summary measure identity)]
             [label mean sd ms])))})
 
-;; On a static parameter like this one, particle Gibbs without moves sticks
-;; to the retained value; the moves let it mix.
+;; On a static parameter like this one, a sweep without moves can only
+;; replace μ by a fresh prior draw that wins the resampling against the
+;; retained particle, which is rare once the data are informative; the moves
+;; change μ in place.
 ;;
 ;; *References*: Andrieu, Doucet & Holenstein (2010); Lindsten, Jordan &
 ;; Schön (2014); Rainforth et al. (2016).
