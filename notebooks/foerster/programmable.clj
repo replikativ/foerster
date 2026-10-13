@@ -153,3 +153,17 @@
 
 (run (gfi/close! t))
 (run (gfi/close! (:trace g)))
+
+;; ## References
+;;
+;; - M. Cusumano-Towner, F. Saad, A. Lew, V. Mansinghka. *Gen: A
+;;   General-Purpose Probabilistic Programming System with Programmable
+;;   Inference.* PLDI 2019 — the generative function interface.
+;; - K. Neklyudov, M. Welling, E. Egorov, D. Vetrov. *Involutive MCMC: a
+;;   Unifying Framework.* ICML 2020. [arXiv:2006.16653](https://arxiv.org/abs/2006.16653)
+;; - M. Cusumano-Towner, A. K. Lew, V. Mansinghka. *Automating Involutive
+;;   MCMC using Probabilistic and Differentiable Programming.* 2020.
+;;   [arXiv:2007.09871](https://arxiv.org/abs/2007.09871)
+;; - P. J. Green. *Reversible jump Markov chain Monte Carlo computation and
+;;   Bayesian model determination.* Biometrika 82(4):711–732, 1995.
+;;   [doi:10.1093/biomet/82.4.711](https://doi.org/10.1093/biomet/82.4.711)

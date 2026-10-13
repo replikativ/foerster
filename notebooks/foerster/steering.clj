@@ -128,3 +128,16 @@ exact
 
 {:mean-final-heads (/ (reduce + (map (comp peek :states) draws)) (double (count draws)))
  :exact (:mean exact)}
+
+;; ## References
+;;
+;; - N. Whiteley, A. Lee. *Twisted particle filters.* Annals of Statistics
+;;   42(1):115–141, 2014. [arXiv:1210.0220](https://arxiv.org/abs/1210.0220)
+;; - S. Zhao, R. Brekelmans, A. Makhzani, R. Grosse. *Probabilistic
+;;   Inference in Language Models via Twisted Sequential Monte Carlo.* ICML
+;;   2024. [arXiv:2404.17546](https://arxiv.org/abs/2404.17546)
+;; - A. K. Lew, T. Zhi-Xuan, G. Grand, V. K. Mansinghka. *Sequential Monte
+;;   Carlo Steering of Large Language Models using Probabilistic Programs.*
+;;   2023. [arXiv:2306.03081](https://arxiv.org/abs/2306.03081)
+;; - T. Korbak, E. Perez, C. L. Buckley. *RL with KL penalties is better
+;;   viewed as Bayesian inference.* Findings of EMNLP 2022.

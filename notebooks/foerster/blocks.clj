@@ -137,9 +137,11 @@
 ;; samples the right posterior; it just mixes worse (a step that noticed
 ;; reports `:incomplete-target?`, visible to `trace/mh-chain`'s `:on-step`).
 ;; So a block's density is a statement about efficiency, not about
-;; correctness. Blocks are for MCMC: the particle methods draw a block site
-;; from its `:sample` capability as a prior draw, so its density does not
-;; weigh the particle.
+;; correctness. Under importance sampling and SMC a block site is drawn from
+;; its `:sample` capability and the particle is weighted by the block's
+;; target over the density of that draw (`:sample-log-density`), which those
+;; methods therefore require; tempered SMC moves it from that draw density to
+;; its target.
 
 ;; ## Compiled blocks
 ;;
@@ -149,3 +151,21 @@
 ;; log densities, with gradients from raster's reverse-mode automatic
 ;; differentiation, to JVM bytecode and (by raster's backends) WASM and GPU
 ;; kernels.
+
+;; ## Beyond HMC
+;;
+;; The same blocks run under NUTS (`{:method :nuts}`, with Stan's step-size
+;; and metric adaptation or nutpie's Fisher-divergence metric), random-walk
+;; MH on θ (`:rmh`), delayed acceptance, tempered SMC and non-reversible
+;; parallel tempering, and the optimizers (MAP, Laplace, Pathfinder): see
+;; [Inference Methods](foerster.methods.html).
+;;
+;; ## References
+;;
+;; - S. Duane, A. D. Kennedy, B. J. Pendleton, D. Roweth. *Hybrid Monte
+;;   Carlo.* Physics Letters B 195(2):216–222, 1987.
+;;   [doi:10.1016/0370-2693(87)91197-X](https://doi.org/10.1016/0370-2693(87)91197-X)
+;; - R. M. Neal. *MCMC using Hamiltonian dynamics.* Handbook of Markov Chain
+;;   Monte Carlo, 2011. [arXiv:1206.1901](https://arxiv.org/abs/1206.1901)
+;; - M. D. Hoffman, A. Gelman. *The No-U-Turn Sampler.* JMLR 15:1593–1623,
+;;   2014. [arXiv:1111.4246](https://arxiv.org/abs/1111.4246)
