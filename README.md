@@ -29,23 +29,30 @@ is a handler that decides, scores, forks, copies or abandons those savepoints:
 - **one call shape** for every method: `(infer/infer model {:method :smc
   :particles 1000})`
 - **exact enumeration** of finite discrete models over forked worlds
-- **SMC** and streaming SMC, importance sampling, tempered SMC,
-  resample-move and SMCP3; arrival-batched SMC and the **particle cascade**,
-  which do not wait for the slowest particle
-- **particle MCMC**: PIMH, particle Gibbs, PGAS, IPMCMC; **PMMH** and
-  **SMC²** for static parameters
+- **SMC** and streaming SMC, importance sampling, tempered SMC (also
+  waste-free, and on numerical blocks), resample-move and SMCP3;
+  arrival-batched SMC and the **particle cascade**, which do not wait for
+  the slowest particle; **sequential core-set Monte Carlo** with GIGA for
+  streams in bounded memory
+- **particle MCMC**: PIMH, particle Gibbs (with exact resample-move), PGAS,
+  IPMCMC; **PMMH** and **SMC²** for static parameters
 - **MCMC over traces**: single-site and random-walk Metropolis–Hastings,
   block Gibbs, involutive MCMC with reversible jump, custom proposal
-  programs; **NUTS** (Stan's adaptation) and HMC on numerical blocks, with
-  constrained latents; kernels composed by `k/cycle` and `k/mixture`
-- **MAP** (L-BFGS) and the **Laplace approximation** on blocks; **BBVI**
-  (black-box variational inference); evidence maximization for a model's
-  parameters (`foerster.learn`)
+  programs, **delayed acceptance** with a cheap coarse density; **NUTS**
+  (Stan's adaptation, or nutpie's Fisher-divergence metric) and HMC on
+  numerical blocks, with constrained latents; **non-reversible parallel
+  tempering**; kernels composed by `k/cycle` and `k/mixture`
+- **MAP** (L-BFGS), the **Laplace approximation** and **Pathfinder** on
+  blocks; **BBVI** (black-box variational inference); evidence maximization
+  for a model's parameters (`foerster.learn`)
 - **Anglican's toolkit**: `mem`, Chinese restaurant processes, nested
   inference (`infer/conditional`)
 - **checking**: R-hat, bulk and tail ESS and MCSE as ArviZ computes them,
   PSIS-LOO, WAIC and model comparison, posterior predictive checks
-  (also on new inputs and under interventions), export to ArviZ
+  (also on new inputs and under interventions), export to ArviZ;
+  simulation-based calibration and a posteriordb profile (ten reference
+  posteriors, accuracy and speed of NUTS, tempered SMC and parallel
+  tempering)
 - **steering** a process — a language model's turns, a simulator — by SMC
   over scored steps, twisted by a value estimate (`foerster.steer`), with
   the trajectories as training data (`foerster.learn`)
@@ -53,6 +60,11 @@ is a handler that decides, scores, forks, copies or abandons those savepoints:
   program computes, weighted by log p − log q
 - **counterfactuals** and interventions (Pearl's `do`), selectors over sites
 - a Gen-style generative function interface
+- **reproducible runs** from a `:seed`, for particles and chains alike, the
+  same draws on the JVM and in JavaScript
+- **sandboxed use** (`foerster.sandbox`): namespaces for an interpreter
+  sandbox such as dvergr's agent sandbox, with plain-data results, work
+  limits, per-session seeds and background jobs
 
 ```clojure
 (require '[org.replikativ.foerster.core :as infer]
@@ -83,7 +95,8 @@ Inside another spin, `await` it instead of dereferencing
 
 - **Tutorials** — runnable notebooks, rendered at
   [replikativ.github.io/foerster](https://replikativ.github.io/foerster/):
-  getting started, choosing an algorithm, models in worlds, blocks and HMC,
+  getting started, choosing an algorithm, every inference method with its
+  papers, models in worlds, blocks and HMC,
   streaming SMC, programmable inference, interventions and counterfactuals,
   steering a process, a gallery of classic models, models from the PyMC
   gallery, and marketing mix modeling — each checked against an exact
@@ -104,7 +117,8 @@ that read or change the systems of the world they run in (databases,
 repositories, a business book); Markov chains run in fresh worlds only:
 
 - every particle is a frozen copy of the caller's world and runs the whole
-  model, so nothing a particle writes reaches the caller;
+  model, so nothing a particle writes reaches the caller; this costs about
+  three times as much as fresh worlds;
 - on the JVM particles are *copies* of worlds: systems that must not be
   duplicated (live handles, unsettleable linear state) are refused before the
   model runs, and with a resource authority particles split the inference's

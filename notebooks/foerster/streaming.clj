@@ -105,3 +105,24 @@
 ;; A step also has `:close`, which gives the worlds back if you stop early;
 ;; after the last observation every particle has returned and the step is
 ;; `:done?`.
+
+;; Static parameters of a streamed model degenerate under plain SMC: give
+;; them resample-move moves (`:anchors {:lag L}` bounds the replay), carry a
+;; conjugate posterior (`foerster.conjugate`), or infer them by SMC²
+;; (`smc2/smc2`, the same step shape). For a stream of exchangeable data,
+;; sequential core-set Monte Carlo (`scmc/scmc`) runs in bounded memory. See
+;; [Inference Methods](foerster.methods.html).
+;;
+;; ## References
+;;
+;; - A. Doucet, A. M. Johansen. *A tutorial on particle filtering and
+;;   smoothing: fifteen years later.* 2011.
+;; - W. R. Gilks, C. Berzuini. *Following a moving target — Monte Carlo
+;;   inference for dynamic Bayesian models.* JRSS B 63(1):127–146, 2001.
+;;   [doi:10.1111/1467-9868.00280](https://doi.org/10.1111/1467-9868.00280)
+;; - N. Chopin, P. E. Jacob, O. Papaspiliopoulos. *SMC²: an efficient
+;;   algorithm for sequential analysis of state space models.* JRSS B
+;;   75(3):397–426, 2013. [arXiv:1101.1528](https://arxiv.org/abs/1101.1528)
+;; - B. Beronov, C. Weilbach, F. Wood, T. Campbell. *Sequential core-set
+;;   Monte Carlo.* UAI 2021.
+;;   [proceedings.mlr.press/v161/beronov21a](https://proceedings.mlr.press/v161/beronov21a.html)

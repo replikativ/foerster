@@ -135,3 +135,9 @@
 ;; A site that exists only in the counterfactual world — reached through a
 ;; branch the factual run did not take — has no factual noise; it is drawn
 ;; fresh and reported in `:unaligned`.
+
+;; ## References
+;;
+;; - J. Pearl. *Causality: Models, Reasoning, and Inference.* 2nd ed.,
+;;   Cambridge University Press, 2009 — interventions and the three-step
+;;   counterfactual (abduction, action, prediction).

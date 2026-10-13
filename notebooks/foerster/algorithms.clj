@@ -308,3 +308,26 @@
 ;; forks of the world they are called from: [Models in
 ;; Worlds](foerster.worlds.html). Markov chains (MH, random-walk MH, block
 ;; Gibbs, HMC) run in fresh worlds only.
+
+;; Every method foerster implements — also tempered SMC, parallel tempering,
+;; NUTS, delayed acceptance, Pathfinder, PMMH, SCMC and the particle cascade
+;; — is described with a run and its papers in [Inference
+;; Methods](foerster.methods.html).
+;;
+;; ## References
+;;
+;; - SMC: A. Doucet, A. M. Johansen. *A tutorial on particle filtering and
+;;   smoothing: fifteen years later.* 2011.
+;; - Particle MCMC (PIMH, particle Gibbs): C. Andrieu, A. Doucet,
+;;   R. Holenstein. *Particle Markov chain Monte Carlo methods.* JRSS B
+;;   72(3):269–342, 2010. [doi:10.1111/j.1467-9868.2009.00736.x](https://doi.org/10.1111/j.1467-9868.2009.00736.x)
+;; - PGAS: F. Lindsten, M. I. Jordan, T. B. Schön. *Particle Gibbs with
+;;   ancestor sampling.* JMLR 15:2145–2184, 2014. [arXiv:1401.0604](https://arxiv.org/abs/1401.0604)
+;; - IPMCMC: T. Rainforth et al. *Interacting Particle Markov Chain Monte
+;;   Carlo.* ICML 2016. [arXiv:1602.05128](https://arxiv.org/abs/1602.05128)
+;; - Lightweight MH: D. Wingate, A. Stuhlmüller, N. Goodman. AISTATS 2011.
+;; - Cycles and mixtures of kernels: L. Tierney. *Markov chains for exploring
+;;   posterior distributions.* Annals of Statistics 22(4), 1994.
+;;   [doi:10.1214/aos/1176325750](https://doi.org/10.1214/aos/1176325750)
+;; - BBVI: R. Ranganath, S. Gerrish, D. Blei. *Black Box Variational
+;;   Inference.* AISTATS 2014. [arXiv:1401.0118](https://arxiv.org/abs/1401.0118)

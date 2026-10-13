@@ -108,6 +108,29 @@ run a program under a policy.
   costs mixing, not correctness. Under the particle methods a block site is
   drawn from its `:sample` capability and weighted by its density over the
   density of the draw (`:sample-log-density`, required there).
+- **NUTS** (`foerster.nuts`) runs Stan's algorithm on a block's θ vector:
+  many density and gradient evaluations per transition, one write-back
+  replay of the program per move. **Random-walk MH on blocks**
+  (`foerster.block-mh`) does the same with Gaussian steps, and is the move
+  tempered SMC uses for block sites. **Delayed acceptance** screens such a
+  random walk by a cheap coarse density of θ and lets one replay of the
+  program decide, on the program's own ratio corrected by the coarse one.
+- **Tempered SMC** (`foerster.tempering`) runs every particle as a complete
+  trace recorded at temperature 0, each observation's log-likelihood in its
+  note, so reweighting to the next β needs no re-execution; moves replay
+  from the moved site. A block site carries its own geometric path from its
+  draw density to its target in the same note.
+- **The θ population engine** (`foerster.population`) is SMC over plain θ
+  vectors for a model that is one block site: a *path* gives the next
+  position, the incremental weights and the density the moves keep
+  invariant; resampling, moves and evidence are the engine's. Tempering to
+  the block's target is one path; SCMC's data batches with a core-set
+  (`foerster.scmc`) are another. **Parallel tempering**
+  (`foerster.parallel-tempering`) keeps one θ chain per temperature on the
+  same density path. Worlds are made only at the end, by one replay per
+  distinct final θ, so every reported value is computed by the program.
+- **Pathfinder, MAP and Laplace** (`foerster.optimize`) work on a block's
+  density directly, with no world at all.
 - **Involutive MCMC** (`foerster.involutive`): an auxiliary draw and an
   involution on (choices, aux) with its log Jacobian.
 - **BBVI** learns a mean-field q by stochastic gradient ascent on the ELBO
