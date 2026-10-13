@@ -6,6 +6,7 @@
 (def notebooks
   [["getting_started" "Getting Started" "a first model, sample and observe, SMC, the posterior"]
    ["algorithms" "Choosing an Inference Algorithm" "importance sampling, SMC, particle MCMC, MCMC, BBVI on known posteriors; guides; composed kernels"]
+   ["methods" "Inference Methods" "every inference method with a run on a known answer, its options, its cost and its papers"]
    ["worlds" "Models in Worlds" "canonical forks, budgets, what cannot be copied"]
    ["blocks" "Blocks and HMC" "numerical blocks, HMC-within-Gibbs, checking gradients"]
    ["streaming" "Streaming SMC" "online filtering against the Kalman filter"]
