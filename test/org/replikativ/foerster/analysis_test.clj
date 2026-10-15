@@ -96,3 +96,31 @@
                          (recur (conj/update c 1) (inc i)))))))]
     (is (= 2 (count (:sites g))))
     (is (empty? (facts-of g :conjugate)))))
+
+(defn- conjugate-priors [g] (set (map :prior (facts-of g :conjugate))))
+
+(deftest a-collapsed-parameter-may-only-be-returned
+  (testing "returned, alone or in the result's collection: collapses"
+    (is (= 1 (count (conjugate-priors
+                     (a/analyze (spin (let [p (sample (dist/beta 1 1) :id :p)]
+                                        (observe (dist/bernoulli p) 1 :id :a)
+                                        p)))))))
+    (is (= 1 (count (conjugate-priors
+                     (a/analyze (spin (let [p (sample (dist/beta 1 1) :id :p)]
+                                        (observe (dist/bernoulli p) 1 :id :a)
+                                        {:p p :n 1}))))))))
+  (testing "anywhere else, its value is used before its posterior is known"
+    (doseq [g [(a/analyze (spin (let [p (sample (dist/beta 1 1) :id :p)]
+                                  (swap! seen conj p)
+                                  (observe (dist/bernoulli p) 1 :id :a))))
+               (a/analyze (spin (let [p (sample (dist/beta 1 1) :id :p)
+                                      f (fn [] p)]
+                                  (observe (dist/bernoulli p) 1 :id :a)
+                                  f)))
+               (a/analyze (spin (let [p (sample (dist/beta 1 1) :id :p)]
+                                  (loop [i 0 acc []]
+                                    (when (< i 2)
+                                      (observe (dist/bernoulli p) 1 :id [:a i])
+                                      (recur (inc i) (conj acc p)))))))]]
+      (is (empty? (conjugate-priors g)))
+      (is (seq (:escapes (first (facts-of g :latent))))))))

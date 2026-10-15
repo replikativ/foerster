@@ -47,7 +47,8 @@
                 (do (swap! totals update :errors (fnil inc 0))
                     (println "ERROR" f (:line (meta s)) (:error g)))
                 (let [fs (a/facts g)
-                      kinds (frequencies (map :fact fs))]
+                      kinds (cond-> (frequencies (map :fact fs))
+                              (some :escapes fs) (assoc :escaping (count (filter :escapes fs))))]
                   (swap! totals #(merge-with + % {:models 1 :sites (count (:sites g))} (dissoc kinds :latent :markov-blanket)))
                   (println (str (.getName (io/file f)) ":" (:line (meta s)))
                            (count (:sites g)) "sites"

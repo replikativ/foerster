@@ -104,7 +104,25 @@
 
 (declare walk)
 
+(defn- inner
+  "`st` for a subexpression whose value is not the model's result."
+  [st]
+  (assoc st :tail? false))
+
+(defn- escape!
+  "Note that the value `v`, if it is a latent site's own value, goes somewhere
+  other than a distribution's argument or the model's result."
+  [{:keys [state record?]} v how]
+  (when (and record? (:exact v))
+    (swap! state update-in [:escapes (:exact v)] (fnil conj #{}) how))
+  v)
+
 (defn- walk-all [st forms] (apply reads (map #(walk st %) forms)))
+
+(defn- walk-args
+  "The arguments of a call: each one a value the call computes with."
+  [st forms how]
+  (apply reads (map #(escape! st (walk (inner st) %) how) forms)))
 
 (defn- record-site!
   "Record the site of `(f args…)` and return its value."
@@ -122,10 +140,11 @@
                            (let [q (resolve-sym (:ns st) (:locals st) (first dist-form))]
                              (when q [q (rest dist-form)])))
         ctor (when (and ctor (= dist-ns (namespace ctor))) (symbol (name ctor)))
+        st (inner st)
         arg-values (if ctor
                      (mapv (fn [a] (assoc (walk st a) :form a)) dist-args)
-                     [(assoc (walk st dist-form) :form dist-form)])
-        value (when value-form (walk st value-form))
+                     [(assoc (escape! st (walk st dist-form) :distribution) :form dist-form)])
+        value (when value-form (escape! st (walk st value-form) :observed-value))
         id-form (:id opts)
         id-value (when id-form (walk st id-form))
         n (count (:sites @state))
@@ -160,7 +179,7 @@
                            (swap! state assoc-in [:loops id] {:bindings syms :sites #{}})
                            id))
         [st inits] (reduce (fn [[st acc] [s init]]
-                             (let [v (walk st init)]
+                             (let [v (walk (inner st) init)]
                                [(-> st (update :env assoc s v) (update :locals conj s)) (conj acc v)]))
                            [st []] (partition 2 bvec))
         body-pass (fn [vals record?]
@@ -191,14 +210,14 @@
     (cond
       (contains? site-fns q) (record-site! st (site-fns q) form args)
 
-      (contains? spin-macros q) (walk-all st args)
+      (contains? spin-macros q) (walk st (cons 'do args))
 
       (macro? ns locals f)
       (walk st (binding [*ns* ns] (macroexpand-1 form)))
 
       :else
-      (reads (if (symbol? f) (get env f const) (walk st f))
-             (walk-all st args)))))
+      (reads (if (symbol? f) (get env f const) (walk (inner st) f))
+             (walk-args st args {:call f})))))
 
 (defn- contains-site? [{:keys [ns locals]} form]
   (some (fn [x] (and (seq? x) (symbol? (first x))
@@ -216,37 +235,43 @@
       (case op
         quote const
         var const
-        do (if (seq args) (do (doseq [a (butlast args)] (walk st a)) (walk st (last args))) const)
+        do (if (seq args) (do (doseq [a (butlast args)] (walk (inner st) a)) (walk st (last args))) const)
         let* (let [[bvec & body] args
                    st' (reduce (fn [st [s init]]
-                                 (-> st (update :env assoc s (walk st init)) (update :locals conj s)))
+                                 (-> st (update :env assoc s (walk (inner st) init)) (update :locals conj s)))
                                st (partition 2 bvec))]
                (walk st' (cons 'do body)))
         loop* (walk-loop st form)
-        recur (let [vals (mapv #(walk st %) args)]
+        recur (let [vals (mapv #(escape! st (walk (inner st) %) :loop-carry) args)]
                 (when-let [{:keys [recurs]} (peek (:loops st))] (swap! recurs conj vals))
                 const)
         if (let [[test then else] args
-                 t (walk st test)
+                 t (walk (inner st) test)
                  st' (update st :control set/union (:reads t))]
              (reads t (walk st' then) (walk st' else)))
         case* (let [[e _shift _mask default imap] (rest form)
-                    t (walk st (second form))
+                    t (walk (inner st) (second form))
                     st' (update st :control set/union (:reads t))]
                 (apply reads t (walk st' default) (map #(walk st' (second %)) (vals imap))))
-        fn* (do (when (contains-site? st form)
-                  (swap! state update :unknown conj {:reason :closure :form form}))
-                ;; a closure reads what it closes over
-                (apply reads (vals env)))
+        fn* (let [captured (keep env (filter symbol? (tree-seq coll? seq form)))]
+              (when (contains-site? st form)
+                (swap! state update :unknown conj {:reason :closure :form form}))
+              (doseq [v captured] (escape! st v :closure))
+              ;; a closure reads what it closes over
+              (apply reads captured))
         letfn* (do (when (contains-site? st form)
                      (swap! state update :unknown conj {:reason :closure :form form}))
                    (walk st (cons 'do (rest args))))
         (try catch finally throw new set! . monitor-enter monitor-exit)
-        (walk-all st args)
+        (walk-args st args :host)
         (walk-call st form)))
 
-    (map? form) (walk-all st (concat (keys form) (vals form)))
-    (coll? form) (walk-all st form)
+    ;; a collection in the model's result returns its elements; elsewhere they
+    ;; go wherever the collection goes
+    (map? form) (if (:tail? st)
+                  (walk-all st (concat (keys form) (vals form)))
+                  (walk-args st (concat (keys form) (vals form)) :collection))
+    (coll? form) (if (:tail? st) (walk-all st form) (walk-args st form :collection))
     :else const))
 
 ;; -----------------------------------------------------------------------------
@@ -259,11 +284,11 @@
   bound outside the form, which read no site."
   ([form] (analyze-form form nil))
   ([form {:keys [ns locals] :or {ns *ns*}}]
-   (let [state (atom {:sites {} :loops {} :unknown []})
+   (let [state (atom {:sites {} :loops {} :unknown [] :escapes {}})
          st {:ns (the-ns ns) :locals (set locals) :env {} :control #{}
-             :loops [] :state state :record? true}]
+             :loops [] :state state :record? true :tail? true}]
      (walk st form)
-     (let [{:keys [sites loops unknown]} @state
+     (let [{:keys [sites loops unknown escapes]} @state
            marker? vector?
            carried? (fn [id l s]
                       (some (fn [m] (and (marker? m) (= id (second m))
@@ -276,7 +301,8 @@
                                  (update :reads strip)
                                  (update :control strip)
                                  (update :address-reads strip)
-                                 (update-in [:dist :args] (fn [as] (mapv #(update % :reads strip) as))))]))
+                                 (update-in [:dist :args] (fn [as] (mapv #(update % :reads strip) as)))
+                                 (cond-> (escapes n) (assoc :escapes (escapes n))))]))
         :loops (into {} (for [[id l] loops]
                           [id {:bindings (:bindings l)
                                :sites (:sites l)
@@ -297,13 +323,14 @@
 (defn- conjugate-pair
   "The conjugate family the latent site `n` forms with all its children, if it
   does: every child is a constructor of the family's likelihood whose
-  parameter argument is exactly `n`, reads `n` nowhere else, and no site's
-  existence depends on `n`."
+  parameter argument is exactly `n`, reads `n` nowhere else, no site's
+  existence depends on `n`, and `n`'s value goes nowhere else but the
+  model's result."
   [sites n]
-  (let [{:keys [dist]} (sites n)
+  (let [{:keys [dist escapes]} (sites n)
         table (get conjugate-families (:ctor dist))
         kids (children sites n)]
-    (when (and table (seq kids))
+    (when (and table (seq kids) (empty? escapes))
       (let [families
             (for [k kids
                   :let [{:keys [dist control address-reads]} (sites k)
@@ -331,8 +358,9 @@
      (concat
       (for [[n s] latent
             :let [sup (ctor-support s)]]
-        {:fact :latent :site n :address (:address s) :support (or sup :unknown)
-         :decides-control? (contains? controlling n)})
+        (cond-> {:fact :latent :site n :address (:address s) :support (or sup :unknown)
+                 :decides-control? (contains? controlling n)}
+          (:escapes s) (assoc :escapes (:escapes s))))
       (for [[n s] latent :when (= :finite (ctor-support s))]
         {:fact :finite-support :site n :address (:address s)})
       (for [[n s] latent
