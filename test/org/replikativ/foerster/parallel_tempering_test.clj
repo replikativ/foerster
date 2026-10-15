@@ -38,6 +38,19 @@
     (spin (let [[a b] (sample (block/block-dist blk nil) :id :theta :init [0.0 0.0])]
             {:a a :b b}))))
 
+(deftest a-seed-fixes-the-run
+  (let [model #(block-model (fn [[a b]] (+ (lnorm a 1.0 0.3) (lnorm b -0.5 0.3))))
+        values (fn [process-seed make]
+                 (mapv (comp m/get-value first) (m/get-particles (b/run-infer process-seed make))))]
+    (testing "parallel tempering"
+      (let [run #(pt/parallel-tempering (model) {:chains 4 :rounds 4 :seed %})]
+        (is (= (values 1 #(run 7)) (values 2 #(run 7))))
+        (is (not= (values 1 #(run 7)) (values 1 #(run 8))))))
+    (testing "tempered SMC on a block"
+      (let [run #(tempering/tempered (model) 16 {:seed %})]
+        (is (= (values 1 #(run 7)) (values 2 #(run 7))))
+        (is (not= (values 1 #(run 7)) (values 1 #(run 8))))))))
+
 (deftest gaussian-posterior-and-evidence
   (let [res (b/run-infer 5 #(pt/parallel-tempering
                              (block-model (fn [[a b]] (+ (lnorm a 1.0 0.3) (lnorm b -0.5 0.3))))
@@ -96,9 +109,12 @@
                                  :value+grad (fn [th _] (let [[a b] (vec th)]
                                                           [(+ (lnorm a 0.0 1.0) (lnorm b 0.0 1.0)) (double-array [(- a) (- b)])]))}
                                 reference))
-        model (fn [] (spin (let [[a _] (sample (block/block-dist blk nil) :id :theta :init [0.5 0.0])]
-                             (when (neg? a) (throw (ex-info "negative" {})))
-                             a)))
+        ;; the first run is the template, which must get past the block
+        model (fn [] (let [runs (atom 0)]
+                       (spin (let [[a _] (sample (block/block-dist blk nil) :id :theta :init [0.5 0.0])]
+                               (when (and (< 1 (swap! runs inc)) (neg? a))
+                                 (throw (ex-info "negative" {})))
+                               a))))
         failure (fn [run] (let [e (try (b/run-infer 3 run) nil (catch Exception e e))]
                             (some #(:type (ex-data %)) (take-while some? (iterate ex-cause e)))))]
     (is (= ::pop/model-failed (failure #(pt/parallel-tempering (model) {:chains 4 :rounds 4}))))

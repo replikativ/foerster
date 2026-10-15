@@ -167,12 +167,13 @@
               round's 2^(rounds−1) target-chain states are the sample
     :steps    random-walk steps per chain per scan (default the dimension)
     :executor the worlds' executor
+    :seed     fixes every draw (default: one from the process generator)
 
   Returns a CPS operation resolving an EmpiricalMeasure of `Sample`s, each
   written back to a trace once per distinct θ, whose `m/log-marginal` is the
   stepping-stone evidence; `:temperatures`, `:barrier` Λ, `:local-barrier`
   [[β r] …], `:round-trips` and `:swap-acceptance` diagnose the run."
-  [model & [{:keys [chains steps executor] n-rounds :rounds :or {chains 10 n-rounds 10}}]]
+  [model & [{:keys [chains steps executor seed] n-rounds :rounds :or {chains 10 n-rounds 10}}]]
   (when-not (and (int? chains) (>= chains 2))
     (throw (ex-info ":chains is at least 2" {:type ::invalid-chains :chains chains})))
   (when-not (pos-int? n-rounds)
@@ -180,9 +181,10 @@
   (when-not (or (nil? steps) (pos-int? steps))
     (throw (ex-info ":steps is a positive count" {:type ::invalid-steps :steps steps})))
   (fn [resolve reject]
-    (let [seed (random/fresh-seed)
+    (let [seed (or seed (random/fresh-seed))
           {:keys [session operation]} (gfi/run-policy* model (itrace/policy {:temperature 0.0})
-                                                       (cond-> {} executor (assoc :executor executor)))
+                                                       (cond-> {:seed (sp/derive-seed seed ::run 0)}
+                                                         executor (assoc :executor executor)))
           end (fn [k v] ((sp/close! session) (fn [_] (k v)) (fn [_] (k v))))]
       (operation
        (fn [template]

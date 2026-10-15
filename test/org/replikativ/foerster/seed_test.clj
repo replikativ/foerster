@@ -28,6 +28,12 @@
         (is (< (* 2 (count (distinct (take 5 vs)))) (count (distinct vs))) "the sweeps differ")
         (is (= vs (values opts 2)) ":seed fixes the run, whatever the process generator")))))
 
+(deftest seeded-tempering-is-fixed
+  (let [opts {:method :tempered :particles 8 :seed 99}
+        vs (values opts 1)]
+    (is (= vs (values opts 2)) ":seed fixes the run, whatever the process generator")
+    (is (not= vs (values (assoc opts :seed 100) 1)) "another seed, another run")))
+
 (deftest impossible-and-empty-runs-say-so
   (testing "a population whose particles are all impossible has no posterior"
     (let [measure (b/run-infer 3 #(infer/infer (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
