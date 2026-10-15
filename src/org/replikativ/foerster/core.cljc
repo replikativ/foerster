@@ -43,7 +43,35 @@
             [org.replikativ.spindel.effects.await :refer [await await-finalization]]
             [replikativ.logging :as log]
             [org.replikativ.foerster.dist :as dist]
+            [org.replikativ.foerster.effects :as effects]
+            [org.replikativ.spindel.engine.effects :as eff]
             [clojure.set :as set]))
+
+;; =============================================================================
+;; Modelling primitives
+;; =============================================================================
+
+;; Re-exported from foerster.effects so that a model needs one require besides
+;; the distributions:
+;;   (require '[org.replikativ.foerster.core :as infer
+;;              :refer [sample observe factor]])
+;; Effects are recognized by their qualified symbol, so the re-exported names
+;; are registered with the same handlers (as spindel.core does for await).
+
+(def sample "See `org.replikativ.foerster.effects/sample`." effects/sample)
+(def observe "See `org.replikativ.foerster.effects/observe`." effects/observe)
+(def factor "See `org.replikativ.foerster.effects/factor`." effects/factor)
+(def deterministic "See `org.replikativ.foerster.effects/deterministic`." effects/deterministic)
+(def intervene! "See `org.replikativ.foerster.effects/intervene!`." effects/intervene!)
+
+(eff/register-effect-by-symbol!
+ 'org.replikativ.foerster.core/sample effects/choose-handler effects/sample-adapter)
+(eff/register-effect-by-symbol!
+ 'org.replikativ.foerster.core/observe effects/choose-handler effects/observe-adapter)
+(eff/register-effect-by-symbol!
+ 'org.replikativ.foerster.core/factor effects/factor-handler effects/factor-adapter)
+(eff/register-effect-by-symbol!
+ 'org.replikativ.foerster.core/deterministic effects/deterministic-handler effects/deterministic-adapter)
 
 ;; =============================================================================
 ;; Markov chains: replay plus accept
