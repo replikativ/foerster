@@ -178,6 +178,6 @@ foerster grew inside spindel and was split out with its history.
 
 ## License
 
-Copyright © 2026 Christian Weilbach. Apache License 2.0.
+Copyright © 2026 Christian Weilbach. MIT License.  Releases up to and including 0.1.104 were published under the Apache License 2.0.
 
 [foerster-raster]: https://github.com/replikativ/foerster-raster
