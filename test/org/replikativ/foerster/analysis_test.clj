@@ -200,3 +200,34 @@
                                (when c (observe (dist/normal 0 1) 0.2 :id :y)))))
           y (:path ((by-address g) :y))]
       (is (= [[{:site 0} true]] y)))))
+
+(deftest linear-gaussian-blocks
+  (testing "a regression's intercept and slope form one block"
+    (let [g (a/analyze (spin (let [a (sample (dist/normal 0.0 5.0) :id :a)
+                                   b (sample (dist/normal 0.0 5.0) :id :b)]
+                               (loop [i 0]
+                                 (when (< i (count xs))
+                                   (observe (dist/normal (+ a (* b (nth xs i))) 0.3) (nth ys i) :id [:y i])
+                                   (recur (inc i))))
+                               [a b])))
+          s (by-address g)]
+      (is (= [{:latents #{(:n (s :a)) (:n (s :b))} :observations #{(:n (s '[:y i]))}}]
+             (map #(dissoc % :fact) (facts-of g :linear-gaussian))))))
+  (testing "a Gaussian random walk, unrolled, is one block (a Kalman filter's)"
+    (let [g (a/specialize (a/model [n ys]
+                                   (loop [t 0 x 0.0]
+                                     (when (< t n)
+                                       (let [x' (sample (dist/normal x 1.0) :id [:x t])]
+                                         (observe (dist/normal x' 0.5) (nth ys t) :id [:y t])
+                                         (recur (inc t) x')))))
+                          3 [0.2 0.1 0.5])
+          [b] (facts-of g :linear-gaussian)]
+      (is (= 3 (count (:latents b))))
+      (is (= 3 (count (:observations b))))))
+  (testing "a square is not linear"
+    (is (empty? (facts-of (a/analyze (spin (let [a (sample (dist/normal 0.0 1.0) :id :a)]
+                                             (observe (dist/normal (* a a) 1.0) 0.3 :id :y))))
+                          :linear-gaussian))))
+  (testing "linear"
+    (is (= {:const 1.0 :coefs {0 2.0 1 -1}}
+           (a/linear '(clojure.core/- (clojure.core/+ 1.0 (clojure.core/* 2.0 {:site 0})) {:site 1}) #{0 1})))))
