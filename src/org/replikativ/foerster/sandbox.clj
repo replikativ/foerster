@@ -135,9 +135,13 @@
    :pgibbs (fn [{:keys [particles iterations]}] (* particles (inc iterations)))
    :pgas (fn [{:keys [particles iterations]}] (* particles (inc iterations)))
    ;; on each of its 8 nodes
-   :ipmcmc (fn [{:keys [particles iterations]}] (* 8 particles (inc iterations)))})
-;; Not yet: tempering, parallel tempering and enumeration have costs their
-;; sizes do not bound.
+   :ipmcmc (fn [{:keys [particles iterations]}] (* 8 particles (inc iterations)))
+   ;; an SMC of :particles for each proposed parameter, and an initial one
+   :pmmh (fn [{:keys [particles iterations]}] (* particles (inc iterations)))
+   ;; at most :max-branches complete assignments (foerster.enumerate)
+   :enumerate (fn [{:keys [max-branches] :or {max-branches 100000}}] max-branches)})
+;; Not yet: tempering and parallel tempering have costs their sizes do not
+;; bound.
 
 (def ^:private particle-methods
   "The methods whose particles can run in canonical forks (`:world-policy`)."
@@ -146,7 +150,11 @@
 (def ^:private run-options
   "Options a sandbox may pass: data only, no functions, kernels or worlds."
   #{:method :particles :iterations :chains :burn :seed :world-policy :resampling
-    :resample-threshold :step-size :target-accept :max-depth :metric})
+    :resample-threshold :step-size :target-accept :max-depth :metric
+    ;; :pmmh: the parameter addresses and the random walk's scale
+    :params :scale
+    ;; :enumerate
+    :max-branches})
 
 (defn- refuse [message data] (throw (ex-info message data)))
 
@@ -163,6 +171,10 @@
   with the host's world policy as default and a seed."
   [opts {:keys [world-policy max-work]} next-seed]
   (let [{:keys [method]} opts
+        ;; enumeration stops at the sandbox's limit unless it names its own
+        opts (cond-> opts
+               (and (= :enumerate method) max-work (not (contains? opts :max-branches)))
+               (assoc :max-branches (min 100000 max-work)))
         work-of (method-work method)]
     (when-not work-of
       (refuse (str "Method " method " is not available here; one of " (vec (sort (keys method-work))))
@@ -171,10 +183,14 @@
       (refuse (str "Options not available here: " (vec other)) {:type ::options :options (vec other)}))
     (when-not (data? opts)
       (refuse "Inference options must be plain data" {:type ::options}))
-    (doseq [[k least] {:particles 1 :iterations 1 :chains 1 :burn 0}
+    (doseq [[k least] {:particles 1 :iterations 1 :chains 1 :burn 0 :max-branches 1}
             :when (contains? opts k)]
       (when-not (and (integer? (get opts k)) (>= (get opts k) least))
         (refuse (str k " must be an integer of at least " least) {:type ::sizes :option k})))
+    (when (and (contains? opts :scale) (not (and (number? (:scale opts)) (pos? (:scale opts)))))
+      (refuse ":scale must be a positive number" {:type ::sizes :option :scale}))
+    (when (and (= :pmmh method) (not (and (coll? (:params opts)) (seq (:params opts)))))
+      (refuse ":pmmh needs :params, the addresses of the parameters" {:type ::options :option :params}))
     (let [work (try (work-of opts) (catch Exception _ nil))]
       (when-not (and (number? work) (pos? work))
         (refuse (str "Sizes missing for " method ": :particles, or :iterations (and :chains)")
@@ -395,7 +411,7 @@
 
 (def docs
   "{ns-sym {sym [arglists docstring]}} for `namespaces`."
-  '{infer {run [([model opts]) "Run inference on `model` (a spin with sample/observe sites); a spin of the posterior as data. opts: :method (:importance :smc :mh :rmh :nuts; particle MCMC :pimh :pgibbs :pgas :ipmcmc), its sizes (:particles; or :iterations :chains :burn; particle MCMC :particles per sweep and :iterations), :seed, :world-policy, :resampling, :resample-threshold, :step-size (:rmh), :target-accept :max-depth :metric (:nuts). NUTS needs a block site (model/site). Values the model returns must be plain data."]
+  '{infer {run [([model opts]) "Run inference on `model` (a spin with sample/observe sites); a spin of the posterior as data. opts: :method (:importance :smc :mh :rmh :nuts; particle MCMC :pimh :pgibbs :pgas :ipmcmc; :pmmh with :params, the parameters' addresses, and :scale; exact :enumerate for finite discrete models, at most :max-branches assignments), its sizes (:particles; or :iterations :chains :burn; particle MCMC and :pmmh :particles per sweep and :iterations), :seed, :world-policy, :resampling, :resample-threshold, :step-size (:rmh), :target-accept :max-depth :metric (:nuts). NUTS needs a block site (model/site). Values the model returns must be plain data."]
            start [([model opts]) "As `run`, started in the background: a job handle {:job/id …} for status, result and cancel. Use it for runs longer than one evaluation may take."]
            status [([job]) "{:status :running|:done|:failed|:cancelled}"]
            result [([job timeout-ms]) "The job's posterior, waiting at most timeout-ms; :pending if not done yet."]
