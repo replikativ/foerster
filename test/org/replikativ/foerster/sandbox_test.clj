@@ -224,3 +224,35 @@
                           ((get-in (sb/namespaces {:max-optimizer-work 10000}) ['opt 'pathfinder]) site {:paths 8})))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not available here"
                           ((f 'opt 'laplace) site {:callback identity})))))
+
+(defn- dice []
+  ;; two dice summing to 7, a noisy reading of 7: the first die is uniform
+  (spin (let [a (sample (dist/uniform-discrete 1 7) :id :a)
+              b (sample (dist/uniform-discrete 1 7) :id :b)]
+          (observe (dist/normal (+ a b) 1.0) 7.0 :id :reading)
+          a)))
+
+(deftest enumeration-and-pmmh-run-here
+  (testing "exact enumeration, bounded by :max-branches"
+    (let [post (run! dice {:method :enumerate})
+          {:keys [mean]} (sb/summary post)]
+      (is (plain-data? post))
+      (is (< (Math/abs (- mean 3.5)) 1e-9) (str mean)))
+    (is (thrown-with-msg? Exception #"larger than this sandbox allows"
+                          (run! dice {:method :enumerate :max-branches 50000}))))
+  (testing "PMMH over a parameter, its SMC sweeps counted as work"
+    (let [model (fn []
+                  ;; σ unknown, a level per observation: θ = σ
+                  (spin (let [sigma (sample (dist/gamma 2.0 1.0) :id :sigma)]
+                          (doseq [[i y] (map-indexed vector [0.3 -0.8 1.1 0.4])]
+                            (let [x (sample (dist/normal 0.0 1.0) :id [:x i])]
+                              (observe (dist/normal x sigma) y :id [:y i])))
+                          sigma)))
+          post (run! model {:method :pmmh :params #{:sigma} :particles 20 :iterations 200
+                            :scale 0.3 :burn 50 :seed 5})]
+      (is (plain-data? post))
+      (is (pos? (:mean (sb/summary post)))))
+    (is (thrown-with-msg? Exception #"needs :params"
+                          (run! conjugate {:method :pmmh :particles 10 :iterations 10})))
+    (is (thrown-with-msg? Exception #"larger than this sandbox allows"
+                          (run! conjugate {:method :pmmh :params #{:mu} :particles 1000 :iterations 100})))))
