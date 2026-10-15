@@ -12,7 +12,8 @@
                   :reads #{0}            ; sites its distribution's arguments read
                   :control #{}           ; sites that decide whether it runs
                   :loops [2]}}           ; enclosing loops, innermost last
-     :loops   {2 {:bindings [i] :sites #{1} :kind :plate | :sequential}}
+     :loops   {2 {:bindings [i] :sites #{1} :carried #{} :kind :plate | :sequential}}
+                 ; :carried: its sites a later iteration reads
      :unknown [{:reason :closure :form …}]}
 
   A site's value reads the sites its arguments were computed from: the
@@ -28,7 +29,9 @@
   `foerster.conjugate` would collapse) and Markov blankets. `explain` prints
   both."
   (:require [clojure.set :as set]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            ;; `model` expands to a spin
+            [org.replikativ.spindel.spin.cps]))
 
 ;; -----------------------------------------------------------------------------
 ;; What the walk recognizes
@@ -151,6 +154,9 @@
         site {:kind kind
               :address (or id-form [:loc (:line (meta form)) (:column (meta form))])
               :structural? (nil? id-form)
+              ;; where it is written, as a site's runtime payload has it
+              :loc (when (:line (meta form))
+                     [(str (ns-name (:ns st))) (:line (meta form)) (:column (meta form))])
               :dist (cond-> {:args arg-values}
                       ctor (assoc :ctor ctor)
                       (not ctor) (assoc :expr dist-form))
@@ -290,11 +296,6 @@
      (walk st form)
      (let [{:keys [sites loops unknown escapes]} @state
            marker? vector?
-           carried? (fn [id l s]
-                      (some (fn [m] (and (marker? m) (= id (second m))
-                                         (seq (set/intersection (get (:carried l) (nth m 2))
-                                                                (:sites l)))))
-                            (concat (:reads s) (:control s))))
            strip (fn [xs] (into #{} (remove marker?) xs))]
        {:sites (into {} (for [[n s] sites]
                           [n (-> s
@@ -304,10 +305,18 @@
                                  (update-in [:dist :args] (fn [as] (mapv #(update % :reads strip) as)))
                                  (cond-> (escapes n) (assoc :escapes (escapes n))))]))
         :loops (into {} (for [[id l] loops]
-                          [id {:bindings (:bindings l)
-                               :sites (:sites l)
-                               :kind (if (some #(carried? id l (sites %)) (:sites l))
-                                       :sequential :plate)}]))
+                          (let [;; the loop's sites whose values a site of the loop
+                                ;; reads in a later iteration
+                                carried (into #{}
+                                              (for [n (:sites l)
+                                                    m (concat (:reads (sites n)) (:control (sites n)))
+                                                    :when (and (marker? m) (= id (second m)))
+                                                    c (set/intersection (get (:carried l) (nth m 2)) (:sites l))]
+                                                c))]
+                            [id {:bindings (:bindings l)
+                                 :sites (:sites l)
+                                 :carried carried
+                                 :kind (if (seq carried) :sequential :plate)}])))
         :unknown unknown}))))
 
 (defmacro analyze
@@ -317,7 +326,22 @@
   `(quote ~(analyze-form (if (next body) (cons 'do body) (first body))
                          {:ns *ns* :locals (keys &env)})))
 
-(defn- children [sites n]
+(defmacro model
+  "`(fn args (spin body…))`, carrying the site graph of `body` as metadata
+  (`graph-of`): a model whose structure inference can read."
+  [args & body]
+  (let [g (analyze-form (cons 'do body) {:ns *ns* :locals (concat (keys &env) (flatten args))})]
+    `(with-meta (fn ~args (org.replikativ.spindel.spin.cps/spin ~@body))
+       {::graph '~g})))
+
+(defn graph-of
+  "The site graph a `model` carries, or nil."
+  [f]
+  (::graph (meta f)))
+
+(defn children
+  "The sites that read site `n`, or run only depending on it."
+  [sites n]
   (into #{} (keep (fn [[m s]] (when (or (contains? (:reads s) n) (contains? (:control s) n)) m))) sites))
 
 (defn- conjugate-pair
