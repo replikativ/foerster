@@ -153,3 +153,50 @@
     (is (= [0 1] (a/affine {:site 3} 3)))
     (is (= [-4 3] (a/affine '(clojure.core/- (clojure.core/* 3 {:site 0}) 4) 0)))
     (is (nil? (a/affine '(clojure.core/* {:site 0} {:site 0}) 0)))))
+
+(def ^:private chain
+  (a/model [n ys]
+           (loop [t 0 prev 0]
+             (when (< t n)
+               (let [x (sample (dist/bernoulli (if (= 1 prev) 0.9 0.1)) :id [:x t])]
+                 (observe (dist/normal x 1.0) (nth ys t) :id [:y t])
+                 (recur (inc t) x))))))
+
+(def ^:private indicators
+  (a/model [ys]
+           (loop [i 0]
+             (when (< i (count ys))
+               (let [z (sample (dist/flip 0.5) :id [:z i])]
+                 (observe (dist/normal (if z 1.0 -1.0) 1.0) (nth ys i) :id [:y i])
+                 (recur (inc i)))))))
+
+(deftest specialized-to-data
+  (testing "a sequential loop with known bounds unrolls"
+    (let [g (a/specialize chain 3 [0.1 0.9 0.4])
+          s (by-address g)
+          [l] (vals (:loops g))]
+      (is (= #{[:x 0] [:x 1] [:x 2] [:y 0] [:y 1] [:y 2]} (set (keys s))))
+      (is (= #{(:n (s [:x 0]))} (:reads (s [:x 1]))) "x_1 reads x_0 only")
+      (is (= #{(:n (s [:x 1]))} (:reads (s [:y 1]))))
+      (is (= 4 (:unrolled l)) "three steps and the pass that ends the loop")
+      (is (= #{(:n (s [:x 0])) (:n (s [:x 1]))} (:carried l)))))
+  (testing "a plate stays symbolic"
+    (let [g (a/specialize indicators [0.3 -1.2 0.8])]
+      (is (= 2 (count (:sites g))))
+      (is (nil? (:unrolled (first (vals (:loops g))))))
+      (is (= :plate (:kind (first (vals (:loops g))))))))
+  (testing "a known test takes one branch; constants fold"
+    (let [g (a/specialize (a/model [prior? k]
+                                   (if prior?
+                                     (sample (dist/normal 0.0 1.0) :id :a)
+                                     (observe (dist/normal (* 2.0 k) 1.0) 0.5 :id :b)))
+                          false 1.5)
+          [site] (vals (:sites g))]
+      (is (= 1 (count (:sites g))))
+      (is (= :b (:address site)))
+      (is (= 3.0 (:value (first (get-in site [:dist :args])))))))
+  (testing "an unknown test is the site's path condition"
+    (let [g (a/analyze (spin (let [c (sample (dist/flip 0.5) :id :c)]
+                               (when c (observe (dist/normal 0 1) 0.2 :id :y)))))
+          y (:path ((by-address g) :y))]
+      (is (= [[{:site 0} true]] y)))))

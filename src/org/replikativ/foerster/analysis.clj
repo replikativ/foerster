@@ -114,6 +114,25 @@
 (defn- static-math? [f]
   (and (symbol? f) (#{"Math" "java.lang.Math"} (namespace f))))
 
+(defn- scalar? [v]
+  (or (number? v) (keyword? v) (boolean? v) (string? v) (nil? v) (char? v)))
+
+(defn- known
+  "The value of a constant `v`, written `expr` in expressions (`v` itself if
+  it is a scalar)."
+  [v expr]
+  {:reads #{} :exact nil :expr (if (scalar? v) v expr) :known? true :value v})
+
+(defn- invoke
+  "The result of the pure function `q` (or static `Math` method `f`) on
+  `args`, or ::fail."
+  [q f args]
+  (try
+    (if q
+      (apply @(find-var q) args)
+      (clojure.lang.Reflector/invokeStaticMethod "java.lang.Math" (name f) (object-array args)))
+    (catch Exception _ ::fail)))
+
 (defn- resolve-sym
   "The fully qualified symbol `sym` names in `ns`, or nil for a local, a
   special form, a class or an unresolvable name."
@@ -177,7 +196,9 @@
         id-value (when id-form (walk st id-form))
         n (count (:sites @state))
         site {:kind kind
-              :address (or id-form [:loc (:line (meta form)) (:column (meta form))])
+              :address (cond (:known? id-value) (:value id-value)
+                             id-form id-form
+                             :else [:loc (:line (meta form)) (:column (meta form))])
               :structural? (nil? id-form)
               ;; where it is written, as a site's runtime payload has it
               :loc (when (:line (meta form))
@@ -188,7 +209,13 @@
               :reads (reduce set/union (or (:reads value) #{}) (map :reads arg-values))
               :address-reads (or (:reads id-value) #{})
               :control (:control st)
-              :loops (mapv :id (:loops st))}]
+              ;; the tests of the enclosing ifs a run must pass, [expr branch]
+              :path (:path st)
+              :loops (mapv :id (:loops st))
+              ;; the iteration of each enclosing unrolled loop
+              :iterations (into {} (keep (fn [{:keys [id iter]}] (when iter [id iter]))) (:loops st))}]
+    (when-let [probe (:probe st)]
+      (swap! probe conj (set/union (:reads site) (:control site))))
     (when (:record? st)
       (swap! state update :sites assoc n site)
       (doseq [{:keys [id]} (:loops st)]
@@ -198,42 +225,94 @@
       :observed (or value const)
       const)))
 
+(def unroll-budget
+  "Iterations a sequential loop with known control is unrolled up to."
+  1000)
+
+(defn- bind [st syms vals frame record?]
+  (-> st
+      (assoc :record? record?)
+      (update :env into (map vector syms vals))
+      (update :loops conj frame)))
+
+(defn- sequential?
+  "Whether a site in the body of a loop reads a value one of its variables
+  carries from a site of an earlier iteration. `vals` are the variables'
+  fixpoint values; sites met in passes that do not record are numbered
+  `n0` and up."
+  [st syms vals body n0]
+  (let [tag (gensym "probe")
+        probe (atom [])
+        carrying (set (keep (fn [[sym v]] (when (some #(and (integer? %) (>= % n0)) (:reads v)) sym))
+                            (map vector syms vals)))
+        marked (mapv (fn [v sym] (update v :reads conj [:via tag sym])) vals syms)]
+    (walk (-> (bind st syms marked {:id nil :recurs (atom [])} false) (assoc :probe probe))
+          (cons 'do body))
+    (boolean (some (fn [rs] (some #(and (vector? %) (= tag (second %)) (contains? carrying (nth % 2))) rs))
+                   @probe))))
+
+(defn- iterations
+  "The loop variables' values of each iteration of a loop whose control is
+  known (each recur decided by known tests), or nil past `unroll-budget`."
+  [st syms inits body]
+  (loop [vals inits acc []]
+    (when (<= (count acc) unroll-budget)
+      (let [recurs (atom [])]
+        (walk (-> (bind st syms vals {:id nil :recurs recurs} false) (dissoc :probe)) (cons 'do body))
+        (let [rs @recurs]
+          (cond (empty? rs) (conj acc vals)
+                (or (next rs) (:uncertain? (first rs))) nil
+                :else (recur (:vals (first rs)) (conj acc vals))))))))
+
 (defn- walk-loop
-  "loop*: iterate the body until what the loop variables read is stable, then
-  walk it once more recording sites. In that walk each loop variable also
-  reads a marker [:via loop sym], so a site that reads a value carried from an
-  earlier iteration can be told from one that reads its own iteration's."
+  "loop*. A sequential loop whose control is known (`specialize`) is unrolled:
+  its body is walked once per iteration with the variables' values, so its
+  sites get concrete addresses and iteration-level edges. Otherwise iterate
+  the body until what the loop variables read is stable, then walk it once
+  more recording sites; in that walk each loop variable also reads a marker
+  [:via loop sym], so a site that reads a value carried from an earlier
+  iteration can be told from one that reads its own iteration's."
   [{:keys [state] :as st} [_ bvec & body]]
   (let [syms (vec (binding-syms bvec))
         record? (:record? st)
-        id (when record? (let [id (count (:loops @state))]
-                           (swap! state assoc-in [:loops id] {:bindings syms :sites #{}})
-                           id))
+        n0 (count (:sites @state))
         [st inits] (reduce (fn [[st acc] [s init]]
                              (let [v (walk st init)]
                                [(-> st (update :env assoc s v) (update :locals conj s)) (conj acc v)]))
                            [st []] (partition 2 bvec))
-        body-pass (fn [vals record?]
+        body-pass (fn [vals record? frame]
                     (let [recurs (atom [])
-                          st' (-> st
-                                  (assoc :record? record?)
-                                  (update :env into (map vector syms vals))
-                                  (update :loops conj {:id id :recurs recurs}))
-                          result (walk st' (cons 'do body))]
+                          result (walk (bind st syms vals (assoc frame :recurs recurs) record?) (cons 'do body))]
                       [result @recurs]))
         vals (loop [vals inits k 0]
-               (let [[_ recurs] (body-pass vals false)
-                     vals' (mapv (fn [v i] (apply reads v (map #(nth % i const) recurs)))
+               (let [[_ recurs] (body-pass vals false {:id nil})
+                     vals' (mapv (fn [v i] (apply reads v (map #(nth (:vals %) i const) recurs)))
                                  vals (range (count syms)))]
                  (if (or (= (map :reads vals') (map :reads vals)) (> k 20))
                    vals'
-                   (recur vals' (inc k)))))]
-    (if record?
+                   (recur vals' (inc k)))))
+        unrolled (when (and record? (every? :known? inits) (sequential? st syms vals body n0))
+                   (iterations st syms inits body))
+        id (when record? (let [id (count (:loops @state))]
+                           (swap! state assoc-in [:loops id] {:bindings syms :sites #{}})
+                           id))]
+    (cond
+      unrolled
+      ;; the dry run decided the iterations; the recorded walk threads its
+      ;; own recur values, whose sites are the recorded ones
+      (let [result (loop [vals inits k 0]
+                     (let [[result recurs] (body-pass vals true {:id id :iter k})]
+                       (if (seq recurs) (recur (:vals (first recurs)) (inc k)) result)))]
+        (swap! state update-in [:loops id] assoc :unrolled (count unrolled))
+        result)
+
+      record?
       (let [marked (mapv (fn [v s] (-> v (update :reads conj [:via id s]) (assoc :expr s))) vals syms)
-            [result _] (body-pass marked true)]
+            [result _] (body-pass marked true {:id id})]
         (swap! state assoc-in [:loops id :carried] (zipmap syms (map :reads vals)))
         result)
-      (first (body-pass vals false)))))
+
+      :else (first (body-pass vals false {:id nil})))))
 
 (defn- walk-call [{:keys [ns locals env] :as st} form]
   (let [[f & args] form
@@ -248,9 +327,12 @@
 
       (or (contains? pure-fns q) (static-math? f))
       (let [vs (mapv #(walk st %) args)
-            exprs (map :expr vs)]
-        (assoc (apply reads vs)
-               :expr (when (every? some? exprs) (cons (or q f) exprs))))
+            exprs (map :expr vs)
+            expr (when (every? some? exprs) (cons (or q f) exprs))
+            r (if (every? :known? vs) (invoke q f (map :value vs)) ::fail)]
+        (if (= ::fail r)
+          (assoc (apply reads vs) :expr expr)
+          (known r expr)))
 
       :else
       (reads (if (symbol? f) (get env f const) (walk st f))
@@ -271,7 +353,7 @@
     (and (seq? form) (seq form))
     (let [[op & args] form]
       (case op
-        quote (assoc const :expr form)
+        quote (known (second form) form)
         var const
         do (if (seq args) (do (doseq [a (butlast args)] (walk st a)) (walk st (last args))) const)
         let* (let [[bvec & body] args
@@ -281,19 +363,23 @@
                (walk st' (cons 'do body)))
         loop* (walk-loop st form)
         recur (let [vals (mapv #(escape! st (walk st %) :loop-carry) args)]
-                (when-let [{:keys [recurs]} (peek (:loops st))] (swap! recurs conj vals))
+                (when-let [{:keys [recurs]} (peek (:loops st))]
+                  (swap! recurs conj {:vals vals :uncertain? (:uncertain? st)}))
                 const)
         if (let [[test then else] args
-                 t (walk st test)
-                 st' (update st :control set/union (:reads t))
-                 a (walk st' then)
-                 b (walk st' else)]
-             (assoc (reads t a b)
-                    :expr (when (and (:expr t) (:expr a) (or (nil? else) (:expr b)))
-                            (list 'if (:expr t) (:expr a) (:expr b)))))
+                 t (walk st test)]
+             (if (:known? t)
+               ;; a known test: only the branch taken runs
+               (walk st (if (:value t) then else))
+               (let [st' (-> st (update :control set/union (:reads t)) (assoc :uncertain? true))
+                     a (walk (update st' :path conj [(:expr t) true]) then)
+                     b (walk (update st' :path conj [(:expr t) false]) else)]
+                 (assoc (reads t a b)
+                        :expr (when (and (:expr t) (:expr a) (or (nil? else) (:expr b)))
+                                (list 'if (:expr t) (:expr a) (:expr b)))))))
         case* (let [[e _shift _mask default imap] (rest form)
                     t (walk st (second form))
-                    st' (update st :control set/union (:reads t))]
+                    st' (-> st (update :control set/union (:reads t)) (assoc :uncertain? true))]
                 (apply reads t (walk st' default) (map #(walk st' (second %)) (vals imap))))
         fn* (let [captured (keep env (filter symbol? (tree-seq coll? seq form)))]
               (when (contains-site? st form)
@@ -311,16 +397,17 @@
     ;; a collection holds its elements: where they go is where it goes
     (map? form) (let [ks (mapv #(walk st %) (keys form))
                       vs (mapv #(walk st %) (vals form))]
-                  (assoc (apply reads (concat ks vs))
-                         :expr (when (every? :expr (concat ks vs))
-                                 (zipmap (map :expr ks) (map :expr vs)))))
-    (coll? form) (let [vs (mapv #(walk st %) form)]
-                   (assoc (apply reads vs)
-                          :expr (when (every? :expr vs)
-                                  (cond (vector? form) (mapv :expr vs)
-                                        (set? form) (set (map :expr vs))
-                                        :else nil))))
-    :else (assoc const :expr form)))
+                  (cond-> (assoc (apply reads (concat ks vs))
+                                 :expr (when (every? :expr (concat ks vs))
+                                         (zipmap (map :expr ks) (map :expr vs))))
+                    (every? :known? (concat ks vs))
+                    (assoc :known? true :value (zipmap (map :value ks) (map :value vs)))))
+    (coll? form) (let [vs (mapv #(walk st %) form)
+                       rebuild (fn [xs] (cond (vector? form) (vec xs) (set? form) (set xs) :else nil))]
+                   (cond-> (assoc (apply reads vs) :expr (when (every? :expr vs) (rebuild (map :expr vs))))
+                     (and (every? :known? vs) (or (vector? form) (set? form)))
+                     (assoc :known? true :value (rebuild (map :value vs)))))
+    :else (known form form)))
 
 ;; -----------------------------------------------------------------------------
 ;; Graph and facts
@@ -329,12 +416,14 @@
 (defn analyze-form
   "The site graph of a model's body `form` (see the namespace doc), symbols
   resolved in `ns` (default `*ns*`). `locals` are the model's inputs: names
-  bound outside the form, which read no site."
+  bound outside the form, which read no site; `known` {sym value} those
+  whose values are given (`specialize`)."
   ([form] (analyze-form form nil))
-  ([form {:keys [ns locals] :or {ns *ns*}}]
+  ([form {:keys [ns locals] given :known :or {ns *ns*}}]
    (let [state (atom {:sites {} :loops {} :unknown [] :escapes {}})
-         st {:ns (the-ns ns) :locals (set locals) :env {} :control #{}
-             :loops [] :state state :record? true}]
+         st {:ns (the-ns ns) :locals (into (set locals) (keys given))
+             :env (into {} (for [[sym v] given] [sym (known v sym)]))
+             :control #{} :path [] :loops [] :state state :record? true}]
      (walk st form)
      (let [{:keys [sites loops unknown escapes]} @state
            marker? vector?
@@ -344,21 +433,34 @@
                                  (update :reads strip)
                                  (update :control strip)
                                  (update :address-reads strip)
-                                 (update-in [:dist :args] (fn [as] (mapv #(update % :reads strip) as)))
+                                 ;; a known argument keeps its value if it is a scalar
+                                 (update-in [:dist :args]
+                                            (fn [as] (mapv #(cond-> (update % :reads strip)
+                                                              (not (scalar? (:value %))) (dissoc :value))
+                                                           as)))
                                  (cond-> (escapes n) (assoc :escapes (escapes n))))]))
         :loops (into {} (for [[id l] loops]
                           (let [;; the loop's sites whose values a site of the loop
                                 ;; reads in a later iteration
-                                carried (into #{}
-                                              (for [n (:sites l)
-                                                    m (concat (:reads (sites n)) (:control (sites n)))
-                                                    :when (and (marker? m) (= id (second m)))
-                                                    c (set/intersection (get (:carried l) (nth m 2)) (:sites l))]
-                                                c))]
-                            [id {:bindings (:bindings l)
-                                 :sites (:sites l)
-                                 :carried carried
-                                 :kind (if (seq carried) :sequential :plate)}])))
+                                carried (if (:unrolled l)
+                                          (into #{}
+                                                (for [n (:sites l)
+                                                      m (concat (:reads (sites n)) (:control (sites n)))
+                                                      :when (and (integer? m) (contains? (:sites l) m)
+                                                                 (< (get-in sites [m :iterations id])
+                                                                    (get-in sites [n :iterations id])))]
+                                                  m))
+                                          (into #{}
+                                                (for [n (:sites l)
+                                                      m (concat (:reads (sites n)) (:control (sites n)))
+                                                      :when (and (marker? m) (= id (second m)))
+                                                      c (set/intersection (get (:carried l) (nth m 2)) (:sites l))]
+                                                  c)))]
+                            [id (cond-> {:bindings (:bindings l)
+                                         :sites (:sites l)
+                                         :carried carried
+                                         :kind (if (seq carried) :sequential :plate)}
+                                  (:unrolled l) (assoc :unrolled (:unrolled l)))])))
         :unknown unknown}))))
 
 (defmacro analyze
@@ -374,12 +476,27 @@
   [args & body]
   (let [g (analyze-form (cons 'do body) {:ns *ns* :locals (concat (keys &env) (flatten args))})]
     `(with-meta (fn ~args (org.replikativ.spindel.spin.cps/spin ~@body))
-       {::graph '~g})))
+       {::graph '~g
+        ::source {:ns '~(ns-name *ns*) :params '~args :body '~body}})))
 
 (defn graph-of
   "The site graph a `model` carries, or nil."
   [f]
   (::graph (meta f)))
+
+(defn specialize
+  "The site graph of the `model` applied to `args`: its inputs are known, so
+  calls of `pure-fns` on known values are evaluated, an `if` with a known test
+  walks only the branch taken, and a sequential loop whose control becomes
+  known is unrolled (up to `unroll-budget` iterations) — its sites get
+  concrete addresses, edges between iterations and `:iterations`. Plates stay
+  symbolic. The model's parameters must be plain symbols."
+  [model & args]
+  (let [{:keys [ns params body]} (::source (meta model))]
+    (when-not (every? symbol? params)
+      (throw (ex-info "specialize needs a model whose parameters are symbols"
+                      {:type ::destructured-params :params params})))
+    (analyze-form (cons 'do body) {:ns ns :known (zipmap params args)})))
 
 (defn children
   "The sites that read site `n`, or run only depending on it."
