@@ -362,7 +362,10 @@
                                st (partition 2 bvec))]
                (walk st' (cons 'do body)))
         loop* (walk-loop st form)
-        recur (let [vals (mapv #(escape! st (walk st %) :loop-carry) args)]
+        ;; in an unrolled loop a recur value only binds the next iteration's
+        ;; variable, which the walk follows; elsewhere it is carried unseen
+        recur (let [unrolled? (:iter (peek (:loops st)))
+                    vals (mapv #(let [v (walk st %)] (if unrolled? v (escape! st v :loop-carry))) args)]
                 (when-let [{:keys [recurs]} (peek (:loops st))]
                   (swap! recurs conj {:vals vals :uncertain? (:uncertain? st)}))
                 const)
@@ -523,36 +526,48 @@
           :else (let [xs (cond->> xs (not (== 1 k)) (cons k))]
                   (if (next xs) (cons 'clojure.core/* xs) (first xs))))))
 
+(defn linear
+  "{:const a :coefs {n b}} with `e` = a + Σ b·xₙ over the sites `ns` it
+  mentions, xₙ the value of site n and a and every b expressions mentioning
+  none of `ns`; nil if `e` is not linear in them."
+  [e ns]
+  (let [dependent? (fn [x] (some #(mentions? x %) ns))
+        scale (fn [k {:keys [const coefs]}]
+                {:const (times k const) :coefs (update-vals coefs #(times k %))})
+        sum (fn [parts]
+              {:const (apply plus (map :const parts))
+               :coefs (or (apply merge-with plus (map :coefs parts)) {})})]
+    (cond
+      (and (map? e) (contains? ns (:site e))) {:const 0 :coefs {(:site e) 1}}
+      (not (dependent? e)) {:const e :coefs {}}
+      (seq? e)
+      (let [[op & xs] e
+            parts (map #(linear % ns) xs)]
+        (when (every? some? parts)
+          (case op
+            clojure.core/+ (sum parts)
+            clojure.core/- (if (next parts)
+                             (sum (cons (first parts) (map #(scale -1 %) (rest parts))))
+                             (scale -1 (first parts)))
+            clojure.core/* (let [dependent (filter dependent? xs)]
+                             (when (= 1 (count dependent))
+                               (scale (apply times (remove dependent? xs))
+                                      (linear (first dependent) ns))))
+            clojure.core// (let [[x & ds] xs]
+                             (when (and (seq ds) (not-any? dependent? ds))
+                               (let [d (apply times ds)
+                                     {:keys [const coefs]} (linear x ns)]
+                                 {:const (list 'clojure.core// const d)
+                                  :coefs (update-vals coefs #(list 'clojure.core// % d))})))
+            nil)))
+      :else nil)))
+
 (defn affine
   "[a b] with `e` = a + b·x, x the value of site `n` and a, b expressions
   not mentioning it; nil if `e` is not affine in it."
   [e n]
-  (cond
-    (= {:site n} e) [0 1]
-    (not (mentions? e n)) [e 0]
-    (seq? e)
-    (let [[op & xs] e
-          parts (map #(affine % n) xs)]
-      (when (every? some? parts)
-        (case op
-          clojure.core/+ [(apply plus (map first parts)) (apply plus (map second parts))]
-          clojure.core/- (let [[[a0 b0] & more] parts]
-                           (if (empty? more)
-                             [(times -1 a0) (times -1 b0)]
-                             [(apply plus a0 (map #(times -1 (first %)) more))
-                              (apply plus b0 (map #(times -1 (second %)) more))]))
-          clojure.core/* (let [dependent (filter #(mentions? % n) xs)]
-                           (when (= 1 (count dependent))
-                             (let [k (apply times (remove #(mentions? % n) xs))
-                                   [a b] (affine (first dependent) n)]
-                               [(times k a) (times k b)])))
-          clojure.core// (let [[x & ds] xs]
-                           (when (and (seq ds) (not-any? #(mentions? % n) ds))
-                             (let [[a b] (affine x n)
-                                   d (apply times ds)]
-                               [(list 'clojure.core// a d) (list 'clojure.core// b d)])))
-          nil)))
-    :else nil))
+  (when-let [{:keys [const coefs]} (linear e #{n})]
+    [const (get coefs n 0)]))
 
 (defn- link
   "How the child's parameter `arg` depends on the prior site `n` in family
@@ -608,6 +623,60 @@
                                           :when (and (map? x) (:site x))]
                                       (:site x))))))))))
 
+(defn- linear-gaussian-blocks
+  "Sets of Normal latent sites whose joint posterior is Gaussian given the
+  rest: every site's mean is linear in the set and its scale reads none of
+  it, every child of the set is in it or a Normal observation of that form,
+  no site's existence depends on the set, and no value of it escapes. Each
+  block is a connected component, with its observations."
+  [sites]
+  (let [controlling (reduce set/union #{} (map :control (vals sites)))
+        normal? (fn [s] (= 'normal (get-in s [:dist :ctor])))
+        admissible? (fn [block n]
+                      (let [{:keys [dist address-reads]} (sites n)
+                            [mean sd] (:args dist)]
+                        (and (normal? (sites n))
+                             (some? (:expr mean))
+                             (linear (:expr mean) block)
+                             (empty? (set/intersection (:reads sd) block))
+                             (empty? (set/intersection address-reads block)))))
+        block (loop [block (into #{} (for [[n s] sites
+                                           :when (and (= :latent (:kind s)) (normal? s)
+                                                      (empty? (:escapes s))
+                                                      (not (contains? controlling n)))]
+                                       n))]
+                (let [ok? (fn [n]
+                            (and (admissible? block n)
+                                 (every? #(or (contains? block %)
+                                              (and (= :observed (:kind (sites %)))
+                                                   (admissible? block %)
+                                                   (empty? (set/intersection (:control (sites %)) block))))
+                                         (children sites n))))
+                      block' (into #{} (filter ok?) block)]
+                  (if (= block block') block (recur block'))))
+        observations (into #{} (for [n block c (children sites n)
+                                     :when (= :observed (:kind (sites c)))]
+                                 c))
+        ;; connected components over latent-latent and shared-observation edges
+        neighbours (fn [n] (into #{} (filter block)
+                                 (concat (:reads (sites n)) (children sites n)
+                                         (for [c (children sites n)
+                                               :when (contains? observations c)
+                                               p (:reads (sites c))]
+                                           p))))]
+    (loop [todo block out []]
+      (if-let [n (first todo)]
+        (let [component (loop [seen #{n} frontier [n]]
+                          (if-let [m (first frontier)]
+                            (let [new (remove seen (neighbours m))]
+                              (recur (into seen new) (into (subvec frontier 1) new)))
+                            seen))]
+          (recur (reduce disj todo component)
+                 (conj out {:latents component
+                            :observations (into #{} (filter #(seq (set/intersection (:reads (sites %)) component)))
+                                                observations)})))
+        out))))
+
 (defn facts
   "Facts about the model the graph `g` describes, as a vector of maps."
   [{:keys [sites loops unknown]}]
@@ -633,6 +702,9 @@
             :let [pair (conjugate-pair sites n)]
             :when pair]
         (assoc pair :fact :conjugate :prior n :address (:address s)))
+      (for [b (linear-gaussian-blocks sites)
+            :when (seq (:observations b))]
+        (assoc b :fact :linear-gaussian))
       (for [[n s] latent
             :let [kids (children sites n)
                   parents (set/union (:reads s) (:control s))
@@ -668,6 +740,8 @@
           :conjugate (str "  conjugate " (name (:family f)) ": " (addr (:prior f))
                           " with " (addrs (:children f))
                           (when-not (:implemented? f) " (family not in foerster.conjugate)"))
+          :linear-gaussian (str "  linear-Gaussian block: " (addrs (:latents f))
+                                " observed by " (addrs (:observations f)))
           :markov-blanket (str "  Markov blanket of " (addr (:site f)) ": "
                                (if (seq (:blanket f)) (addrs (:blanket f)) "—"))
           :unknown (str "  not analyzed (" (name (:reason f)) "): " (pr-str (:form f)))))))))
