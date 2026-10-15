@@ -681,11 +681,15 @@
 
 (defn- normalized-samples
   "A sweep's particles (`Sample`s) with weights that sum to one, so sweeps
-   can be pooled into one MCMC estimate."
+   can be pooled into one MCMC estimate (a sweep of impossible particles:
+   all zero)."
   [measure]
   (let [ps (m/get-particles measure)
         lse (m/log-sum-exp (mapv second ps))]
-    (mapv (fn [[s lw]] [s (- lw lse)]) ps)))
+    ;; a sweep of impossible particles keeps its zero weights
+    (if (= ##-Inf lse)
+      ps
+      (mapv (fn [[s lw]] [s (- lw lse)]) ps))))
 
 (defn pimh-infer
   "Particle Independent Metropolis-Hastings (Andrieu et al. 2010).

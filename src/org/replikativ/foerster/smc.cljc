@@ -747,7 +747,10 @@
                     weights (m/normalize-log-weights log-ws)
                     ess (m/compute-ess weights)
                     resample? (or (some? retained)
-                                  (< ess (* threshold n)))]
+                                  (< ess (* threshold n)))
+                    ;; resampling a population that is all impossible (as
+                    ;; conditional SMC always resamples) leaves it impossible
+                    reset-weight (if (= ##-Inf (apply max log-ws)) ##-Inf 0.0)]
                 (swap! state update :history conj
                        {:ess ess :resampled? resample?
                         ;; the barrier's factor of the evidence estimate
@@ -777,13 +780,13 @@
                      (fn [children]
                        (let [carried (into {} (keep (fn [slot]
                                                       (when-let [d (get done (nth ancestors slot))]
-                                                        [slot (assoc d :log-weight 0.0)])))
+                                                        [slot (assoc d :log-weight reset-weight)])))
                                            slots)
                              placed (map (fn [slot child]
                                            (let [a (nth ancestors slot)
                                                  w (:savepoint/world child)]
                                              (rtp/swap-state! w [:inference :slot] (constantly slot))
-                                             (rtp/swap-state! w [:inference :log-weight] (constantly 0.0))
+                                             (rtp/swap-state! w [:inference :log-weight] (constantly reset-weight))
                                              [slot child (get parked a)]))
                                          forked-slots children)
                              parked' (into {} (keep (fn [[slot child p]]
@@ -1140,11 +1143,15 @@
 ;; =============================================================================
 
 (defn- normalized
-  "A measure's particles with their weights normalized to sum to one."
+  "A measure's particles with their weights normalized to sum to one (a
+  sweep of impossible particles: all zero)."
   [measure]
   (let [ps (m/get-particles measure)
         lse (m/log-sum-exp (mapv second ps))]
-    (mapv (fn [[s lw]] [s (- lw lse)]) ps)))
+    ;; a sweep of impossible particles keeps its zero weights
+    (if (= ##-Inf lse)
+      ps
+      (mapv (fn [[s lw]] [s (- lw lse)]) ps))))
 
 (defn retained-choices
   "{address value} of the unobserved sample sites of `trace` (a Sample's):

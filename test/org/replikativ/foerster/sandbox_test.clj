@@ -62,6 +62,11 @@
       (is (< (:rhat s) 1.1))
       (is (< (Math/abs (- (:mean s) 1.125)) 0.15)))))
 
+(deftest particle-mcmc-runs-here
+  (let [post (run! conjugate {:method :pgibbs :particles 20 :iterations 40 :seed 3})
+        mean (reduce + (map * (:posterior/values post) (:posterior/weights post)))]
+    (is (< (Math/abs (- mean 1.125)) 0.15))))
+
 (deftest the-host-world-policy-is-for-particle-methods
   (let [seen (atom [])]
     (with-redefs [org.replikativ.foerster.core/infer (fn [_ opts] (swap! seen conj opts) (spin nil))]
@@ -78,7 +83,9 @@
      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"larger than this sandbox allows"
                            ((f 'infer 'run) (conjugate) {:method :mh :iterations 10000 :chains 4})))
      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not available here"
-                           ((f 'infer 'run) (conjugate) {:method :pgibbs :particles 2 :iterations 2})))
+                           ((f 'infer 'run) (conjugate) {:method :tempered :particles 2})))
+     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"larger than this sandbox allows"
+                           ((f 'infer 'run) (conjugate) {:method :ipmcmc :particles 1000 :iterations 10})))
      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"must be an integer"
                            ((f 'infer 'run) (conjugate) {:method :mh :iterations 0.5 :chains 2})))
      (doseq [[opts why] [[{:method :smc :particles 10 :executor :x} "the host's executor"]
@@ -178,7 +185,16 @@
   (testing "no posterior when every particle has zero likelihood"
     (is (thrown-with-msg? Exception #"zero likelihood"
                           (run! #(spin (let [x (sample (dist/normal 0.0 1.0))] (observe (dist/uniform 10.0 11.0) 0.0) x))
-                                {:method :importance :particles 5})))))
+                                {:method :importance :particles 5}))))
+  (testing "nor from particle MCMC"
+    (doseq [opts [{:method :pimh :particles 5 :iterations 2}
+                  {:method :pgibbs :particles 5 :iterations 2}
+                  {:method :pgas :particles 5 :iterations 2}
+                  {:method :ipmcmc :particles 5 :iterations 1}]]
+      (is (thrown-with-msg? Exception #"zero likelihood"
+                            (run! #(spin (let [x (sample (dist/normal 0.0 1.0))] (observe (dist/uniform 10.0 11.0) x) x))
+                                  opts))
+          (str (:method opts))))))
 
 (deftest a-finished-job-stays-finished
   (in-context

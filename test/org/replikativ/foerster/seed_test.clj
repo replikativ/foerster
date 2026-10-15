@@ -43,6 +43,22 @@
       (is (= ##-Inf (m/log-marginal measure)))
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"probability zero"
                             (m/measure-stats measure identity)))))
+  (testing "particle MCMC on a model that is impossible everywhere reports it"
+    ;; conditional SMC resamples at every barrier, which must not make an
+    ;; impossible population possible
+    (doseq [wp [:fresh :fork]
+            opts [{:method :pimh :particles 5 :iterations 3}
+                  {:method :pgibbs :particles 5 :iterations 3}
+                  {:method :pgas :particles 5 :iterations 3}
+                  {:method :ipmcmc :particles 5 :iterations 2 :num-nodes 4}]]
+      (testing [(:method opts) wp]
+        (let [measure (b/run-infer 3 #(infer/infer (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+                                                           (observe (dist/uniform 5.0 6.0) x :id :y)
+                                                           x))
+                                                   (assoc opts :world-policy wp)))]
+          (is (= ##-Inf (m/log-marginal measure)))
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"probability zero"
+                                (m/measure-stats measure m/get-value)))))))
   (testing "no particles, no measure"
     (is (thrown? Throwable (b/run-infer 4 #(infer/infer (model) {:method :smc :particles 0}))))
     (is (thrown? AssertionError (m/empirical [])))
