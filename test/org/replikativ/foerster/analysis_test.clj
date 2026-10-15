@@ -124,3 +124,32 @@
                                       (recur (inc i) (conj acc p)))))))]]
       (is (empty? (conjugate-priors g)))
       (is (seq (:escapes (first (facts-of g :latent))))))))
+
+(deftest link-functions
+  (testing "a Normal mean affine in a Normal prior: conjugate, with its link"
+    (let [g (a/analyze (spin (let [mu (sample (dist/normal 0.0 1.0) :id :mu)]
+                               (observe (dist/normal (+ 1.0 (* 2.0 mu)) 0.5) 0.3 :id :y)
+                               mu)))
+          [f] (facts-of g :conjugate)]
+      (is (= :normal-affine (:family f)))
+      (is (= {:a 1.0 :b 2.0} (val (first (:links f)))))))
+  (testing "a mean another site enters: conjugate given it"
+    (let [g (a/analyze (spin (let [m1 (sample (dist/normal 0.0 1.0) :id :m1)
+                                   m2 (sample (dist/normal 0.0 1.0) :id :m2)]
+                               (observe (dist/normal (+ m1 m2) 1.0) 0.3 :id :y))))
+          by-prior (into {} (map (juxt :address identity)) (facts-of g :conjugate))]
+      (is (= #{:m1 :m2} (set (keys by-prior))))
+      (is (= #{1} (:given (by-prior :m1))))))
+  (testing "not affine: no collapse"
+    (is (empty? (facts-of (a/analyze (spin (let [mu (sample (dist/normal 0.0 1.0) :id :mu)]
+                                             (observe (dist/normal (* mu mu) 1.0) 0.3 :id :y))))
+                          :conjugate))))
+  (testing "a derived value that leaves the model escapes"
+    (is (empty? (facts-of (a/analyze (spin (let [mu (sample (dist/normal 0.0 1.0) :id :mu)]
+                                             (swap! seen conj (* 2 mu))
+                                             (observe (dist/normal mu 1.0) 0.3 :id :y))))
+                          :conjugate))))
+  (testing "affine"
+    (is (= [0 1] (a/affine {:site 3} 3)))
+    (is (= [-4 3] (a/affine '(clojure.core/- (clojure.core/* 3 {:site 0}) 4) 0)))
+    (is (nil? (a/affine '(clojure.core/* {:site 0} {:site 0}) 0)))))
