@@ -9,13 +9,12 @@
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.core :as sp]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.core :as sp]))
 
 (def weeks [110 108 106 115 114 97 118 97 135 114 105 128 105 101 107 115 112 103 103 98])
 
 (defn demand [weeks drift]
-  (spin
+  (sp/spin
    (loop [t 0
           level (sample (dist/normal 100.0 20.0) :id [:level 0])]
      (observe (dist/normal level 8.0) (nth weeks t) :id [:y t])

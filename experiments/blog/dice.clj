@@ -5,8 +5,7 @@
          '[org.replikativ.foerster.dist :as dist]
          '[org.replikativ.foerster.effects :refer [sample observe factor]]
          '[org.replikativ.foerster.measure :as m]
-         '[org.replikativ.spindel.core :as sp]
-         '[org.replikativ.spindel.spin.cps :refer [spin]])
+         '[org.replikativ.spindel.core :as sp])
 (def world (sp/create-execution-context))
 (defn posterior [make]
   (let [ms (sp/with-context world @(infer/infer (make) {:method :enumerate}))
@@ -16,21 +15,21 @@
          (filter (comp pos? second)) (sort-by first) (mapv (fn [[v w]] [v (/ (Math/round (* 1000 w)) 1000.0)])))))
 ;; hard constraint: the dice sum to 7
 (defn dice-hard []
-  (spin (let [a (sample (dist/uniform-discrete 1 7) :id :a)
-              b (sample (dist/uniform-discrete 1 7) :id :b)]
-          (factor (if (= 7 (+ a b)) 0.0 ##-Inf))
-          [a b])))
+  (sp/spin (let [a (sample (dist/uniform-discrete 1 7) :id :a)
+                 b (sample (dist/uniform-discrete 1 7) :id :b)]
+             (factor (if (= 7 (+ a b)) 0.0 ##-Inf))
+             [a b])))
 ;; soft constraint: a noisy sensor read 7
 (defn dice-soft []
-  (spin (let [a (sample (dist/uniform-discrete 1 7) :id :a)
-              b (sample (dist/uniform-discrete 1 7) :id :b)]
-          (observe (dist/normal (+ a b) 1.0) 7.0 :id :reading)
-          (+ a b))))
+  (sp/spin (let [a (sample (dist/uniform-discrete 1 7) :id :a)
+                 b (sample (dist/uniform-discrete 1 7) :id :b)]
+             (observe (dist/normal (+ a b) 1.0) 7.0 :id :reading)
+             (+ a b))))
 (defn dice-soft-a []
-  (spin (let [a (sample (dist/uniform-discrete 1 7) :id :a)
-              b (sample (dist/uniform-discrete 1 7) :id :b)]
-          (observe (dist/normal (+ a b) 1.0) 7.0 :id :reading)
-          a)))
+  (sp/spin (let [a (sample (dist/uniform-discrete 1 7) :id :a)
+                 b (sample (dist/uniform-discrete 1 7) :id :b)]
+             (observe (dist/normal (+ a b) 1.0) 7.0 :id :reading)
+             a)))
 (prn :hard (posterior dice-hard))
 (prn :soft-sum (posterior dice-soft))
 (prn :soft-a (posterior dice-soft-a))
