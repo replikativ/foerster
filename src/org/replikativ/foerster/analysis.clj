@@ -207,6 +207,8 @@
                       ctor (assoc :ctor ctor)
                       (not ctor) (assoc :expr dist-form))
               :reads (reduce set/union (or (:reads value) #{}) (map :reads arg-values))
+              ;; an observed site's value, when the walk knows it
+              :observed (when (:known? value) {:value (:value value)})
               :address-reads (or (:reads id-value) #{})
               :control (:control st)
               ;; the tests of the enclosing ifs a run must pass, [expr branch]
@@ -291,7 +293,8 @@
                  (if (or (= (map :reads vals') (map :reads vals)) (> k 20))
                    vals'
                    (recur vals' (inc k)))))
-        unrolled (when (and record? (every? :known? inits) (sequential? st syms vals body n0))
+        unrolled (when (and record? (every? :known? inits)
+                            (or (:unroll-plates? st) (sequential? st syms vals body n0)))
                    (iterations st syms inits body))
         id (when record? (let [id (count (:loops @state))]
                            (swap! state assoc-in [:loops id] {:bindings syms :sites #{}})
@@ -422,11 +425,12 @@
   bound outside the form, which read no site; `known` {sym value} those
   whose values are given (`specialize`)."
   ([form] (analyze-form form nil))
-  ([form {:keys [ns locals] given :known :or {ns *ns*}}]
+  ([form {:keys [ns locals unroll-plates?] given :known :or {ns *ns*}}]
    (let [state (atom {:sites {} :loops {} :unknown [] :escapes {}})
          st {:ns (the-ns ns) :locals (into (set locals) (keys given))
              :env (into {} (for [[sym v] given] [sym (known v sym)]))
-             :control #{} :path [] :loops [] :state state :record? true}]
+             :control #{} :path [] :loops [] :state state :record? true
+             :unroll-plates? unroll-plates?}]
      (walk st form)
      (let [{:keys [sites loops unknown escapes]} @state
            marker? vector?
@@ -500,6 +504,17 @@
       (throw (ex-info "specialize needs a model whose parameters are symbols"
                       {:type ::destructured-params :params params})))
     (analyze-form (cons 'do body) {:ns ns :known (zipmap params args)})))
+
+(defn instance
+  "As `specialize`, but plates with known control are unrolled too: the
+  model's instance graph for its data, one site per site a run meets. Its
+  size grows with the data; for compiling a density (`foerster.compiled`)."
+  [model & args]
+  (let [{:keys [ns params body]} (::source (meta model))]
+    (when-not (every? symbol? params)
+      (throw (ex-info "instance needs a model whose parameters are symbols"
+                      {:type ::destructured-params :params params})))
+    (analyze-form (cons 'do body) {:ns ns :known (zipmap params args) :unroll-plates? true})))
 
 (defn children
   "The sites that read site `n`, or run only depending on it."

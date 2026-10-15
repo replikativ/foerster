@@ -32,7 +32,9 @@
 (deftest draws-follow-the-target
   ;; unweighted draws from the tilted law: mean heads 5·e^λ/(1+e^λ)
   (let [measure (b/run-infer 52 #(smc/smc (process) 2000 {:resample-threshold 0.0}))
-        ds (learn/draws measure 4000)
+        ;; resampled on a stream of its own: the process generator is shared
+        ;; with whatever else draws in this JVM
+        ds (random/with-stream* 52 ::draws #(learn/draws measure 4000))
         mean (/ (reduce + (map (comp peek :states) ds)) (count ds))
         exact (* 5 (/ (Math/exp lambda) (+ 1 (Math/exp lambda))))]
     (is (= 4000 (count ds)))
