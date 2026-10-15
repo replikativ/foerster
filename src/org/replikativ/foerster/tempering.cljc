@@ -192,11 +192,12 @@
                  P-step chains (n must be a multiple of P)
     :max-steps   refuse to run longer (default 1000)
     :executor    the particle worlds' executor
+    :seed        fixes every draw (default: one from the process generator)
 
   Returns a CPS operation resolving an EmpiricalMeasure of `Sample`s whose
   `m/log-marginal` estimates the evidence; `:temperatures` holds the
   schedule and `:rejuvenation` the moves made and accepted."
-  [model n & [{:keys [ess-target moves scale waste-free max-steps executor]
+  [model n & [{:keys [ess-target moves scale waste-free max-steps executor seed]
                :or {ess-target 0.5 scale 2.38 max-steps 1000}}]]
   (when-not (and (number? ess-target) (< 0.0 ess-target 1.0))
     (throw (ex-info ":ess-target must lie in (0, 1)" {:type ::invalid-ess-target :ess-target ess-target})))
@@ -206,13 +207,15 @@
     (throw (ex-info ":waste-free P must divide the number of particles"
                     {:type ::invalid-waste-free :n n :waste-free waste-free})))
   (fn [resolve reject]
-    (let [seed (random/fresh-seed)
+    (let [seed (or seed (random/fresh-seed))
           ;; every particle's session, closed when inference ends however it
           ;; ends
           sessions (atom [])
+          runs (atom -1)
           run! (fn []
                  (let [r (gfi/run-policy* model (itrace/policy {:temperature 0.0})
-                                          (cond-> {} executor (assoc :executor executor)))]
+                                          (cond-> {:seed (sp/derive-seed seed ::run (swap! runs inc))}
+                                            executor (assoc :executor executor)))]
                    (swap! sessions conj (:session r))
                    (:operation r)))
           close-all! (fn [k v]

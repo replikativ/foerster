@@ -565,12 +565,12 @@
 
   Options: `:ess-target` (0.5), `:moves` (single-site MH moves per particle
   per step; default a sweep), `:scale` (2.38), `:waste-free` P, `:max-steps`,
-  `:executor`; fresh worlds only.
+  `:executor`, `:seed` (fixes every draw); fresh worlds only.
 
   Returns a spin resolving the EmpiricalMeasure; `:temperatures` holds the
   schedule."
   [model-task num-particles & [opts]]
-  (check-options! opts #{:ess-target :moves :scale :waste-free :max-steps :executor :world-policy})
+  (check-options! opts #{:ess-target :moves :scale :waste-free :max-steps :executor :seed :world-policy})
   (when (= :fork (world-policy opts))
     (throw (ex-info "Tempered SMC runs in fresh worlds" {:type ::invalid-world-policy
                                                          :world-policy :fork :supported #{:fresh}})))
@@ -584,14 +584,14 @@
   schedule tuned over `:rounds` rounds of doubling length (default 10).
 
   Options: `:rounds`, `:steps` (random-walk steps per chain per scan),
-  `:executor`; fresh worlds only.
+  `:executor`, `:seed` (fixes every draw); fresh worlds only.
 
   Returns a spin resolving the EmpiricalMeasure of the last round's
   target-chain states; `m/log-marginal` is the stepping-stone evidence and
   `:temperatures`, `:barrier`, `:local-barrier`, `:round-trips` and
   `:swap-acceptance` diagnose the run."
   [model-task num-chains & [opts]]
-  (check-options! opts #{:rounds :steps :executor :world-policy})
+  (check-options! opts #{:rounds :steps :executor :seed :world-policy})
   (when (= :fork (world-policy opts))
     (throw (ex-info "Parallel tempering runs in fresh worlds" {:type ::invalid-world-policy
                                                                :world-policy :fork :supported #{:fresh}})))
