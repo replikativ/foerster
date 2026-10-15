@@ -67,11 +67,9 @@ is a handler that decides, scores, forks, copies or abandons those savepoints:
   limits, per-session seeds and background jobs
 
 ```clojure
-(require '[org.replikativ.foerster.core :as infer]
+(require '[org.replikativ.foerster.core :as infer :refer [sample observe factor]]
          '[org.replikativ.foerster.dist :as dist]
-         '[org.replikativ.foerster.effects :refer [sample observe]]
-         '[org.replikativ.spindel.core :as sp]
-         '[org.replikativ.spindel.spin.cps :refer [spin]])
+         '[org.replikativ.spindel.core :as sp :refer [spin]])
 
 ;; programs run in a spindel world (an execution context)
 (def world (sp/create-execution-context))
