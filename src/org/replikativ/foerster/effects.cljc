@@ -107,10 +107,13 @@
             {:keys [id observe]} options]
         (sp/publish! ctx
                      {:site :inference/choose
-                      :payload {:dist source
-                                :observed? (contains? options :observe)
-                                :value observe
-                                :options (dissoc options :id :observe)}
+                      :payload (cond-> {:dist source
+                                        :observed? (contains? options :observe)
+                                        :value observe
+                                        :options (dissoc options :id :observe)}
+                                 ;; where the site is written: matches it to
+                                 ;; its static site (`foerster.analysis`)
+                                 (map? source-loc) (assoc :loc [(:ns source-loc) (:line source-loc) (:column source-loc)]))
                       :opts (when id {:id id})
                       :spin-id spin-id
                       :source-loc source-loc}
@@ -230,7 +233,8 @@
     (if (sp/handled? ctx :inference/factor)
       (sp/publish! ctx {:site :inference/factor
                         :payload (cond-> {:log-weight log-weight}
-                                   barrier (assoc :barrier true))
+                                   barrier (assoc :barrier true)
+                                   (map? source-loc) (assoc :loc [(:ns source-loc) (:line source-loc) (:column source-loc)]))
                         :spin-id spin-id
                         :source-loc source-loc}
                    resolve reject)

@@ -21,6 +21,7 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.derive :as derive]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.dist :as dist]
@@ -330,7 +331,7 @@
   `on-idle` gets the current measure; `supply!` then scores every stream site
   with the value, which turns them into an ordinary barrier. When all have
   returned, `on-done` gets the final measure; `on-error` any failure."
-  [model n {:keys [resample-threshold policy executor retained ancestor-sampling? root copy?
+  [model n {:keys [resample-threshold policy executor retained ancestor-sampling? root copy? enumerate
                    anchors rejuvenate resampling genealogy? smcp3 adopt batch] :as opts}
    {:keys [on-idle on-done on-error]}]
   (when-not (pos-int? n)
@@ -369,6 +370,9 @@
   (when (and rejuvenate (not anchors))
     (throw (ex-info ":rejuvenate needs :anchors to replay from"
                     {:type ::rejuvenate-without-anchors})))
+  (when-let [other (and enumerate (some #(when (get opts %) %) [:retained :anchors :rejuvenate :smcp3 :copy? :batch]))]
+    (throw (ex-info (str ":enumerate is not supported with " other)
+                    {:type ::enumerate-with-unsupported :option other})))
   (let [threshold (or resample-threshold 0.5)
         anchor? (anchor-predicate anchors)
         lag (:lag anchors)
@@ -402,7 +406,7 @@
                                            :seed seed
                                            :fork-opts {:systems :none}
                                            :retain-released? false}
-                                          (dissoc opts :resample-threshold :policy :executor :retained
+                                          (dissoc opts :resample-threshold :policy :executor :retained :enumerate
                                                   :resampling :genealogy? :smcp3 :batch
                                                   :ancestor-sampling? :root :copy? :anchors :rejuvenate :adopt
                                                   ::retained-paths))))
@@ -493,6 +497,12 @@
                     (do (swap! state assoc-in [:streaming slot] sp)
                         (arrived!))
 
+                    (and enumerate (derive/enumerated enumerate sp)
+                         (derive/enumerable? sp (policy-of slot)))
+                    ((derive/enumerate-site sp (derive/enumerated enumerate sp) (policy-of slot) session)
+                     (fn [policy] (decide-site! sp slot nil policy))
+                     fail!)
+
                     (and anchor? (anchor? sp))
                     ((sp/fork sp)
                      (fn [anchor]
@@ -503,9 +513,9 @@
                     :else (decide-site! sp slot nil)))
                 (catch #?(:clj Throwable :cljs :default) e (fail! e))))
 
-            (decide-site! [sp slot anchor]
+            (decide-site! [sp slot anchor & [policy]]
               (try
-                (let [{:keys [value]} (decide! (policy-of slot) sp anchor)]
+                (let [{:keys [value]} (decide! (or policy (policy-of slot)) sp anchor)]
                   (cond
                     (not (itrace/barrier-site? sp)) (sp/resume sp value)
                     batch (join-batch! sp slot value)
@@ -1065,6 +1075,17 @@
   p(x')·L(u'|x') / (p(x)·K(u|x)) · |J|. K draws from `foerster.random` (it
   runs in the particle's stream). Sites K does not update are kept, and those
   the replay reaches afresh are drawn from their prior, as in a move.
+
+  `:enumerate plan` (`foerster.derive/plan` of the model's site graph) sums
+  out the finite latent sites the plan names where they are drawn: the
+  particle is forked once per value, each fork scores the value and the
+  observations that read it, and the particle continues with one value drawn
+  in proportion to its fork's weight, weighted by their sum (the fully
+  adapted proposal for that site). Its weight is then the marginal over the
+  site, and the site's value an exact draw from its conditional. The code
+  between the site and its last observation runs once per value more. Not
+  with `:retained`, `:anchors`, `:rejuvenate`, `:smcp3`, `:copy?` or
+  `:batch`.
 
   `:resampling` is `:systematic` (default), `:stratified`, `:residual` or
   `:multinomial` (`measure/resample`). The measure's `:history` has a map per
