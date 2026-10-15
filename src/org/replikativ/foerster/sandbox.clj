@@ -129,15 +129,19 @@
    :smc (fn [{:keys [particles]}] particles)
    :mh (fn [{:keys [iterations chains] :or {chains 4}}] (* iterations chains))
    :rmh (fn [{:keys [iterations chains] :or {chains 4}}] (* iterations chains))
-   :nuts (fn [{:keys [iterations chains] :or {chains 4}}] (* iterations chains))})
-;; Not yet: particle MCMC reports a model with zero likelihood everywhere as
-;; a uniform posterior (pgibbs resets the weights), so a sandbox could not
-;; tell; tempering, parallel tempering and enumeration have costs their
+   :nuts (fn [{:keys [iterations chains] :or {chains 4}}] (* iterations chains))
+   ;; a sweep of :particles per iteration, and an initial one
+   :pimh (fn [{:keys [particles iterations]}] (* particles (inc iterations)))
+   :pgibbs (fn [{:keys [particles iterations]}] (* particles (inc iterations)))
+   :pgas (fn [{:keys [particles iterations]}] (* particles (inc iterations)))
+   ;; on each of its 8 nodes
+   :ipmcmc (fn [{:keys [particles iterations]}] (* 8 particles (inc iterations)))})
+;; Not yet: tempering, parallel tempering and enumeration have costs their
 ;; sizes do not bound.
 
 (def ^:private particle-methods
   "The methods whose particles can run in canonical forks (`:world-policy`)."
-  #{:importance :smc})
+  #{:importance :smc :pimh :pgibbs :pgas :ipmcmc})
 
 (def ^:private run-options
   "Options a sandbox may pass: data only, no functions, kernels or worlds."
@@ -391,7 +395,7 @@
 
 (def docs
   "{ns-sym {sym [arglists docstring]}} for `namespaces`."
-  '{infer {run [([model opts]) "Run inference on `model` (a spin with sample/observe sites); a spin of the posterior as data. opts: :method (:importance :smc :mh :rmh :nuts), its sizes (:particles; or :iterations :chains :burn), :seed, :world-policy, :resampling, :resample-threshold, :step-size (:rmh), :target-accept :max-depth :metric (:nuts). NUTS needs a block site (model/site). Values the model returns must be plain data."]
+  '{infer {run [([model opts]) "Run inference on `model` (a spin with sample/observe sites); a spin of the posterior as data. opts: :method (:importance :smc :mh :rmh :nuts; particle MCMC :pimh :pgibbs :pgas :ipmcmc), its sizes (:particles; or :iterations :chains :burn; particle MCMC :particles per sweep and :iterations), :seed, :world-policy, :resampling, :resample-threshold, :step-size (:rmh), :target-accept :max-depth :metric (:nuts). NUTS needs a block site (model/site). Values the model returns must be plain data."]
            start [([model opts]) "As `run`, started in the background: a job handle {:job/id …} for status, result and cancel. Use it for runs longer than one evaluation may take."]
            status [([job]) "{:status :running|:done|:failed|:cancelled}"]
            result [([job timeout-ms]) "The job's posterior, waiting at most timeout-ms; :pending if not done yet."]
