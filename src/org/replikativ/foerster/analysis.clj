@@ -24,10 +24,20 @@
   closure, which the spin macro cannot see either — is listed under
   `:unknown`, never guessed.
 
+  Every value also carries its expression of the model's inputs, constants
+  and sites (a site's argument's `:expr`, sites written {:site n}) as far as
+  the walk can write it: through `pure-fns` and `Math` calls, `if`, and
+  collections. That is the argument's link function; `affine` reads a + b·x
+  off it.
+
   `facts` derives from the graph: the support of each site, finite latent
-  sites, plates, conjugate pairs (`foerster.conjugate`'s families, in the form
-  `foerster.conjugate` would collapse) and Markov blankets. `explain` prints
-  both."
+  sites, plates, conjugate pairs (`foerster.conjugate`'s families, and a
+  Normal mean affine in a Normal prior, `:normal-affine` with each child's
+  link and the sites it is conditional on) and Markov blankets. A latent
+  site whose value, or a value computed from it, goes anywhere but a
+  distribution's argument or the model's result — an impure call, a
+  closure, the next iteration — escapes and is not collapsed. `explain`
+  prints both."
   (:require [clojure.set :as set]
             [clojure.string :as str]
             ;; `model` expands to a spin
@@ -77,11 +87,32 @@
 ;; The walk
 ;; -----------------------------------------------------------------------------
 
-;; A value is {:reads #{site …} :exact site-or-nil}: the sites it was computed
-;; from, and the site whose value it is, unchanged, if it is one.
-(def ^:private const {:reads #{} :exact nil})
+;; A value is {:reads #{site …} :exact site-or-nil :expr e}: the sites it was
+;; computed from, the site whose value it is, unchanged, if it is one, and the
+;; expression it is of the model's inputs, constants and sites — its link
+;; function — when the walk can write it (else nil). In an expression a
+;; latent site n is {:site n}; operators are qualified symbols.
+(def ^:private const {:reads #{} :exact nil :expr nil})
 
-(defn- reads [& vs] {:reads (reduce set/union #{} (map :reads vs)) :exact nil})
+(defn- reads [& vs] {:reads (reduce set/union #{} (map :reads vs)) :exact nil :expr nil})
+
+(def pure-fns
+  "Functions whose result is their expression of their arguments: a value
+  passed to one does not go anywhere else (`facts`' escape check), and its
+  result has an expression (`affine`)."
+  (into '#{clojure.core/+ clojure.core/- clojure.core/* clojure.core// clojure.core/inc
+           clojure.core/dec clojure.core/max clojure.core/min clojure.core/abs clojure.core/double
+           clojure.core/long clojure.core/int clojure.core/float clojure.core/not clojure.core/=
+           clojure.core/not= clojure.core/< clojure.core/> clojure.core/<= clojure.core/>=
+           clojure.core/zero? clojure.core/pos? clojure.core/neg? clojure.core/nth clojure.core/get
+           clojure.core/first clojure.core/second clojure.core/count clojure.core/vector
+           clojure.core/conj clojure.core/assoc clojure.core/identity clojure.core/hash-map
+           clojure.core/sqrt clojure.core/exp clojure.core/log}
+        (map #(symbol "org.replikativ.foerster.dist" (name %)))
+        (keys support)))
+
+(defn- static-math? [f]
+  (and (symbol? f) (#{"Math" "java.lang.Math"} (namespace f))))
 
 (defn- resolve-sym
   "The fully qualified symbol `sym` names in `ns`, or nil for a local, a
@@ -107,25 +138,20 @@
 
 (declare walk)
 
-(defn- inner
-  "`st` for a subexpression whose value is not the model's result."
-  [st]
-  (assoc st :tail? false))
-
 (defn- escape!
-  "Note that the value `v`, if it is a latent site's own value, goes somewhere
-  other than a distribution's argument or the model's result."
+  "Note that the value `v` — a latent site's value, or one computed from it
+  by `pure-fns` — goes somewhere other than a distribution's argument or the
+  model's result: every site it reads escapes."
   [{:keys [state record?]} v how]
-  (when (and record? (:exact v))
-    (swap! state update-in [:escapes (:exact v)] (fnil conj #{}) how))
+  (when record?
+    (doseq [n (:reads v) :when (integer? n)]
+      (swap! state update-in [:escapes n] (fnil conj #{}) how)))
   v)
-
-(defn- walk-all [st forms] (apply reads (map #(walk st %) forms)))
 
 (defn- walk-args
   "The arguments of a call: each one a value the call computes with."
   [st forms how]
-  (apply reads (map #(escape! st (walk (inner st) %) how) forms)))
+  (apply reads (map #(escape! st (walk st %) how) forms)))
 
 (defn- record-site!
   "Record the site of `(f args…)` and return its value."
@@ -143,7 +169,6 @@
                            (let [q (resolve-sym (:ns st) (:locals st) (first dist-form))]
                              (when q [q (rest dist-form)])))
         ctor (when (and ctor (= dist-ns (namespace ctor))) (symbol (name ctor)))
-        st (inner st)
         arg-values (if ctor
                      (mapv (fn [a] (assoc (walk st a) :form a)) dist-args)
                      [(assoc (escape! st (walk st dist-form) :distribution) :form dist-form)])
@@ -169,7 +194,7 @@
       (doseq [{:keys [id]} (:loops st)]
         (swap! state update-in [:loops id :sites] (fnil conj #{}) n)))
     (case kind
-      :latent {:reads #{n} :exact n}
+      :latent {:reads #{n} :exact n :expr {:site n}}
       :observed (or value const)
       const)))
 
@@ -185,7 +210,7 @@
                            (swap! state assoc-in [:loops id] {:bindings syms :sites #{}})
                            id))
         [st inits] (reduce (fn [[st acc] [s init]]
-                             (let [v (walk (inner st) init)]
+                             (let [v (walk st init)]
                                [(-> st (update :env assoc s v) (update :locals conj s)) (conj acc v)]))
                            [st []] (partition 2 bvec))
         body-pass (fn [vals record?]
@@ -204,7 +229,7 @@
                    vals'
                    (recur vals' (inc k)))))]
     (if record?
-      (let [marked (mapv (fn [v s] (update v :reads conj [:via id s])) vals syms)
+      (let [marked (mapv (fn [v s] (-> v (update :reads conj [:via id s]) (assoc :expr s))) vals syms)
             [result _] (body-pass marked true)]
         (swap! state assoc-in [:loops id :carried] (zipmap syms (map :reads vals)))
         result)
@@ -221,8 +246,14 @@
       (macro? ns locals f)
       (walk st (binding [*ns* ns] (macroexpand-1 form)))
 
+      (or (contains? pure-fns q) (static-math? f))
+      (let [vs (mapv #(walk st %) args)
+            exprs (map :expr vs)]
+        (assoc (apply reads vs)
+               :expr (when (every? some? exprs) (cons (or q f) exprs))))
+
       :else
-      (reads (if (symbol? f) (get env f const) (walk (inner st) f))
+      (reads (if (symbol? f) (get env f const) (walk st f))
              (walk-args st args {:call f})))))
 
 (defn- contains-site? [{:keys [ns locals]} form]
@@ -234,29 +265,34 @@
   "The value `form` computes, recording the sites it runs into `(:state st)`."
   [{:keys [env state] :as st} form]
   (cond
-    (symbol? form) (get env form const)
+    ;; a name not bound in the model: an input or a global
+    (symbol? form) (get env form {:reads #{} :exact nil :expr form})
 
     (and (seq? form) (seq form))
     (let [[op & args] form]
       (case op
-        quote const
+        quote (assoc const :expr form)
         var const
-        do (if (seq args) (do (doseq [a (butlast args)] (walk (inner st) a)) (walk st (last args))) const)
+        do (if (seq args) (do (doseq [a (butlast args)] (walk st a)) (walk st (last args))) const)
         let* (let [[bvec & body] args
                    st' (reduce (fn [st [s init]]
-                                 (-> st (update :env assoc s (walk (inner st) init)) (update :locals conj s)))
+                                 (-> st (update :env assoc s (walk st init)) (update :locals conj s)))
                                st (partition 2 bvec))]
                (walk st' (cons 'do body)))
         loop* (walk-loop st form)
-        recur (let [vals (mapv #(escape! st (walk (inner st) %) :loop-carry) args)]
+        recur (let [vals (mapv #(escape! st (walk st %) :loop-carry) args)]
                 (when-let [{:keys [recurs]} (peek (:loops st))] (swap! recurs conj vals))
                 const)
         if (let [[test then else] args
-                 t (walk (inner st) test)
-                 st' (update st :control set/union (:reads t))]
-             (reads t (walk st' then) (walk st' else)))
+                 t (walk st test)
+                 st' (update st :control set/union (:reads t))
+                 a (walk st' then)
+                 b (walk st' else)]
+             (assoc (reads t a b)
+                    :expr (when (and (:expr t) (:expr a) (or (nil? else) (:expr b)))
+                            (list 'if (:expr t) (:expr a) (:expr b)))))
         case* (let [[e _shift _mask default imap] (rest form)
-                    t (walk (inner st) (second form))
+                    t (walk st (second form))
                     st' (update st :control set/union (:reads t))]
                 (apply reads t (walk st' default) (map #(walk st' (second %)) (vals imap))))
         fn* (let [captured (keep env (filter symbol? (tree-seq coll? seq form)))]
@@ -272,13 +308,19 @@
         (walk-args st args :host)
         (walk-call st form)))
 
-    ;; a collection in the model's result returns its elements; elsewhere they
-    ;; go wherever the collection goes
-    (map? form) (if (:tail? st)
-                  (walk-all st (concat (keys form) (vals form)))
-                  (walk-args st (concat (keys form) (vals form)) :collection))
-    (coll? form) (if (:tail? st) (walk-all st form) (walk-args st form :collection))
-    :else const))
+    ;; a collection holds its elements: where they go is where it goes
+    (map? form) (let [ks (mapv #(walk st %) (keys form))
+                      vs (mapv #(walk st %) (vals form))]
+                  (assoc (apply reads (concat ks vs))
+                         :expr (when (every? :expr (concat ks vs))
+                                 (zipmap (map :expr ks) (map :expr vs)))))
+    (coll? form) (let [vs (mapv #(walk st %) form)]
+                   (assoc (apply reads vs)
+                          :expr (when (every? :expr vs)
+                                  (cond (vector? form) (mapv :expr vs)
+                                        (set? form) (set (map :expr vs))
+                                        :else nil))))
+    :else (assoc const :expr form)))
 
 ;; -----------------------------------------------------------------------------
 ;; Graph and facts
@@ -292,7 +334,7 @@
   ([form {:keys [ns locals] :or {ns *ns*}}]
    (let [state (atom {:sites {} :loops {} :unknown [] :escapes {}})
          st {:ns (the-ns ns) :locals (set locals) :env {} :control #{}
-             :loops [] :state state :record? true :tail? true}]
+             :loops [] :state state :record? true}]
      (walk st form)
      (let [{:keys [sites loops unknown escapes]} @state
            marker? vector?
@@ -344,33 +386,110 @@
   [sites n]
   (into #{} (keep (fn [[m s]] (when (or (contains? (:reads s) n) (contains? (:control s) n)) m))) sites))
 
+;; -----------------------------------------------------------------------------
+;; Link functions
+;; -----------------------------------------------------------------------------
+
+(defn- mentions? [e n]
+  (boolean (some #(= {:site n} %) (tree-seq coll? seq e))))
+
+(defn- plus [& xs]
+  (let [k (reduce + 0 (filter number? xs))
+        xs (cond-> (vec (remove number? xs)) (not (zero? k)) (conj k))]
+    (case (count xs) 0 0 1 (first xs) (cons 'clojure.core/+ xs))))
+
+(defn- times [& xs]
+  (let [k (reduce * 1 (filter number? xs))
+        xs (remove number? xs)]
+    (cond (zero? k) 0
+          (empty? xs) k
+          :else (let [xs (cond->> xs (not (== 1 k)) (cons k))]
+                  (if (next xs) (cons 'clojure.core/* xs) (first xs))))))
+
+(defn affine
+  "[a b] with `e` = a + b·x, x the value of site `n` and a, b expressions
+  not mentioning it; nil if `e` is not affine in it."
+  [e n]
+  (cond
+    (= {:site n} e) [0 1]
+    (not (mentions? e n)) [e 0]
+    (seq? e)
+    (let [[op & xs] e
+          parts (map #(affine % n) xs)]
+      (when (every? some? parts)
+        (case op
+          clojure.core/+ [(apply plus (map first parts)) (apply plus (map second parts))]
+          clojure.core/- (let [[[a0 b0] & more] parts]
+                           (if (empty? more)
+                             [(times -1 a0) (times -1 b0)]
+                             [(apply plus a0 (map #(times -1 (first %)) more))
+                              (apply plus b0 (map #(times -1 (second %)) more))]))
+          clojure.core/* (let [dependent (filter #(mentions? % n) xs)]
+                           (when (= 1 (count dependent))
+                             (let [k (apply times (remove #(mentions? % n) xs))
+                                   [a b] (affine (first dependent) n)]
+                               [(times k a) (times k b)])))
+          clojure.core// (let [[x & ds] xs]
+                           (when (and (seq ds) (not-any? #(mentions? % n) ds))
+                             (let [[a b] (affine x n)
+                                   d (apply times ds)]
+                               [(list 'clojure.core// a d) (list 'clojure.core// b d)])))
+          nil)))
+    :else nil))
+
+(defn- link
+  "How the child's parameter `arg` depends on the prior site `n` in family
+  table `table`'s slot for constructor `ctor`: {:family f} when it is `n`
+  itself, {:family :normal-affine :a a :b b} for a Normal mean a + b·n."
+  [prior-ctor ctor slot arg n]
+  (cond
+    (= n (:exact arg)) {:family (second (get-in conjugate-families [prior-ctor ctor]))}
+    (and (= 'normal prior-ctor) (= 'normal ctor) (= 0 slot))
+    (when-let [[a b] (some-> (:expr arg) (affine n))]
+      (when-not (and (number? b) (zero? b))
+        {:family :normal-affine :a a :b b}))))
+
 (defn- conjugate-pair
   "The conjugate family the latent site `n` forms with all its children, if it
   does: every child is a constructor of the family's likelihood whose
-  parameter argument is exactly `n`, reads `n` nowhere else, no site's
-  existence depends on `n`, and `n`'s value goes nowhere else but the
-  model's result."
+  parameter argument is `n` itself (or, for a Normal mean, affine in `n`),
+  reads `n` nowhere else, no site's existence depends on `n`, and `n`'s value
+  goes nowhere else but the model's result. `:links` gives each child's
+  affine link; `:given` the other sites the links read."
   [sites n]
   (let [{:keys [dist escapes]} (sites n)
-        table (get conjugate-families (:ctor dist))
+        prior (:ctor dist)
+        table (get conjugate-families prior)
         kids (children sites n)]
     (when (and table (seq kids) (empty? escapes))
-      (let [families
+      (let [links
             (for [k kids
                   :let [{:keys [dist control address-reads]} (sites k)
-                        [slot family] (get table (:ctor dist))]]
-              (when (and slot
+                        [slot] (get table (:ctor dist))
+                        arg (when slot (nth (:args dist) slot nil))]]
+              (when (and slot arg
                          (= :observed (:kind (sites k)))
                          (not (contains? control n))
                          (not (contains? address-reads n))
-                         (= n (:exact (nth (:args dist) slot nil)))
                          (every? (fn [[i a]] (or (= i slot) (not (contains? (:reads a) n))))
                                  (map-indexed vector (:args dist))))
-                family))]
-        (when (and (every? some? families) (apply = families))
-          {:family (first families)
-           :children kids
-           :implemented? (contains? implemented-families (first families))})))))
+                (some-> (link prior (:ctor dist) slot arg n) (assoc :child k))))
+            family (cond (some nil? links) nil
+                         (every? #(= :normal-mean (:family %)) links) :normal-mean
+                         (every? #(#{:normal-mean :normal-affine} (:family %)) links) :normal-affine
+                         (apply = (map :family links)) (:family (first links)))]
+        (when family
+          (cond-> {:family family
+                   :children kids
+                   :implemented? (contains? implemented-families family)}
+            (= :normal-affine family)
+            (assoc :links (into {} (for [{:keys [child a b family]} links]
+                                     [child (if (= :normal-mean family) {:a 0 :b 1} {:a a :b b})]))
+                   :given (into #{} (for [{:keys [a b]} links
+                                          e [a b]
+                                          x (tree-seq coll? seq e)
+                                          :when (and (map? x) (:site x))]
+                                      (:site x))))))))))
 
 (defn facts
   "Facts about the model the graph `g` describes, as a vector of maps."
