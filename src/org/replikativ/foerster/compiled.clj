@@ -18,7 +18,9 @@
   (:require [clojure.walk :as walk]
             [org.replikativ.foerster.analysis :as analysis]
             [org.replikativ.foerster.dist :as dist]
-            [org.replikativ.foerster.measure :as m]))
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.random :as random]
+            [org.replikativ.spindel.effects.savepoint :as sp]))
 
 (defn- symbolic-address? [a]
   (some symbol? (tree-seq coll? seq a)))
@@ -37,10 +39,11 @@
 (defn refusals
   "Why the instance graph `g` cannot be compiled: a vector of reasons, empty
   when it can."
-  [{:keys [sites unknown]}]
+  [{:keys [sites unknown result]}]
   (vec
    (concat
     (map (fn [u] {:reason :unknown :what (:reason u)}) unknown)
+    (when (nil? result) [{:reason :unknown-result}])
     (for [[n s] (sort-by key sites)
           reason [(when (symbolic-address? (:address s)) :symbolic-address)
                   (when (seq (:control s)) :value-dependent-structure)
@@ -96,26 +99,37 @@
                         ~@(for [n latents]
                             `(aset ~x ~(index n) (double (dist/draw ~(code (dist-expr ((:sites g) n)) index x)))))
                         ~x))))
+          result (let [{:keys [value expr]} (:result g)]
+                   (if expr
+                     `(fn [~inputs] (let ~bind (fn [~(with-meta x {:tag 'doubles})] ~(code expr index x))))
+                     `(fn [~'_] (fn [~'_] '~value))))
           compile (fn [form] ((binding [*ns* ns] (eval form)) (vec args)))]
       {:addresses (mapv #(:address ((:sites g) %)) latents)
        :log-density (compile density)
-       :draw (compile draw)})))
+       :draw (compile draw)
+       :result (compile result)})))
 
 (defn rmh
-  "Random-walk MH on a compiled model (`compile-model`): `:chains` chains
-  (default 4) of `:iterations` moves, each moving one latent drawn uniformly
-  by a Gaussian step of `:step-size`, after `:burn` moves that are dropped.
-  Draws through `foerster.random`, so a seeded run repeats. Resolves (as a
-  CPS operation, like `foerster.core/infer`) an EmpiricalMeasure whose
-  samples' results are {address value} maps of the latents."
-  [{:keys [addresses log-density draw]} {:keys [iterations burn step-size chains] :or {burn 0 chains 4}}]
+  "Random-walk MH on a compiled model (`compile-model`), as `foerster.core`'s
+  `:rmh`: `:chains` chains (default 4) of `:iterations` moves, each moving
+  one latent drawn uniformly by a Gaussian step of `:step-size` (default
+  0.1); every state after the first `:burn` moves is kept. Each chain draws
+  from a stream of its own, seeded from `:seed` (else from the process
+  generator, in order), and the chains run in parallel. Resolves, as a CPS
+  operation, an EmpiricalMeasure of the model's results with `:chain-lengths`;
+  a sample's trace holds its latent values only."
+  [{:keys [addresses log-density draw result]}
+   {:keys [iterations burn step-size chains seed] :or {burn 0 chains 4 step-size 0.1}}]
   (fn [resolve reject]
     (try
       (let [k (count addresses)
+            seeds (if seed
+                    (mapv #(sp/derive-seed seed ::chain %) (range chains))
+                    (vec (repeatedly chains random/fresh-seed)))
             chain (fn []
                     (let [^doubles x (draw)]
                       (loop [i 0 lp (double (log-density x)) out (transient [])]
-                        (if (= i (+ burn iterations))
+                        (if (= i iterations)
                           (persistent! out)
                           (let [j (int (* k (m/uniform01)))
                                 old (aget x j)
@@ -124,10 +138,12 @@
                                 accept? (and (== lp' lp') (< (Math/log (m/uniform01)) (- lp' lp)))
                                 lp (if accept? lp' (do (aset x j old) lp))
                                 out (if (>= i burn)
-                                      (conj! out (zipmap addresses (vec x)))
+                                      (conj! out [(m/sample-particle (result x)
+                                                                     (zipmap addresses (map (fn [v] {:value v}) x)))
+                                                  0.0])
                                       out)]
                             (recur (inc i) lp out))))))
-            draws (vec (mapcat (fn [_] (chain)) (range chains)))]
-        (resolve (m/empirical (mapv (fn [d] [(m/sample-particle d (into {} (map (fn [[a v]] [a {:value v}])) d)) 0.0])
-                                    draws))))
+            chains (mapv deref (mapv (fn [s] (future (random/with-stream* s ::rmh chain))) seeds))]
+        (resolve (assoc (m/empirical (into [] cat chains))
+                        :chain-lengths (mapv count chains))))
       (catch Throwable t (reject t)))))
