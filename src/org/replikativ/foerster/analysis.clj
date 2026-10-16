@@ -290,9 +290,14 @@
                (let [[_ recurs] (body-pass vals false {:id nil})
                      vals' (mapv (fn [v i] (apply reads v (map #(nth (:vals %) i const) recurs)))
                                  vals (range (count syms)))]
-                 (if (or (= (map :reads vals') (map :reads vals)) (> k 20))
-                   vals'
-                   (recur vals' (inc k)))))
+                 (cond
+                   (= (map :reads vals') (map :reads vals)) vals'
+                   ;; no fixpoint: what the loop carries is not known, so
+                   ;; nothing about it may be relied on
+                   (> k 20) (do (when (:record? st)
+                                  (swap! state update :unknown conj {:reason :loop-not-converged :bindings syms}))
+                                vals')
+                   :else (recur vals' (inc k)))))
         unrolled (when (and record? (every? :known? inits)
                             (or (:unroll-plates? st) (sequential? st syms vals body n0)))
                    (iterations st syms inits body))
@@ -396,7 +401,13 @@
         letfn* (do (when (contains-site? st form)
                      (swap! state update :unknown conj {:reason :closure :form form}))
                    (walk st (cons 'do (rest args))))
-        (try catch finally throw new set! . monitor-enter monitor-exit)
+        ;; a caught exception continues the run on a path that depends on
+        ;; values the walk does not follow
+        try (do (when (and (:record? st)
+                           (some #(and (seq? %) (= 'catch (first %))) args))
+                  (swap! state update :unknown conj {:reason :try-catch :form form}))
+                (walk-args st args :host))
+        (catch finally throw new set! . monitor-enter monitor-exit)
         (walk-args st args :host)
         (walk-call st form)))
 
