@@ -12,16 +12,22 @@
 
   World seeds are derived per fork from the parent's seed, the site address
   and the fork index (`savepoint/fork`), so a replay's fresh proposal draws
-  from a fresh stream and the same run draws the same numbers. Draws outside
-  any world — the seeds of an inference's sessions, SMC's resampling at a
-  barrier — come from the process generator in program order, which
-  `set-seed!` seeds.
+  from a fresh stream and the same run draws the same numbers. A draw a world
+  makes outside any keyed stream — the model's own randomness, a step whose
+  proposal is the process itself (`foerster.steer`), a simulator's noise —
+  comes from that world's free stream, seeded by its seed, so it too is
+  reproducible however the particles interleave, and the copies of a
+  resampled particle (forks, with seeds of their own) diverge. Draws outside
+  any world with a seed — the seeds of an inference's sessions — come from
+  the process generator in program order, which `set-seed!` seeds.
 
   The generator is xoshiro128** on 32-bit words, so a seed gives the same
   numbers on the JVM and in JavaScript."
   (:require [clojure.string :as str]
             [clojure.walk :as walk]
             [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.engine.core :as rtc]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.hash :as h]))
 
 ;; -----------------------------------------------------------------------------
@@ -124,10 +130,27 @@
   "The generator (or delayed generator) draws come from, or nil for the process generator."
   nil)
 
-(defn current
-  "The generator draws come from now."
+(defn- free-stream
+  "The generator of the current world's draws outside a keyed stream, made on
+  its first draw from the world's seed; nil outside a world with a seed. A
+  fork carries its parent's entry until it draws: a seed of its own makes a
+  new generator."
   []
-  (force (or *stream* process)))
+  (when-let [world rtc/*execution-context*]
+    (when-let [seed (sp/seed world)]
+      (let [{s :seed g :generator} (rtp/get-state world [:random/free])]
+        (if (= s seed)
+          g
+          (do (rtp/swap-state! world [:random/free]
+                               (fn [{s :seed :as cur}]
+                                 (if (= s seed) cur {:seed seed :generator (generator [seed ::free])})))
+              (:generator (rtp/get-state world [:random/free]))))))))
+
+(defn current
+  "The generator draws come from now: the keyed stream bound, else the
+  current world's free stream, else the process generator."
+  []
+  (force (or *stream* (free-stream) process)))
 
 (defn uniform01
   "A uniform draw in [0, 1) from the current generator."

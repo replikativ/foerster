@@ -71,3 +71,11 @@
     (is (< (Math/abs (- (m/log-marginal measure) exact-log-evidence)) 0.05)
         (str (m/log-marginal measure) " vs " exact-log-evidence))
     (is (= (* lambda (m/get-value particle)) (m/site-value particle :steer/reward)))))
+
+(deftest a-seeded-run-repeats-however-the-particles-interleave
+  ;; the coin is the process's own randomness, drawn outside any sample
+  ;; site: it comes from the particle's world, not a generator the
+  ;; particles share in arrival order
+  (let [run #(b/run-infer 43 (fn [] (smc/smc (process false) 500 {:resampling :stratified})))
+        values (fn [measure] (mapv first (b/weighted-values measure)))]
+    (is (= (values (run)) (values (run)) (values (run))))))
