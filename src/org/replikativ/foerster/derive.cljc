@@ -15,8 +15,11 @@
   - no later iteration of a loop reads it;
   - its group is contiguous: every site written between z and its last
     child is a child of z, so a run that leaves the group is done with z;
+  - its value goes nowhere the graph does not follow (no escape);
   - its location in the source is known, to match it at run time, and no
-    other site is written there.
+    other site is written there;
+  - the graph has no unknown parts (closures with sites, a caught exception,
+    a loop whose carried values did not converge).
 
   `enumerate-site` does it at run time, for an engine's site handler
   (`foerster.smc/smc` with `:enumerate plan`). Correctness does not depend on
@@ -48,6 +51,11 @@
       (not= :finite (get finite-ctors (get-in s [:dist :ctor])))
       :infinite-support
 
+      ;; its value reaches what the graph does not follow (an impure call,
+      ;; a closure, a host form): a site may read it through that, unseen.
+      ;; Values carried by recur or held in collections are followed.
+      (some #(or (map? %) (#{:closure :host} %)) (:escapes s)) :escapes
+
       (empty? kids) :no-children
 
       (some #(contains? (:carried (loops %)) n) (:loops s)) :carried
@@ -74,7 +82,8 @@
         shared (into #{} (keep (fn [[loc k]] (when (and loc (< 1 k)) loc)))
                      (frequencies (map :loc (vals sites))))
         decided (for [n finite]
-                  [n (or (refusal g n)
+                  [n (or (when (seq (:unknown g)) :unknown-structure)
+                         (refusal g n)
                          (when (some shared (map (comp :loc sites) (cons n (children sites n))))
                            :shared-location))])]
     {:enumerate (into {} (for [[n reason] decided :when (nil? reason)

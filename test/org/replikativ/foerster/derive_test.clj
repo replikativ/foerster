@@ -118,3 +118,21 @@
                                               (observe (dist/normal -1.0 2.0) 0.5 :id :b))))))]
     (is (empty? refused))
     (is (= 2 (count (:group (first (vals enumerate))))))))
+
+(deftest a-site-whose-value-leaves-the-graph-is-not-enumerated
+  (testing "through an atom an observation reads it unseen"
+    (is (= [:escapes]
+           (vals (:refused (derive/plan
+                            (a/graph-of
+                             (a/model [box]
+                                      (let [z (sample (dist/flip 0.5) :id :z)]
+                                        (swap! box conj z)
+                                        (observe (dist/normal (count (filter true? @box)) 1.0) 0.4 :id :y))))))))))
+  (testing "a caught exception makes the structure unknown"
+    (is (= [:unknown-structure]
+           (vals (:refused (derive/plan
+                            (a/graph-of
+                             (a/model []
+                                      (let [z (sample (dist/flip 0.5) :id :z)]
+                                        (try (observe (dist/normal (if z 1.0 0.0) 1.0) 0.4 :id :y)
+                                             (catch Exception _ nil))))))))))))
