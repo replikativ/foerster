@@ -431,8 +431,8 @@
              :env (into {} (for [[sym v] given] [sym (known v sym)]))
              :control #{} :path [] :loops [] :state state :record? true
              :unroll-plates? unroll-plates?}]
-     (walk st form)
-     (let [{:keys [sites loops unknown escapes]} @state
+     (let [result (walk st form)
+           {:keys [sites loops unknown escapes]} @state
            marker? vector?
            strip (fn [xs] (into #{} (remove marker?) xs))]
        {:sites (into {} (for [[n s] sites]
@@ -468,7 +468,10 @@
                                          :carried carried
                                          :kind (if (seq carried) :sequential :plate)}
                                   (:unrolled l) (assoc :unrolled (:unrolled l)))])))
-        :unknown unknown}))))
+        :unknown unknown
+        ;; the model's value: known, or its expression of the sites
+        :result (cond (:known? result) {:value (:value result)}
+                      (some? (:expr result)) {:expr (:expr result)})}))))
 
 (defmacro analyze
   "The site graph of the model `body` (a `spin` form or the forms inside one),
@@ -477,14 +480,31 @@
   `(quote ~(analyze-form (if (next body) (cons 'do body) (first body))
                          {:ns *ns* :locals (keys &env)})))
 
+(defonce ^:private applications
+  ;; spin -> [model args], weakly: what `applied` answers
+  (java.util.Collections/synchronizedMap (java.util.WeakHashMap.)))
+
+(defn applied
+  "[model args] for a spin a `model` made, or nil."
+  [s]
+  (.get ^java.util.Map applications s))
+
 (defmacro model
   "`(fn args (spin body…))`, carrying the site graph of `body` as metadata
-  (`graph-of`): a model whose structure inference can read."
+  (`graph-of`): a model whose structure inference can read. The spins it
+  makes remember it and their arguments (`applied`)."
   [args & body]
   (let [g (analyze-form (cons 'do body) {:ns *ns* :locals (concat (keys &env) (flatten args))})]
-    `(with-meta (fn ~args (org.replikativ.spindel.spin.cps/spin ~@body))
-       {::graph '~g
-        ::source {:ns '~(ns-name *ns*) :params '~args :body '~body}})))
+    `(let [self# (promise)
+           make# (fn ~args (org.replikativ.spindel.spin.cps/spin ~@body))
+           f# (with-meta (fn [& xs#]
+                           (let [s# (apply make# xs#)]
+                             (.put ^java.util.Map @#'applications s# [@self# (vec xs#)])
+                             s#))
+                {::graph '~g
+                 ::source {:ns '~(ns-name *ns*) :params '~args :body '~body}})]
+       (deliver self# f#)
+       f#)))
 
 (defn graph-of
   "The site graph a `model` carries, or nil."

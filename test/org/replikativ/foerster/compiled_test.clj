@@ -5,6 +5,7 @@
             [org.replikativ.foerster.compiled :as c]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
+            [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.foerster.measure :as m]))
 
@@ -44,9 +45,22 @@
         exact (/ (reduce + ys) (inc (count ys)))
         measure (b/run-infer 2 #(c/rmh (c/compile-model normal-mean ys)
                                        {:iterations 20000 :burn 1000 :step-size 0.6 :chains 2}))
-        mus (map (comp :mu m/get-value) (m/get-contexts measure))]
-    (is (= 40000 (count mus)))
+        mus (map m/get-value (m/get-contexts measure))]
+    (is (= 38000 (count mus)) "every state after :burn, per chain")
+    (is (= [19000 19000] (:chain-lengths measure)))
     (is (< (Math/abs (- exact (/ (reduce + mus) (count mus)))) 0.03))))
+
+(deftest infer-rmh-compiled
+  (let [ys [0.8 1.4 0.3 1.9 1.1 0.6 1.5 0.9]
+        exact (/ (reduce + ys) (inc (count ys)))
+        run #(b/run-infer 3 (fn [] (infer/infer (normal-mean ys) {:method :rmh :compiled? true :iterations 8000
+                                                                  :burn 500 :chains 2 :step-size 0.6 :seed [1 2]})))
+        measure (run)
+        mus (map m/get-value (m/get-contexts measure))]
+    (is (= [7500 7500] (:chain-lengths measure)))
+    (is (< (Math/abs (- exact (/ (reduce + mus) (count mus)))) 0.05))
+    (is (= mus (map m/get-value (m/get-contexts (run)))) "a seeded run repeats")
+    (is (= (first mus) (m/site-value (first (m/get-contexts measure)) :mu)))))
 
 (deftest a-model-whose-structure-depends-on-a-value-is-refused
   (let [mixture (a/model [y]

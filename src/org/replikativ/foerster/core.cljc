@@ -29,6 +29,8 @@
             [org.replikativ.foerster.tempering :as tempering]
             [org.replikativ.foerster.gradient :as grad]
             [org.replikativ.foerster.trace :as itrace]
+            #?(:clj [org.replikativ.foerster.analysis :as analysis])
+            #?(:clj [org.replikativ.foerster.compiled :as compiled])
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.spindel.trace :as trace]
@@ -1169,6 +1171,20 @@
      :kernel #{:kernel :chains :particles}
      :pmmh #{:particles :iterations :burn}}))
 
+(defn- compiled-rmh
+  "`:rmh` on the model compiled (`foerster.compiled`): the spin must come
+  from an `analysis/model` whose structure is static given its arguments."
+  [model iterations burn step-size chains opts]
+  #?(:clj
+     (let [[m args] (or (analysis/applied model)
+                        (throw (ex-info ":compiled? needs a model made by foerster.analysis/model"
+                                        {:type ::not-an-analysis-model})))]
+       (on-savepoints (compiled/rmh (apply compiled/compile-model m args)
+                                    (cond-> {:iterations iterations :burn (or burn 0) :chains (or chains 4)
+                                             :seed (:seed opts)}
+                                      step-size (assoc :step-size step-size)))))
+     :cljs (throw (ex-info ":compiled? runs on the JVM" {:type ::compiled-on-cljs}))))
+
 (defn infer
   "Run `model` under the inference method `(:method opts)` — one call shape
   for every method, as Anglican's `doquery`:
@@ -1188,7 +1204,14 @@
     :mh :rmh :nuts                      :iterations per chain, :chains (default
                                         4), :burn, :step-size (:rmh); every
                                         draw after :burn is kept; :nuts adapts
-                                        during :burn (block sites)
+                                        during :burn (block sites). :rmh with
+                                        :compiled? true (JVM) runs on the
+                                        model compiled to plain functions
+                                        (`foerster.compiled`): a model from
+                                        `analysis/model` whose structure is
+                                        static, else refused with the
+                                        reasons; its traces hold the latent
+                                        values only
     :kernel                             :kernel (a `foerster.kernel` kernel)
                                         and :chains or :particles
     :pmmh                               :particles per SMC, :iterations,
@@ -1219,8 +1242,10 @@
       :ipmcmc (ipmcmc-infer model particles iterations rest-opts)
       :bbvi (bbvi-infer model particles iterations rest-opts)
       :mh (kernel-infer model (k/single-site-mh-kernel iterations chain-output) (or chains 4) rest-opts)
-      :rmh (kernel-infer model (k/random-walk-mh-kernel iterations (merge chain-output (when step-size {:step-size step-size})))
-                         (or chains 4) rest-opts)
+      :rmh (if (:compiled? rest-opts)
+             (compiled-rmh model iterations burn step-size chains (dissoc rest-opts :compiled?))
+             (kernel-infer model (k/random-walk-mh-kernel iterations (merge chain-output (when step-size {:step-size step-size})))
+                           (or chains 4) rest-opts))
       :nuts (kernel-infer model (k/nuts-kernel iterations (merge chain-output (select-keys rest-opts [:target-accept :max-depth :metric])))
                           (or chains 4) (dissoc rest-opts :target-accept :max-depth :metric))
       :kernel (kernel-infer model kernel (or chains particles 4) rest-opts)
