@@ -305,7 +305,11 @@
   there is one. A fresh adaptation state per call (per chain). `opts`:
   `:burn`, `:target-accept` (0.8), `:max-depth` (10), `:metric` (`:variance`,
   Stan's estimate from the positions, or `:fisher`, from positions and
-  gradients)."
+  gradients).
+  Returns per-step `:sampler-stats` for direct NUTS inference. The flag
+  `:reached-max-depth?` reports depth attainment, including transitions that
+  stop naturally or diverge at that depth; it does not identify cap exhaustion.
+  Composed kernels and final-state-only output do not retain these statistics."
   [{:keys [burn target-accept max-depth metric] :or {burn 0 target-accept 0.8 max-depth 10 metric :variance}}]
   (let [adaptation (atom {})
         divergences (atom 0)]
@@ -314,16 +318,26 @@
         (let [opts (assoc chain-opts :burn burn :target-accept target-accept :max-depth max-depth :metric metric)
               blocks (filterv #(block-site? trace %) (itrace/latent-addresses trace))]
           (letfn [(others [t] (vec (remove #(block-site? t %) (itrace/latent-addresses t))))
-                  (go [t [address & more] moves]
+                  (go [t [address & more] moves stats]
                       (if address
                         ((nuts-move t address iteration opts adaptation)
                          (fn [r]
                            (when (and (:divergent? r) (>= iteration burn)) (swap! divergences inc))
-                           (go (:trace r) more (inc moves)))
+                           (go (:trace r) more (inc moves)
+                               (conj stats (assoc (select-keys (:stat r) [:accept-stat :depth :n-leapfrog])
+                                                  :divergent? (boolean (:divergent? r))))))
                          reject)
                         (let [done (fn [t moves accepted]
                                      (resolve {:trace t :accepted? (pos? accepted) :moves moves
-                                               :accepted-moves accepted :divergences @divergences}))]
+                                               :accepted-moves accepted :divergences @divergences
+                                               :sampler-stats
+                                               {:diverging (boolean (some :divergent? stats))
+                                                :tree-depth (reduce max 0 (map :depth stats))
+                                                :n-leapfrog (reduce + 0 (map :n-leapfrog stats))
+                                                :accept-stat (/ (reduce + 0.0 (map :accept-stat stats))
+                                                                (max 1 (count stats)))
+                                                :reached-max-depth? (boolean (some #(>= (:depth %) max-depth) stats))
+                                                :blocks (count stats)}}))]
                           (if (seq (others t))
                             ((itrace/mh-step t (assoc chain-opts
                                                       :select (fn [t' _]
@@ -332,4 +346,4 @@
                              (fn [r] (done (:trace r) (inc moves) (+ moves (if (:accepted? r) 1 0))))
                              reject)
                             (done t moves moves)))))]
-            (go trace blocks 0)))))))
+            (go trace blocks 0 [])))))))
