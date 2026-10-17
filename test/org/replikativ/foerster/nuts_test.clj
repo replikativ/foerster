@@ -10,6 +10,7 @@
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.kernel :as k]
             [org.replikativ.foerster.nuts :as nuts]
+            [org.replikativ.foerster.measure :as measure]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (def ^:private scales [0.05 0.2 0.5 1.0 2.0 3.0 5.0 8.0 12.0 20.0])
@@ -137,3 +138,38 @@
         [lp [g]] (block/value+grad d [40.0])]
     (is (< (Math/abs (- lp -40.0)) 1e-9) (str lp))
     (is (< (Math/abs (- g -1.0)) 1e-9) (str g))))
+
+(deftest explicit-seeds-and-portable-sampler-statistics
+  (let [target (block/block {:block/id :seeded :block/target :complete-conditional
+                             :block/latents [{:name :x :shape [] :support :real}]}
+                            {:log-density (fn [x _] (* -0.5 (aget x 0) (aget x 0)))
+                             :value+grad (fn [x _] [(* -0.5 (aget x 0) (aget x 0))
+                                                    (double-array [(- (aget x 0))])])})
+        run (fn [process-seed seed]
+              (b/run-infer process-seed
+                           #(infer/infer (spin (sample (block/block-dist target nil) :id :x :init [0.0]))
+                                         {:method :nuts :seed seed :iterations 30 :burn 10 :chains 2 :max-depth 2})))
+        a (run 12 731) b (run 999 731) other (run 12 732)
+        values #(mapv (comp measure/get-value first) (measure/get-particles %))
+        stats (mapv (comp :sampler-stats first) (measure/get-particles a))]
+    (is (= (values a) (values b)))
+    (is (not= (values a) (values other)))
+    (is (= 731 (:seed a)))
+    (is (= [20 20] (:chain-lengths a)))
+    (is (= 40 (count stats)))
+    (is (every? boolean? (map :diverging stats)))
+    (is (every? pos? (map :n-leapfrog stats)))
+    (is (every? #(<= 1 (:tree-depth %) 2) stats))
+    (is (every? #(<= 0.0 (:accept-stat %) 1.0) stats))
+    (is (every? #(= (:reached-max-depth? %) (= 2 (:tree-depth %))) stats))
+    (is (every? #(= 1 (:blocks %)) stats))))
+
+(deftest divergent-transitions-remain-visible-in-samples
+  (let [target (block/block {:block/id :narrow :block/target :complete-conditional
+                             :block/latents [{:name :x :shape [] :support :real}]}
+                            {:log-density (fn [x _] (* -5e11 (aget x 0) (aget x 0)))
+                             :value+grad (fn [x _] [(* -5e11 (aget x 0) (aget x 0))
+                                                    (double-array [(* -1e12 (aget x 0))])])})
+        result (b/run-infer 21 #(infer/infer (spin (sample (block/block-dist target nil) :id :x :init [0.0]))
+                                             {:method :nuts :seed 123 :iterations 4 :burn 0 :chains 2 :max-depth 2}))]
+    (is (some (comp :diverging :sampler-stats first) (measure/get-particles result)))))

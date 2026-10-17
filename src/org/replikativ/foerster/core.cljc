@@ -249,11 +249,12 @@
                            (= :all (:samples kernel))
                            (assoc :on-step
                                   (let [i (volatile! 0)]
-                                    (fn [{t :trace}]
+                                    (fn [{t :trace :keys [sampler-stats]}]
                                       (when (> (vswap! i inc) (:burn kernel 0))
                                         (vswap! samples conj
-                                                [(m/sample-particle (:trace/result t)
-                                                                    (itrace/legacy-trace t))
+                                                [(cond-> (m/sample-particle (:trace/result t)
+                                                                            (itrace/legacy-trace t))
+                                                   sampler-stats (assoc :sampler-stats sampler-stats))
                                                  0.0]))))))
                {final :trace moves :moves accepted :accepted}
                (await (itrace/mh-chain initial iterations step-opts))
@@ -349,8 +350,9 @@
                                     (mapv #(run-markov-chain model-task kernel executor %) seeds)))]
            ;; the draws in chain order, each chain's count kept: the
            ;; convergence diagnostics need them by chain (`foerster.diagnostics`)
-           (assoc (m/empirical (into [] cat chains))
-                  :chain-lengths (mapv count chains)))
+           (cond-> (assoc (m/empirical (into [] cat chains))
+                          :chain-lengths (mapv count chains))
+             (some? (:seed opts)) (assoc :seed (:seed opts))))
          (finally
            (when own-executor
              #?(:clj (.close ^java.lang.AutoCloseable own-executor)
