@@ -26,6 +26,7 @@
   is about to resume, so the weight of a fork starts from the weight at its
   site."
   (:require [org.replikativ.spindel.trace :as trace]
+            [org.replikativ.spindel.spin.keyed :as keyed]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.foerster.mechanism :as mech]
@@ -359,10 +360,14 @@
 (defn anchor?
   "Whether a site is worth an anchor: only a site a move can start from. An
   observe or a factor is never replayed from, and an anchor is a forked
-  world. Pass as `:anchor?` to `trace/run` and `trace/replay`."
+  world. A site inside one key of a `spindel.spin.keyed` loop takes none:
+  a move there re-runs that key (`update-step`), and a fork taken while the
+  loop's other keys are in flight cannot be continued (spindel
+  savepoints.md). Pass as `:anchor?` to `trace/run` and `trace/replay`."
   [sp]
   (and (= choose-site (:savepoint/site sp))
-       (not (:observed? (:savepoint/payload sp)))))
+       (not (:observed? (:savepoint/payload sp)))
+       (nil? (keyed/spin-of (:savepoint/world sp) (:spin-id (::sp/k sp))))))
 
 (defn latent?
   "Whether a trace entry is a sample site inference may move: not observed,
@@ -428,10 +433,13 @@
   address, only the entries from it on are compared: the ratio is the same,
   and it costs the replayed suffix instead of the whole trace. `score`
   (fn [entry]) is an entry's log target (default its :log-prob), e.g.
-  `tempered-score`."
+  `tempered-score`. With `changed`, the addresses an update rewrote, added
+  or removed (`changed-addresses`), only those are compared: every other
+  entry is the same in both and cancels."
   ([old new log-selection] (mh-log-ratio old new log-selection nil))
   ([old new log-selection from] (mh-log-ratio old new log-selection from nil))
-  ([old new log-selection from score]
+  ([old new log-selection from score] (mh-log-ratio old new log-selection from score nil))
+  ([old new log-selection from score changed]
    (let [;; with `from`, only the suffix from the replayed address: everything
         ;; upstream is the same entries in both and cancels, so the ratio is
         ;; the same and costs the suffix, not the trace
@@ -442,8 +450,14 @@
                       (let [e (get-in t [:trace/entries a])
                             acc (if (#{choose-site factor-site} (:site e)) (conj acc (assoc e :address a)) acc)]
                         (if (= a from) (vec acc) (recur more acc))))))
-         old-entries (if from (suffix old) (entries old))
-         new-entries (if from (suffix new) (entries new))
+         only (fn [t]
+                (into [] (keep (fn [a]
+                                 (let [e (get-in t [:trace/entries a])]
+                                   (when (#{choose-site factor-site} (:site e))
+                                     (assoc e :address a)))))
+                      changed))
+         old-entries (cond changed (only old) from (suffix old) :else (entries old))
+         new-entries (cond changed (only new) from (suffix new) :else (entries new))
          log-joint (fn [es] (transduce (map (or score (comp :log-prob :note))) + 0.0 es))
          old-by-address (into {} (map (juxt :address identity)) old-entries)
          new-by-address (into {} (map (juxt :address identity)) new-entries)
@@ -481,6 +495,19 @@
        (+ (- (log-joint new-entries) (log-joint old-entries))
           (- backward forward)
           (- (log-selection new) (log-selection old)))))))
+
+(defn changed-addresses
+  "The addresses `new`, an update of `old` (`spindel.trace/update`), rewrote,
+  added or removed: the entries it decided, and the entries of the spins it
+  re-ran that it no longer holds."
+  [old new]
+  (let [updated (:trace/updated new)
+        rerun (into #{} (keep #(get-in new [:trace/entries % :spin])) updated)]
+    (into (set updated)
+          (keep (fn [[a e]] (when (and (contains? rerun (:spin e))
+                                       (not (contains? (:trace/entries new) a)))
+                              a)))
+          (:trace/entries old))))
 
 (defn uniform-site
   "Select one latent site uniformly. A selection is
@@ -588,6 +615,74 @@
                                       (when-let [p (:trace/pending trace)]
                                         (when (sp/pending? p) (sp/abandon p)))
                                       (sp/release-world! (:trace/session trace) (:trace/world trace)))
+                    :else (trace/release! trace proposed))
+                  (resolve {:trace (if accept? proposed trace)
+                            :accepted? accept?
+                            :log-ratio ratio}))
+                (catch #?(:clj Throwable :cljs :default) error
+                  (reject error))))
+            reject)))))))
+
+(defn- owner
+  "The re-runnable spin that reached `address` in `trace` (a `keyed` child),
+  or nil."
+  [trace address]
+  (let [id (get-in trace [:trace/entries address :spin])]
+    (when (and id (keyed/spin-of (:trace/world trace) id)) id)))
+
+(defn update-step
+  "One Metropolis-Hastings move, made incrementally where it can be: options
+  and result as for `mh-step`.
+
+  When every target was reached by a re-runnable spin (one key of a
+  `spindel.spin.keyed` loop), the move re-runs only those spins in a fork of
+  the world the trace ended in (`spindel.trace/update`) and compares only
+  the entries it rewrote, added or removed — its cost is the moved keys',
+  not the program's. Otherwise it is `mh-step`, a replay from the earliest
+  target."
+  ([trace] (update-step trace nil))
+  ([trace {:keys [select propose iteration constraints policy-options temperature keep-old?]
+           :or {select uniform-site propose prior-proposal iteration 0}
+           :as opts}]
+   (fn [resolve reject]
+     (let [{:keys [targets log-selection]}
+           (when (seq (latent-addresses trace))
+             (random/in-world-stream (:trace/world trace) [::select iteration]
+                                     #(select trace iteration)))
+           owners (when (seq targets) (mapv #(owner trace %) targets))]
+       (cond
+         (empty? targets)
+         (resolve {:trace trace :accepted? false :log-ratio 0.0})
+
+         (some nil? owners)
+         ((mh-step trace opts) resolve reject)
+
+         :else
+         (let [move (policy (cond-> (assoc policy-options
+                                           :keep? true
+                                           :constraints (merge (:constraints policy-options) constraints)
+                                           :draw (fn [sp old-entry]
+                                                   (when (contains? targets (:savepoint/address sp))
+                                                     (propose sp old-entry))))
+                              temperature (assoc :temperature temperature)))]
+           ((trace/update trace (vec (distinct owners)) move
+                          {:seed (sp/derive-seed (sp/seed (:trace/world trace)) ::move iteration)})
+            (fn [proposed]
+              (try
+                (let [ratio (if (:trace/error proposed)
+                              ##-Inf
+                              (mh-log-ratio trace proposed log-selection nil
+                                            (when temperature (tempered-score temperature))
+                                            (changed-addresses trace proposed)))
+                      accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
+                                   (or (>= ratio 0.0)
+                                       (< (Math/log (random/in-world-stream
+                                                     (:trace/world proposed) ::accept
+                                                     m/uniform01))
+                                          ratio)))]
+                  (cond
+                    (not accept?) (trace/release! proposed trace)
+                    keep-old? nil
                     :else (trace/release! trace proposed))
                   (resolve {:trace (if accept? proposed trace)
                             :accepted? accept?

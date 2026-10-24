@@ -21,6 +21,7 @@
             [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.spin.combinators :refer [parallel]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.spin.keyed :refer [keyed]]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.trace :as trace]))
 
@@ -153,4 +154,48 @@
         (let [t (from-scratch (regression-parallel) {})]
           (is (= (* 2 (count xs)) (count (filter vector? (keys (:trace/entries t))))))
           (is (nil? (consistent (regression-parallel) t)))))
+      (finally (ctx/stop-context! root)))))
+
+;; --- incremental: points as one keyed loop --------------------------------------
+
+(defn- keyed-point [m b x y i]
+  (spin
+   (let [o (sample (dist/flip 0.1) :id [:points i :o])]
+     (observe (dist/normal (if o 0.0 (+ (* m x) b)) (if o 100.0 0.5)) y :id [:points i :y])
+     o)))
+
+(defn- regression-keyed []
+  (spin
+   (let [m (sample (dist/normal 0.0 1.0) :id :m)
+         b (sample (dist/normal 0.0 1.0) :id :b)
+         os (aw/await (keyed :points (range (count xs)) (fn [i] (keyed-point m b (xs i) (ys i) i))))]
+     [m b (count (filter true? os))])))
+
+(defn- keyed-flip [i] (flip-at [:points i :o]))
+
+(deftest incremental-moves-are-consistent
+  ;; flips of one point re-run that key only (update-step); a move of a root
+  ;; parameter replays from its anchor. Every trace must equal a
+  ;; from-scratch run with its choices, and an incremental move's ratio
+  ;; must equal the one computed over the whole trace.
+  (random/set-seed! 13)
+  (let [root (ctx/create-execution-context)]
+    (try
+      (binding [rtc/*execution-context* root]
+        (let [t0 (:trace (await* (gfi/generate (regression-keyed) {})))]
+          (try
+            (is (= 2 (count (filter :savepoint (vals (:trace/entries t0)))))
+                "anchors only at the root's sites")
+            (reduce (fn [t [i opts]]
+                      (let [{t' :trace r :log-ratio a :accepted?}
+                            (await* (itrace/update-step t (assoc opts :iteration i :keep-old? true)))]
+                        ;; a rejected move hands back the old trace
+                        (when a
+                          (is (< (Math/abs (- r (itrace/mh-log-ratio t t' (fn [_] 0.0)))) 1e-9)
+                              (str "move " i ": the ratio over changed entries is the full one")))
+                        (is (nil? (consistent (regression-keyed) t')) (str "after move " i))
+                        t'))
+                    t0 (map-indexed vector [(keyed-flip 3) (keyed-flip 17) (shift-at :b)
+                                            (keyed-flip 3) (shift-at :m) (keyed-flip 0)]))
+            (finally (await* (gfi/close! t0))))))
       (finally (ctx/stop-context! root)))))
