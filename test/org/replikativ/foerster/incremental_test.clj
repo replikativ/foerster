@@ -1,0 +1,156 @@
+(ns org.replikativ.foerster.incremental-test
+  "Differential checks for trace updates: a trace moved by an update must be
+  the trace a from-scratch run gives for the same choices — every entry's
+  value and score, the log-weight and the result. An incremental update is
+  only allowed to be faster than that, never different; these checks are
+  what keeps it honest (Zaiser et al., PLDI 2026, on soundness bugs in
+  ad-hoc incrementalization).
+
+  `consistent` compares two traces; the tests run it on today's update
+  (`mh-step`, a replay from the target's anchor) so the check itself is
+  known to hold where it must."
+  (:require [clojure.test :refer [deftest is testing]]
+            [org.replikativ.foerster.dist :as dist]
+            [org.replikativ.foerster.effects :refer [observe sample]]
+            [org.replikativ.foerster.gfi :as gfi]
+            [org.replikativ.foerster.random :as random]
+            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.spindel.effects.await :as aw]
+            [org.replikativ.spindel.engine.addressing :as addressing]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as rtc]
+            [org.replikativ.spindel.spin.combinators :refer [parallel]]
+            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.trace :as trace]))
+
+(defn- await* [op]
+  (let [p (promise)]
+    (op #(deliver p [:ok %]) #(deliver p [:error %]))
+    (let [[k v :as r] (deref p 60000 [:timeout])]
+      (case k :ok v :error (throw v) (throw (ex-info "timed out" {:result r}))))))
+
+;; --- the comparison -----------------------------------------------------------
+
+(defn- choices
+  "{address value} of every sample site that is not observed."
+  [t]
+  (into {} (keep (fn [a]
+                   (let [{:keys [site value note]} (get-in t [:trace/entries a])]
+                     (when (and (= itrace/choose-site site) (not (:observed? note)))
+                       [a value]))))
+        (:trace/order t)))
+
+(defn- scores
+  "{address [value log-prob]} of every choose and factor entry."
+  [t]
+  (into {} (map (juxt :address (juxt :value (comp :log-prob :note))))
+        (itrace/entries t)))
+
+(defn- from-scratch
+  "`model` run with `constraints`, in a session of its own and without
+  anchors: scoring needs none, and a model under `parallel` must not be
+  forked while its children are in flight (spindel savepoints.md)."
+  [model constraints]
+  (let [root (ctx/create-execution-context)
+        session (sp/open! root {:seed (random/fresh-seed) :fork-opts {:systems :none}
+                                :retain-released? false})]
+    (try
+      (await* (trace/run session model (itrace/policy {:constraints constraints})
+                         {:anchor? (constantly false)}))
+      (finally (await* (sp/close! session))))))
+
+(defn consistent
+  "Differences between `moved` (a trace an update produced) and a
+  from-scratch run of `model` constrained to `moved`'s choices: nil when
+  they agree on every entry's value and score, the log-joint and the
+  result."
+  [model moved]
+  (let [fresh (from-scratch model (choices moved))
+        a (scores moved)
+        b (scores fresh)
+        close? (fn [x y] (or (= x y) (and (number? x) (number? y) (< (Math/abs (- (double x) (double y))) 1e-9))))
+        entry-diffs (for [k (distinct (concat (keys a) (keys b)))
+                          :let [[va la] (get a k) [vb lb] (get b k)]
+                          :when (not (and (contains? a k) (contains? b k) (= va vb) (close? la lb)))]
+                      {:address k :moved (get a k) :fresh (get b k)})]
+    (not-empty
+     (cond-> {}
+       (seq entry-diffs) (assoc :entries (vec (take 10 entry-diffs)))
+       (not (close? (itrace/log-joint moved) (itrace/log-joint fresh)))
+       (assoc :log-joint [(itrace/log-joint moved) (itrace/log-joint fresh)])
+       (not= (:trace/result moved) (:trace/result fresh))
+       (assoc :result [(:trace/result moved) (:trace/result fresh)])))))
+
+;; --- models: a sub-spin per point, awaited in turn or under `parallel` ---------
+
+(def ^:private xs (mapv #(- (* 0.5 %) 5.0) (range 21)))
+(def ^:private ys (mapv #(+ (* -2.0 %) 1.0 (if (zero? (mod (long (* 2 %)) 7)) 40.0 0.0)) xs))
+
+(defn- point [m b x y i]
+  (spin
+   (let [o (sample (dist/flip 0.1) :id [:o i])]
+     (observe (dist/normal (if o 0.0 (+ (* m x) b)) (if o 100.0 0.5)) y :id [:y i])
+     o)))
+
+(defn- regression-items []
+  (spin
+   (let [m (sample (dist/normal 0.0 1.0) :id :m)
+         b (sample (dist/normal 0.0 1.0) :id :b)]
+     (loop [i 0 n-out 0]
+       (if (= i (count xs))
+         [m b n-out]
+         (let [o (aw/await (addressing/with-key i (point m b (xs i) (ys i) i)))]
+           (recur (inc i) (if o (inc n-out) n-out))))))))
+
+(defn- regression-parallel []
+  (spin
+   (let [m (sample (dist/normal 0.0 1.0) :id :m)
+         b (sample (dist/normal 0.0 1.0) :id :b)
+         os (aw/await (apply parallel (map-indexed (fn [i x] (addressing/with-key i (point m b x (ys i) i))) xs)))]
+     [m b (count (filter true? os))])))
+
+(defn- flip-at [address]
+  {:select (fn [_ _] {:targets #{address} :log-selection (fn [_] 0.0)})
+   :propose (fn [_ old] {:value (not (:value old)) :symmetric? true})})
+
+(defn- shift-at [address]
+  {:select (fn [_ _] {:targets #{address} :log-selection (fn [_] 0.0)})
+   :propose (fn [_ old] {:value (+ (:value old) 0.3) :symmetric? true})})
+
+(defn- check-moves
+  "Run `moves` (mh-step options) in turn from a generated trace of `model`,
+  each accepted or not; after each, the current trace must be consistent."
+  [model moves]
+  (let [t0 (:trace (await* (gfi/generate (model) {})))]
+    (try
+      (is (nil? (consistent (model) t0)) "the generated trace")
+      (reduce (fn [t [i opts]]
+                (let [{t' :trace} (await* (itrace/mh-step t (assoc opts :iteration i)))]
+                  (is (nil? (consistent (model) t')) (str "after move " i))
+                  t'))
+              t0 (map-indexed vector moves))
+      (finally (await* (gfi/close! t0))))))
+
+(deftest replay-moves-are-consistent
+  ;; a replay starts from an anchor inside the moved item, so the model
+  ;; awaits its items in turn (anchors inside `parallel` children are forks
+  ;; taken while siblings are in flight)
+  (random/set-seed! 11)
+  (let [root (ctx/create-execution-context)]
+    (try
+      (binding [rtc/*execution-context* root]
+        (check-moves regression-items
+                     [(flip-at [:o 3]) (flip-at [:o 17]) (shift-at :b)
+                      (flip-at [:o 3]) (shift-at :m) (flip-at [:o 0])]))
+      (finally (ctx/stop-context! root)))))
+
+(deftest a-parallel-model-scores-from-scratch
+  (random/set-seed! 12)
+  (let [root (ctx/create-execution-context)]
+    (try
+      (binding [rtc/*execution-context* root]
+        (let [t (from-scratch (regression-parallel) {})]
+          (is (= (* 2 (count xs)) (count (filter vector? (keys (:trace/entries t))))))
+          (is (nil? (consistent (regression-parallel) t)))))
+      (finally (ctx/stop-context! root)))))
