@@ -199,3 +199,70 @@
                                             (keyed-flip 3) (shift-at :m) (keyed-flip 0)]))
             (finally (await* (gfi/close! t0))))))
       (finally (ctx/stop-context! root)))))
+
+;; --- a mixture: Gibbs over one key's assignment ---------------------------------------
+
+(defn- mix-point [w mu0 mu1 x i]
+  (spin
+   (let [z (sample (dist/flip w) :id [:points i :z])]
+     (observe (dist/normal (if z mu1 mu0) 1.0) x :id [:points i :x])
+     z)))
+
+(defn- mixture [xs]
+  (spin
+   (let [w (sample (dist/beta 2.0 2.0) :id :w)
+         mu0 (sample (dist/normal -2.0 1.0) :id :mu0)
+         mu1 (sample (dist/normal 2.0 1.0) :id :mu1)
+         zs (aw/await (keyed :points (range (count xs)) (fn [i] (mix-point w mu0 mu1 (xs i) i))))]
+     (count (filter true? zs)))))
+
+(deftest gibbs-over-an-assignment-is-exact
+  ;; with the weight and means fixed, each assignment's posterior is known in
+  ;; closed form; sweeps of update-gibbs must reproduce it
+  (random/set-seed! 21)
+  (let [root (ctx/create-execution-context)
+        xs [-1.2 0.3 0.9 2.1]
+        fixed {:w 0.4 :mu0 -1.0 :mu1 1.5}
+        sweeps 800]
+    (try
+      (binding [rtc/*execution-context* root]
+        (let [t0 (:trace (await* (gfi/generate (mixture xs) fixed)))
+              counts (loop [t t0 s 0 it 0 counts (vec (repeat (count xs) 0))]
+                       (if (= s sweeps)
+                         counts
+                         (let [[t it] (reduce (fn [[t it] i]
+                                                [(:trace (await* (itrace/update-gibbs t [:points i :z]
+                                                                                      {:iteration it :constraints fixed})))
+                                                 (inc it)])
+                                              [t it] (range (count xs)))]
+                           (recur t (inc s) it
+                                  (mapv (fn [c i] (if (get-in t [:trace/entries [:points i :z] :value]) (inc c) c))
+                                        counts (range (count xs)))))))
+              lik (fn [x mu] (Math/exp (dist/logpdf (dist/normal mu 1.0) x)))
+              exact (mapv (fn [x] (let [a (* 0.4 (lik x 1.5)) b (* 0.6 (lik x -1.0))] (/ a (+ a b)))) xs)]
+          (doseq [[p q] (map vector (map #(/ % (double sweeps)) counts) exact)]
+            ;; four standard errors at 800 sweeps
+            (is (< (Math/abs (- p q)) (* 4 (Math/sqrt (/ (* q (- 1 q)) sweeps)) 1.2)) (str p " vs " q)))))
+      (finally (ctx/stop-context! root)))))
+
+(deftest a-mixture-chain-stays-consistent
+  ;; Gibbs over assignments (one key each) and random-walk moves on the
+  ;; weight and means (root sites, replayed): every trace a from-scratch run
+  (random/set-seed! 22)
+  (let [root (ctx/create-execution-context)
+        xs [-2.3 -1.8 -2.6 1.9 2.4 -1.1 2.2 -2.0]
+        rw (fn [a] {:select (fn [_ _] {:targets #{a} :log-selection (fn [_] 0.0)})
+                    :propose (itrace/random-walk-proposal 0.3)})]
+    (try
+      (binding [rtc/*execution-context* root]
+        (let [t0 (:trace (await* (gfi/generate (mixture xs) {})))]
+          (reduce (fn [[t it] s]
+                    (let [[t it] (reduce (fn [[t it] i]
+                                           [(:trace (await* (itrace/update-gibbs t [:points i :z] {:iteration it}))) (inc it)])
+                                         [t it] (range (count xs)))
+                          [t it] (reduce (fn [[t it] a] [(:trace (await* (itrace/update-step t (assoc (rw a) :iteration it)))) (inc it)])
+                                         [t it] [:w :mu0 :mu1])]
+                      (is (nil? (consistent (mixture xs) t)) (str "after sweep " s))
+                      [t it]))
+                  [t0 0] (range 4))))
+      (finally (ctx/stop-context! root)))))

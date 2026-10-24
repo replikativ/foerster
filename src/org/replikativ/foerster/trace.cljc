@@ -691,6 +691,94 @@
                   (reject error))))
             reject)))))))
 
+(defn- changed-log-joint
+  "log p(new) - log p(old) over the entries `changed` (the rest are the same
+  in both and cancel)."
+  [old new changed]
+  (let [lp (fn [t] (transduce (keep (fn [a]
+                                      (let [e (get-in t [:trace/entries a])]
+                                        (when (#{choose-site factor-site} (:site e))
+                                          (:log-prob (:note e))))))
+                              + 0.0 changed))]
+    (- (lp new) (lp old))))
+
+(defn update-gibbs
+  "A Gibbs update of the sample site at `address`, whose distribution has
+  finite support (`dist/support`): every other value is tried, each in its
+  own update of the trace, and one is drawn with probability proportional to
+  its joint density. Returns a CPS operation resolving {:trace t :value v
+  :log-weights {value Δ log p}}, with `trace` itself when the value stays.
+
+  Where the site belongs to one key of a `spindel.spin.keyed` loop, each
+  candidate re-runs only that key (`spindel.trace/update`) and its weight is
+  taken over the entries it changed: the update costs K times the key, not
+  the program. Otherwise each candidate replays from the site's anchor.
+  Sites a candidate reaches for the first time are drawn from their prior and
+  weigh in with their density, so the update is exact when a value of the
+  site does not change which sites run below it.
+
+  Options: `:iteration` (the update's number, for its random draws),
+  `:constraints`, `:policy-options` and `:keep-old?` (release nothing of
+  `trace` when another value is drawn) as for `mh-step`."
+  ([trace address] (update-gibbs trace address nil))
+  ([trace address {:keys [iteration constraints policy-options keep-old?] :or {iteration 0}}]
+   (fn [resolve reject]
+     (try
+       (let [entry (get-in trace [:trace/entries address])
+             current (:value entry)
+             values (dist/support (:dist (:note entry)))
+             _ (when-not (seq values)
+                 (throw (ex-info "A Gibbs update needs a site with finite support"
+                                 {:type ::infinite-support :address address})))
+             spin-id (owner trace address)
+             world (:trace/world trace)
+             candidate
+             (fn [i value]
+               (let [move (policy (assoc policy-options
+                                         :keep? true
+                                         :constraints (merge (:constraints policy-options) constraints)
+                                         :draw (fn [sp _]
+                                                 (when (= address (:savepoint/address sp))
+                                                   {:value value :symmetric? true}))))
+                     seed (sp/derive-seed (sp/seed world) [::gibbs iteration] i)]
+                 (if spin-id
+                   (trace/update trace [spin-id] move {:seed seed})
+                   (trace/replay trace address move {:anchor? anchor? :seed seed}))))
+             others (vec (keep-indexed (fn [i v] (when (not= v current) [i v])) values))]
+         (letfn [(collect [[[i v] & more] acc]
+                   (if (nil? i)
+                     (choose acc)
+                     ((candidate i v)
+                      (fn [t]
+                        (let [changed (if spin-id
+                                        (changed-addresses trace t)
+                                        (distinct (concat (drop-while #(not= address %) (:trace/order trace))
+                                                          (drop-while #(not= address %) (:trace/order t)))))]
+                          (collect more (conj acc [v t (if (:trace/error t)
+                                                         ##-Inf
+                                                         (changed-log-joint trace t changed))]))))
+                      (fn [error]
+                        (doseq [[_ t _] acc] (trace/release! t trace))
+                        (reject error)))))
+                 (choose [acc]
+                   (let [options (into [[current trace 0.0]] acc)
+                         top (apply max (map #(nth % 2) options))
+                         ws (mapv #(Math/exp (- (nth % 2) top)) options)
+                         u (* (reduce + ws)
+                              (random/in-world-stream world [::gibbs iteration] m/uniform01))
+                         pick (loop [k 0 acc 0.0]
+                                (let [acc (+ acc (nth ws k))]
+                                  (if (or (< u acc) (= k (dec (count ws)))) k (recur (inc k) acc))))
+                         [value chosen _] (nth options pick)]
+                     (doseq [[_ t _] options :when (and (not (identical? t chosen))
+                                                        (not (and keep-old? (identical? t trace))))]
+                       (trace/release! t chosen))
+                     (resolve {:trace chosen :value value
+                               :log-weights (into {} (map (fn [[v _ w]] [v w])) options)})))]
+           (collect others [])))
+       (catch #?(:clj Throwable :cljs :default) error
+         (reject error))))))
+
 (defn mh-chain
   "`n` Metropolis-Hastings moves from `trace`; `opts` as for `mh-step`.
   Returns a CPS operation resolving {:trace final :moves m :accepted k}: of

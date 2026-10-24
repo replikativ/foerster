@@ -14,6 +14,9 @@
            point
     items  the same, but each point is a sub-spin the loop awaits, keyed by
            its index: the shape Gen's Map combinator incrementalizes
+    keyed  the points as one `spindel.spin.keyed` loop: a move of a point
+           re-runs only its key (`update-step`); the mixture also times an
+           exact Gibbs update of one assignment (`update-gibbs`)
 
   Robust regression is the artifact's model (m, b ~ N(0, 1); a point is an
   outlier with probability 0.1, y ~ N(0, 100), else y ~ N(m x + b, 0.5); x
@@ -41,6 +44,7 @@
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.effects.await :as aw]
             [org.replikativ.spindel.engine.addressing :as addressing]
+            [org.replikativ.spindel.spin.keyed :refer [keyed]]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -76,6 +80,16 @@
    (let [o (sample (dist/flip 0.1) :id [:o i])]
      (observe (dist/normal (if o 0.0 (+ (* m x) b)) (if o 100.0 0.5)) y :id [:y i])
      o)))
+
+(defn regression-keyed
+  "The points as one keyed loop: a move of one point re-runs that key
+  (`update-step`)."
+  [{:keys [xs ys]}]
+  (spin
+   (let [m (sample (dist/normal 0.0 1.0) :id :m)
+         b (sample (dist/normal 0.0 1.0) :id :b)
+         os (aw/await (keyed :points (range (count xs)) (fn [i] (regression-item m b (xs i) (ys i) i))))]
+     [m b (count (filter true? os))])))
 
 (defn regression-items [{:keys [xs ys]}]
   (spin
@@ -118,6 +132,17 @@
      (observe (dist/mvn (if z mu1 mu0) identity2) point :id [:x i])
      z)))
 
+(defn mixture-keyed
+  "The points as one keyed loop: an assignment's Gibbs update re-runs that
+  key once per value (`update-gibbs`)."
+  [{:keys [points]}]
+  (spin
+   (let [w (sample (dist/beta 0.5 0.5) :id :weight)
+         mu0 (sample (dist/mvn (prior-means 0) mean-cov) :id [:mu 0])
+         mu1 (sample (dist/mvn (prior-means 1) mean-cov) :id [:mu 1])
+         zs (aw/await (keyed :points (range (count points)) (fn [i] (mixture-item w mu0 mu1 (nth points i) i))))]
+     [w mu0 mu1 (count (filter true? zs))])))
+
 (defn mixture-items [{:keys [points]}]
   (spin
    (let [w (sample (dist/beta 0.5 0.5) :id :weight)
@@ -157,12 +182,12 @@
    :symmetric? true})
 
 (defn- move-ms
-  "Median ms of `reps` moves from `t`; each move's result is released, `t`
-  kept."
-  [t opts reps]
+  "Median ms of `reps` moves from `t` by `step` (`mh-step`, `update-step`);
+  each move's result is released, `t` kept."
+  [step t opts reps]
   (median (for [i (range reps)]
             (let [result (volatile! nil)
-                  elapsed (ms #(vreset! result (await* (itrace/mh-step t (assoc opts :iteration i :keep-old? true)))))
+                  elapsed (ms #(vreset! result (await* (step t (assoc opts :iteration i :keep-old? true)))))
                   {t' :trace accepted? :accepted?} @result]
               (when accepted? (trace/release! t' t))
               elapsed))))
@@ -170,10 +195,10 @@
 (def cases
   {:regression {:data regression-data :site :o :param :b
                 :constraints {:m 0.0 :b 0.0}
-                :shapes {:flat regression-flat :items regression-items}}
+                :shapes {:flat regression-flat :items regression-items :keyed regression-keyed}}
    :mixture {:data mixture-data :site :z :param [:mu 0]
              :constraints {:weight 0.4 [:mu 0] [-2.0 -2.0] [:mu 1] [2.0 2.0]}
-             :shapes {:flat mixture-flat :items mixture-items}}})
+             :shapes {:flat mixture-flat :items mixture-items :keyed mixture-keyed}}})
 
 (defn measure
   "One row: `case` (a key of `cases`) in `shape` at `n` points."
@@ -190,14 +215,20 @@
                        (throw (ex-info "the trace misses sites" {:case case :shape shape :n n})))
                      t))
         run-ms (median (for [_ (range 3)] (ms #(await* (gfi/close! (generate))))))
-        t (generate)]
+        t (generate)
+        ;; a keyed model moves a point by re-running its key
+        step (if (= :keyed shape) itrace/update-step itrace/mh-step)]
     (try
-      {:case case :shape shape :n n
-       :run run-ms
-       :first (move-ms t (at [site 0] flip-value) reps)
-       :mid (move-ms t (at [site (quot n 2)] flip-value) reps)
-       :last (move-ms t (at [site (dec n)] flip-value) reps)
-       :param (move-ms t (at param shift-value) reps)}
+      (cond-> {:case case :shape shape :n n
+               :run run-ms
+               :first (move-ms step t (at [site 0] flip-value) reps)
+               :mid (move-ms step t (at [site (quot n 2)] flip-value) reps)
+               :last (move-ms step t (at [site (dec n)] flip-value) reps)
+               :param (move-ms step t (at param shift-value) reps)}
+        (and (= :keyed shape) (= :z site))
+        (assoc :gibbs (median (for [i (range reps)]
+                                (ms #(await* (itrace/update-gibbs t [site (quot n 2)]
+                                                                  {:iteration (+ 1000 i) :keep-old? true})))))))
       (finally (await* (gfi/close! t))))))
 
 (defn run
@@ -208,12 +239,13 @@
     (try
       (binding [rtc/*execution-context* root]
         ;; warm the JIT on a small instance of each
-        (doseq [case (keys cases) shape [:flat :items]] (measure case shape 50 2))
-        (vec (for [case (keys cases) shape [:flat :items] n sizes]
+        (doseq [case (keys cases) shape [:flat :items :keyed]] (measure case shape 50 2))
+        (vec (for [case (keys cases) shape [:flat :items :keyed] n sizes]
                (let [row (measure case shape n reps)]
-                 (println (format "%-10s %-5s %5d  run %8.1f  first %8.1f  mid %8.1f  last %6.1f  param %8.1f"
+                 (println (format "%-10s %-5s %5d  run %8.1f  first %8.1f  mid %8.1f  last %6.1f  param %8.1f%s"
                                   (name case) (name shape) n
-                                  (:run row) (:first row) (:mid row) (:last row) (:param row)))
+                                  (:run row) (:first row) (:mid row) (:last row) (:param row)
+                                  (if-let [g (:gibbs row)] (format "  gibbs %6.1f" g) "")))
                  (flush)
                  row))))
       (finally (ctx/stop-context! root)))))
