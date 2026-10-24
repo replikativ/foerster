@@ -408,6 +408,42 @@
   [trace]
   (into [] (comp (filter latent?) (map :address)) (entries trace)))
 
+(defn latent-index
+  "{:addresses [address …] :position {address i}} of the latent sites of
+  `trace`: carried by a trace an incremental move made (patched with what
+  the move changed), built from the entries otherwise."
+  [trace]
+  (or (::latent trace)
+      (let [v (latent-addresses trace)] {:addresses v :position (zipmap v (range))})))
+
+(defn latent-count
+  "How many latent sites `trace` has."
+  [trace]
+  (count (:addresses (latent-index trace))))
+
+(defn- patch-latent
+  "`index` (of the trace `new` was updated from) for `new`, given the
+  addresses the update `changed`: O(changed)."
+  [index new changed]
+  (reduce (fn [{:keys [addresses position] :as idx} a]
+            (let [e (get-in new [:trace/entries a])
+                  now? (and e (latent? e))
+                  at (get position a)]
+              (cond
+                (and now? (nil? at))
+                {:addresses (conj addresses a) :position (assoc position a (count addresses))}
+
+                (and (not now?) at)
+                ;; move the last address into the hole
+                (let [last-i (dec (count addresses))
+                      last-a (nth addresses last-i)]
+                  {:addresses (pop (assoc addresses at last-a))
+                   :position (cond-> (dissoc position a)
+                               (not= a last-a) (assoc last-a at))})
+
+                :else idx)))
+          index changed))
+
 (defn choices
   "{address value} of the sample sites of `trace`."
   [trace]
@@ -527,20 +563,22 @@
   added or removed: the entries it decided, and the entries of the spins it
   re-ran that it no longer holds."
   [old new]
-  (let [updated (:trace/updated new)
-        rerun (into #{} (keep #(get-in new [:trace/entries % :spin])) updated)]
-    (into (set updated)
-          (keep (fn [[a e]] (when (and (contains? rerun (:spin e))
-                                       (not (contains? (:trace/entries new) a)))
-                              a)))
-          (:trace/entries old))))
+  (let [updated (:trace/updated new)]
+    (if-let [removed (:trace/removed new)]
+      (into (set updated) removed)
+      (let [rerun (into #{} (keep #(get-in new [:trace/entries % :spin])) updated)]
+        (into (set updated)
+              (keep (fn [[a e]] (when (and (contains? rerun (:spin e))
+                                           (not (contains? (:trace/entries new) a)))
+                                  a)))
+              (:trace/entries old))))))
 
 (defn uniform-site
   "Select one latent site uniformly. A selection is
   {:targets #{address} :log-selection (fn [trace])}."
   [trace _iteration]
-  {:targets #{(m/pick-uniformly (latent-addresses trace))}
-   :log-selection (fn [t] (- (Math/log (double (count (latent-addresses t))))))})
+  {:targets #{(m/pick-uniformly (:addresses (latent-index trace)))}
+   :log-selection (fn [t] (- (Math/log (double (latent-count t)))))})
 
 (defn prior-proposal
   "Propose a fresh draw from a target site's own distribution."
@@ -671,8 +709,11 @@
            :or {select uniform-site propose prior-proposal iteration 0}
            :as opts}]
    (fn [resolve reject]
-     (let [{:keys [targets log-selection]}
-           (when (seq (latent-addresses trace))
+     (let [index (latent-index trace)
+           ;; carried along, so the selection and the next move need no scan
+           trace (assoc trace ::latent index)
+           {:keys [targets log-selection]}
+           (when (seq (:addresses index))
              (random/in-world-stream (:trace/world trace) [::select iteration]
                                      #(select trace iteration)))
            owners (when (seq targets) (mapv #(owner trace %) targets))]
@@ -695,11 +736,13 @@
                           {:seed (sp/derive-seed (sp/seed (:trace/world trace)) ::move iteration)})
             (fn [proposed]
               (try
-                (let [ratio (if (:trace/error proposed)
+                (let [changed (changed-addresses trace proposed)
+                      proposed (assoc proposed ::latent (patch-latent index proposed changed))
+                      ratio (if (:trace/error proposed)
                               ##-Inf
                               (mh-log-ratio trace proposed log-selection nil
                                             (when temperature (tempered-score temperature))
-                                            (changed-addresses trace proposed)))
+                                            changed))
                       accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
                                    (or (>= ratio 0.0)
                                        (< (Math/log (random/in-world-stream
@@ -757,6 +800,8 @@
                  (throw (ex-info "A Gibbs update needs a site with finite support"
                                  {:type ::infinite-support :address address})))
              spin-id (owner trace address)
+             index (latent-index trace)
+             trace (assoc trace ::latent index)
              world (:trace/world trace)
              candidate
              (fn [i value]
@@ -780,9 +825,11 @@
                                         (changed-addresses trace t)
                                         (distinct (concat (drop-while #(not= address %) (:trace/order trace))
                                                           (drop-while #(not= address %) (:trace/order t)))))]
-                          (collect more (conj acc [v t (if (:trace/error t)
-                                                         ##-Inf
-                                                         (changed-log-joint trace t changed))]))))
+                          (collect more (conj acc [v
+                                                   (assoc t ::latent (patch-latent index t changed))
+                                                   (if (:trace/error t)
+                                                     ##-Inf
+                                                     (changed-log-joint trace t changed))]))))
                       (fn [error]
                         (doseq [[_ t _] acc] (trace/release! t trace))
                         (reject error)))))
