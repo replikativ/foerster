@@ -11,7 +11,9 @@
         ;; 0.1.103: overlay entity writes rebuild once (round-2 performance).
         ;; 0.1.126: spread! on an inline executor uses one worker (SMC on the
         ;; synchronous executor no longer overflows the stack and hangs).
-        org.replikativ/spindel {:mvn/version "0.1.126"}
+        ;; 0.1.137: a frozen world owns the maps it writes whole, so a replay
+        ;; no longer pays the size of the world at every spin it records.
+        org.replikativ/spindel {:mvn/version "0.1.137"}
         org.replikativ/logging {:mvn/version "0.1.3"}}
 
  :aliases
@@ -60,6 +62,10 @@
              :extra-deps {org.replikativ/dvergr {:mvn/version "0.1.257" :exclusions [org.replikativ/foerster]}
                           org.replikativ/spindel {:mvn/version "0.1.126"}
                           cheshire/cheshire {:mvn/version "5.11.0"}}}
+  ;; What a single-site move costs as the data grow: the baseline for
+  ;; incremental densities. `clojure -M:incremental [sizes…]`.
+  :incremental {:extra-paths ["experiments"]
+                :main-opts ["-m" "org.replikativ.foerster.incremental-baseline"]}
 
   :repl {:extra-deps {nrepl/nrepl {:mvn/version "1.1.2"}
                       cider/cider-nrepl {:mvn/version "0.49.3"}}}
