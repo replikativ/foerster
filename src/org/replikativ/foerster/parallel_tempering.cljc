@@ -17,7 +17,9 @@
   The last round's states of the target chain are the posterior sample; the
   log evidence (q normalized) is the stepping-stone estimate
   Σ_i log mean exp((β_{i+1} − β_i)·V) over chain i's states."
-  (:require [org.replikativ.foerster.block-mh :as block-mh]
+  (:require [org.replikativ.foerster.scope :as scope]
+            [org.replikativ.foerster.weights :as weights]
+            [org.replikativ.foerster.block-mh :as block-mh]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.foerster.measure :as m]
@@ -116,7 +118,7 @@
   (reduce + (for [i (range (dec (count betas)))
                   :let [d (- (nth betas (inc i)) (nth betas i))
                         terms (mapv #(* d %) (nth vs i))]]
-              (- (pop/log-sum-exp terms) (Math/log (count terms))))))
+              (- (weights/log-sum-exp terms) (Math/log (count terms))))))
 
 (defn rounds
   "Run `n-rounds` rounds of 1, 2, 4, … scans from the chains' states `xs`,
@@ -180,48 +182,49 @@
     (throw (ex-info ":rounds is a positive count" {:type ::invalid-rounds :rounds n-rounds})))
   (when-not (or (nil? steps) (pos-int? steps))
     (throw (ex-info ":steps is a positive count" {:type ::invalid-steps :steps steps})))
-  (fn [resolve reject]
-    (let [seed (or seed (random/fresh-seed))
-          {:keys [session operation]} (gfi/run-policy* model (itrace/policy {:temperature 0.0})
-                                                       (cond-> {:seed (sp/derive-seed seed ::run 0)}
-                                                         executor (assoc :executor executor)))
-          end (fn [k v] ((sp/close! session) (fn [_] (k v)) (fn [_] (k v))))]
-      (operation
-       (fn [template]
-         (try
-           (cond
-             (:trace/error template)
-             (end reject (ex-info "The program failed" {:type ::model-failed} (:trace/error template)))
+  (scope/run
+   (fn [resources]
+     (fn [resolve reject]
+       (let [seed (or seed (random/fresh-seed))
+             {:keys [operation]} (gfi/run-policy* model (itrace/policy {:temperature 0.0})
+                                                  (cond-> {:inference-scope resources :seed (sp/derive-seed seed ::run 0)}
+                                                    executor (assoc :executor executor)))]
+         (operation
+          (fn [template]
+            (try
+              (cond
+                (:trace/error template)
+                (reject (ex-info "The program failed" {:type ::model-failed} (:trace/error template)))
 
-             (pop/single-block [template])
-             (let [{:keys [address dist]} (pop/single-block [template])
-                   dim (count (get-in template [:trace/entries address :value]))
-                   steps (or steps dim)
-                   v (rest-of #(dist/logpdf dist %) #(dist/-draw-logpdf dist %))
-                   explore-at (fn [scales]
-                                (fn [i beta x]
-                                  (if (zero? beta)
-                                    {:x (vec (dist/draw dist)) :accepted steps}
-                                    (let [{:keys [q accepted]} (block-mh/walk (block-mh/density dist beta) x
-                                                                              (vec (repeat dim (nth scales i))) steps)]
-                                      {:x q :accepted accepted}))))
-                   xs (vec (repeat chains (vec (get-in template [:trace/entries address :value]))))
-                   res (rounds xs v explore-at {:n-rounds n-rounds :seed seed :dim dim :steps steps})]
-               ((pop/write-back-all template address (:samples res))
-                (fn [traces]
-                  (end resolve
-                       (assoc (m/empirical (mapv (fn [t] [(m/sample-particle (:trace/result t) (itrace/legacy-trace t)) 0.0])
-                                                 traces))
-                              :log-normalizer (:log-z res)
-                              :temperatures (:betas res)
-                              :barrier (:barrier res)
-                              :local-barrier (:local-barrier res)
-                              :round-trips (:round-trips res)
-                              :swap-acceptance (:swap-acceptance res))))
-                #(end reject %)))
+                (pop/single-block [template])
+                (let [{:keys [address dist]} (pop/single-block [template])
+                      dim (count (get-in template [:trace/entries address :value]))
+                      steps (or steps dim)
+                      v (rest-of #(dist/logpdf dist %) #(dist/-draw-logpdf dist %))
+                      explore-at (fn [scales]
+                                   (fn [i beta x]
+                                     (if (zero? beta)
+                                       {:x (vec (dist/draw dist)) :accepted steps}
+                                       (let [{:keys [q accepted]} (block-mh/walk (block-mh/density dist beta) x
+                                                                                 (vec (repeat dim (nth scales i))) steps)]
+                                         {:x q :accepted accepted}))))
+                      xs (vec (repeat chains (vec (get-in template [:trace/entries address :value]))))
+                      res (rounds xs v explore-at {:n-rounds n-rounds :seed seed :dim dim :steps steps})]
+                  ((pop/write-back-all template address (:samples res))
+                   (fn [traces]
+                     (resolve
+                      (assoc (m/empirical (mapv (fn [t] [(m/sample-particle (:trace/result t) (itrace/legacy-trace t)) 0.0])
+                                                traces))
+                             :log-normalizer (:log-z res)
+                             :temperatures (:betas res)
+                             :barrier (:barrier res)
+                             :local-barrier (:local-barrier res)
+                             :round-trips (:round-trips res)
+                             :swap-acceptance (:swap-acceptance res))))
+                   #(reject %)))
 
-             :else
-             (end reject (ex-info "Parallel tempering runs a model that is one block site (with :sample and :sample-log-density) for now"
-                                  {:type ::not-one-block})))
-           (catch #?(:clj Throwable :cljs :default) e (end reject e))))
-       #(end reject %)))))
+                :else
+                (reject (ex-info "Parallel tempering runs a model that is one block site (with :sample and :sample-log-density) for now"
+                                 {:type ::not-one-block})))
+              (catch #?(:clj Throwable :cljs :default) e (reject e))))
+          #(reject %)))))))

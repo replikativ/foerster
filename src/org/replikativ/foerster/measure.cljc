@@ -3,7 +3,8 @@
 
   Measures represent probability distributions over execution traces.
   This is the foundation for compositional inference algorithms."
-  (:require [replikativ.logging :as log]
+  (:require [org.replikativ.foerster.weights :as weights]
+            [replikativ.logging :as log]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.foerster.random :as random]))
 
@@ -47,8 +48,9 @@
     weights.")
 
   (log-marginal [this]
-    "Estimate of log p(observations): the log mean particle weight plus the
-    normalizer of earlier resampling steps.")
+    "Log population mass: log mean weight plus earlier normalizers. Returns nil
+    for explicitly marked chain outputs, which do not estimate evidence. A
+    numerical value alone does not certify its scale or unbiasedness.")
 
   (effective-sample-size [this]
     "Effective sample size (ESS) for particle degeneracy detection.
@@ -68,22 +70,8 @@
 ;; Utility Functions
 ;; =============================================================================
 
-(defn log-sum-exp
-  "Numerically stable log-sum-exp.
-
-  log(sum(exp(x_i))) = log-max + log(sum(exp(x_i - log-max)))"
-  [log-weights]
-  (when (empty? log-weights)
-    (throw (ex-info "log-sum-exp requires non-empty sequence" {})))
-  (let [log-max (apply max log-weights)]
-    (if (= log-max ##-Inf)
-      ##-Inf
-      (+ log-max (Math/log (reduce + (map #(Math/exp (- % log-max)) log-weights)))))))
-
-(defn log-mean-exp
-  "log of the mean of exp(x_i)."
-  [log-weights]
-  (- (log-sum-exp log-weights) (Math/log (count log-weights))))
+(def log-sum-exp weights/log-sum-exp)
+(def log-mean-exp weights/log-mean-exp)
 
 (defn- cumulative
   "The running sums of `weights`, as a vector."
@@ -106,26 +94,10 @@
   (random/decide (constantly weights) #(search-cumulative (cumulative weights) (uniform01))))
 
 (defn normalize-log-weights
-  "Convert log-weights to normalized linear weights, summing to 1. All
-  weights zero (##-Inf) gives equal weights — a resampling step's choice
-  among particles that are all impossible; `measure-stats` refuses such a
-  population. ##Inf weights share the mass equally; a NaN weight throws."
+  "Legacy engine selection: equal mass among impossible candidates, or among
+  infinite-weight candidates. This does not make a zero-mass posterior valid."
   [log-weights]
-  (when (some #(and (number? %) (NaN? %)) log-weights)
-    (throw (ex-info "A log weight is NaN" {:type ::nan-weight})))
-  (let [log-max (apply max log-weights)]
-    (cond
-      (= log-max ##-Inf)
-      (vec (repeat (count log-weights) (/ 1.0 (count log-weights))))
-
-      (= log-max ##Inf)
-      (let [k (count (filter #(= ##Inf %) log-weights))]
-        (mapv #(if (= ##Inf %) (/ 1.0 k) 0.0) log-weights))
-
-      :else
-      (let [weights (mapv #(Math/exp (- % log-max)) log-weights)
-            total (reduce + weights)]
-        (mapv #(/ % total) weights)))))
+  (weights/normalize log-weights {:zero :uniform :infinite :uniform}))
 
 (defn- possible!
   "Throw unless some weight is positive: a measure whose particles all have
@@ -258,8 +230,9 @@
   (log-marginal [this]
     ;; the normalizer accumulated at earlier resampling steps (SMC attaches
     ;; it as :log-normalizer) plus the log MEAN current weight
-    (+ (or (:log-normalizer this) 0.0)
-       (log-mean-exp (mapv second particles))))
+    (when-not (= :unavailable (get-in this [:inference-contract :normalizer :status]))
+      (+ (or (:log-normalizer this) 0.0)
+         (log-mean-exp (mapv second particles)))))
 
   (effective-sample-size [_]
     (let [log-weights (mapv second particles)
@@ -293,7 +266,15 @@
   {:pre [(vector? particles)
          (seq particles)
          (every? (fn [[ctx lw]] (and (map? ctx) (number? lw) (not (NaN? lw)))) particles)]}
-  (->EmpiricalMeasure particles))
+  (assoc (->EmpiricalMeasure particles)
+         :inference-contract {:semantics :weighted-population
+                              :normalizer {:status :unverified}}))
+
+(defn markov-measure
+  "Settled chain draws. Their weights combine samples, not evidence estimates."
+  [particles]
+  (assoc (empirical particles) :inference-contract
+         {:semantics :markov-chain :normalizer {:status :unavailable}}))
 
 ;; =============================================================================
 ;; Helper Functions for Particle Manipulation
@@ -372,5 +353,6 @@
      (.write w "#EmpiricalMeasure{")
      (.write w (str ":n " (count (:particles m))))
      (.write w (str ", :ess " (format "%.2f" (double (effective-sample-size m)))))
-     (.write w (str ", :log-marginal " (format "%.4f" (double (log-marginal m)))))
+     (.write w (str ", :log-marginal " (if-some [z (log-marginal m)]
+                                         (format "%.4f" (double z)) "unavailable")))
      (.write w "}")))

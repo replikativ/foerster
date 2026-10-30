@@ -48,6 +48,14 @@ an amortized guide — is a sample site's `:proposal` option instead
 ([language](language.md#sites)); it is weighed the same way, and a `:draw`
 that answers for a site takes precedence over it.
 
+## An inference program
+
+[Inference programs](inference-programs.org) expose scoped initialization, target
+advancement, resampling, invariant moves and final projection over complete
+traces or persistent numerical values. Their operations compose inside ordinary
+`spin` control flow. They keep population mass separate from selection weights
+and release owned sessions before returning.
+
 ## An MH move
 
 `(trace/mh-step trace opts)` is one Metropolis–Hastings move over a trace;
@@ -108,8 +116,9 @@ A `PInferenceKernel` (`foerster.kernel`) decides latent sites of SMC:
 the value adds to the particle's weight (default 0: a draw from the site's
 distribution, which cancels against its density).
 
-A custom `PInferenceKernel` is an SMC kernel. The Markov-chain kernels of
-`foerster.kernel` are combined with `k/cycle` and `k/mixture`
+A custom `PInferenceKernel` is an SMC site-proposal policy. Markov-chain
+descriptions implement the separate `PMarkovKernel` protocol (`transition-id`,
+not a site `step`) and are compiled by `foerster.transition`. They are combined with `k/cycle` and `k/mixture`
 ([algorithms](algorithms.md#kernels)); a move of your own over traces is an
 `mh-chain` `:step`.
 

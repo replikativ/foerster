@@ -20,18 +20,13 @@
   at step k and the moves of chain i at step k read their own streams, under
   keys the caller names, so a sampler moved onto this engine keeps its
   draws."
-  (:require [org.replikativ.foerster.block-mh :as block-mh]
+  (:require [org.replikativ.foerster.weights :as weights]
+            [org.replikativ.foerster.block-mh :as block-mh]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.trace :as trace]))
-
-(defn log-sum-exp [xs]
-  (let [top (reduce max ##-Inf xs)]
-    (if (= ##-Inf top)
-      ##-Inf
-      (+ top (Math/log (reduce + (map #(Math/exp (- % top)) xs)))))))
 
 (defn relative-cess
   "The conditional ESS of the incremental weights exp(δ·ℓ) under the
@@ -39,7 +34,7 @@
   [lw ls delta]
   (let [a (mapv (fn [w l] (+ w (* delta l))) lw ls)
         b (mapv (fn [w l] (+ w (* 2.0 delta l))) lw ls)
-        r (- (* 2.0 (log-sum-exp a)) (log-sum-exp b))]
+        r (- (* 2.0 (weights/log-sum-exp a)) (weights/log-sum-exp b))]
     (if (#?(:clj Double/isNaN :cljs js/isNaN) r) 0.0 (Math/exp r))))
 
 (defn next-delta
@@ -151,18 +146,17 @@
         chains (if waste-free (quot n waste-free) n)
         dim (count (first qs))
         {:keys [start done? advance density exhausted]} path]
-    (loop [qs qs lw (vec (repeat (count qs) (- (Math/log (count qs))))) pos start log-z 0.0
+    (loop [qs qs mass (weights/uniform (count qs)) pos start
            positions [start] k 0]
       (cond
-        (done? pos) {:qs qs :log-z log-z :positions positions}
+        (done? pos) {:qs qs :log-z (:log-mass mass) :positions positions}
         (>= k max-steps) (throw (exhausted pos))
         :else
-        (let [{pos' :pos inc-w :log-incr} (advance qs lw pos)
-              inc-lw (mapv + lw inc-w)
-              log-z' (+ log-z (log-sum-exp inc-lw))
-              weights (m/normalize-log-weights inc-lw)
+        (let [{pos' :pos inc-w :log-incr} (advance qs (:log-weights mass) pos)
+              mass' (weights/reweight mass inc-w)
+              selection (weights/selection mass')
               ancestors (random/with-stream* seed [(:resample keys) k]
-                          #(m/systematic-resample weights chains))
+                          #(m/systematic-resample selection chains))
               starts (mapv #(nth qs %) ancestors)
               scales (theta-scales starts scale)
               f (density pos')
@@ -178,5 +172,5 @@
                           starts))
               qs' (vec (mapcat (fn [start states] (if waste-free (into [start] states) states))
                                starts moved))]
-          (recur qs' (vec (repeat (count qs') (- (Math/log (count qs'))))) pos' log-z'
+          (recur qs' (weights/resampled mass' (count qs')) pos'
                  (if positions? (conj positions pos') [pos']) (inc k)))))))

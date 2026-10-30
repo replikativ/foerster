@@ -56,7 +56,9 @@
                                                            (observe (dist/uniform 5.0 6.0) x :id :y)
                                                            x))
                                                    (assoc opts :world-policy wp)))]
-          (is (= ##-Inf (m/log-marginal measure)))
+          (is (nil? (m/log-marginal measure)) "pooled chains do not estimate evidence")
+          (is (every? #(= ##-Inf (second %)) (m/get-particles measure))
+              "resampling must not give impossible particles positive weight")
           (is (thrown-with-msg? clojure.lang.ExceptionInfo #"probability zero"
                                 (m/measure-stats measure m/get-value)))))))
   (testing "no particles, no measure"

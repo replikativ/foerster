@@ -21,7 +21,8 @@
   Priors for θ come from the program itself: a θ-particle starts from a
   simulation of the program (`foerster.gfi/simulate`). Correlated PMMH, which
   needs SMC driven by explicit noise, is not provided."
-  (:require [org.replikativ.foerster.gfi :as gfi]
+  (:require [org.replikativ.foerster.weights :as weights]
+            [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.smc :as smc]
@@ -161,7 +162,7 @@
                 (fn [measure0]
                   (letfn [(step [i theta log-z sample accepted out]
                             (if (= i iterations)
-                              (res (assoc (m/empirical out)
+                              (res (assoc (m/markov-measure out)
                                           :acceptance (/ (double accepted) (max 1 iterations))
                                           ;; after burn-in, as the measure
                                           :thetas (mapv (comp :theta meta first) out)))
@@ -189,10 +190,6 @@
 ;; =============================================================================
 ;; SMC²
 ;; =============================================================================
-
-(defn- log-sum-exp [xs]
-  (let [top (reduce max ##-Inf xs)]
-    (if (= ##-Inf top) ##-Inf (+ top (Math/log (reduce + (map #(Math/exp (- % top)) xs)))))))
 
 (defn smc2
   "SMC² over the parameter sites of `model` (a spin whose data arrive at
@@ -265,9 +262,10 @@
                                         ps steps)
                              ps (mapv (fn [p s] (assoc p :step s :log-z (m/log-marginal (:measure s)))) ps steps)
                              lw (mapv + lw incs)
-                             weights (m/normalize-log-weights lw)]
-                         (if (< (m/compute-ess weights) (* ess-target (count ps)))
-                           ((rejuvenate ps weights (+ log-z (- (log-sum-exp lw) (Math/log (count ps)))) ys)
+                             mass (weights/from-log lw log-z)
+                             selection (weights/normalize lw {:zero :uniform})]
+                         (if (< (m/compute-ess selection) (* ess-target (count ps)))
+                           ((rejuvenate ps selection (:log-mass mass) ys)
                             res rej)
                            (res (step-of ps lw log-z ys))))
                        (catch #?(:clj Throwable :cljs :default) e (rej e))))

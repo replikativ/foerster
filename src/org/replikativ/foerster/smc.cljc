@@ -1189,7 +1189,7 @@
   (fn [resolve reject]
     (letfn [(go [i state acc]
                 (if (= i k)
-                  (resolve (m/empirical acc))
+                  (resolve (m/markov-measure acc))
                   ((step state)
                    (fn [[state' samples]] (go (inc i) state' (into acc samples)))
                    reject)))]

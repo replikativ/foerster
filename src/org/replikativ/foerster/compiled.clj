@@ -144,6 +144,6 @@
                                       out)]
                             (recur (inc i) lp out))))))
             chains (mapv deref (mapv (fn [s] (future (random/with-stream* s ::rmh chain))) seeds))]
-        (resolve (assoc (m/empirical (into [] cat chains))
+        (resolve (assoc (m/markov-measure (into [] cat chains))
                         :chain-lengths (mapv count chains))))
       (catch Throwable t (reject t)))))
