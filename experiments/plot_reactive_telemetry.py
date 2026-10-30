@@ -52,5 +52,7 @@ for ax in axes:
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(alpha=0.15)
 
-fig.savefig(prefix.with_suffix(".svg"))
+svg_path = prefix.with_suffix(".svg")
+fig.savefig(svg_path)
+svg_path.write_text("\n".join(line.rstrip() for line in svg_path.read_text().splitlines()) + "\n")
 fig.savefig(prefix.with_suffix(".png"), dpi=160)
