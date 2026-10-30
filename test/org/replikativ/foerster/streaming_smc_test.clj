@@ -90,7 +90,7 @@
         original (reduce push shared (drop 2 ys))
         _ ((:close original))
         forked (reduce push copy (drop 2 ys))
-        [kmean kvar ll] (peek truth)]
+        [_ _ ll] (peek truth)]
     (is (= (m/log-marginal (:measure shared)) (m/log-marginal (:measure copy)))
         "the copy starts where the population stood")
     (doseq [[label step] [["original" original] ["copy" forked]]]

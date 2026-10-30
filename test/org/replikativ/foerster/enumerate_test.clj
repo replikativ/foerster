@@ -1,6 +1,6 @@
 (ns org.replikativ.foerster.enumerate-test
   "Exact enumeration against hand-computed posteriors and evidence."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.dist :as dist]

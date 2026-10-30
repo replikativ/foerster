@@ -17,7 +17,8 @@
   acceptance rate toward 0.234), then one single-site random-walk move of a
   latent that is not a block site, if there is one. A trace without block
   sites makes the same moves as before."
-  (:require [org.replikativ.foerster.block :as block]
+  (:require [org.replikativ.foerster.transition-context :as tc]
+            [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
@@ -58,23 +59,27 @@
   move, at `beta` when tempering); resolves the new trace. The old trace's
   worlds are given back unless `keep-old?` (its owner releases them, as
   tempered SMC does for particles that share an ancestor)."
-  [trace address q beta keep-old?]
+  [trace address q beta context]
   (fn [resolve reject]
-    (let [move (itrace/policy (cond-> {:keep? true
-                                       :draw (fn [sp _] (when (= address (:savepoint/address sp))
-                                                          {:value q :symmetric? true}))}
-                                beta (assoc :temperature beta)))]
-      ((trace/replay trace address move {:anchor? itrace/anchor?})
+    (let [context (cond-> context (some? beta) (assoc :temperature beta))
+          move (tc/policy context (fn [sp _] (when (= address (:savepoint/address sp))
+                                               {:value q :symmetric? true})))]
+      ((trace/replay trace address move (tc/replay-options context trace [::move address (:key context)]))
        (fn [proposed]
          (try
-           (let [joint (- (itrace/log-joint proposed) (itrace/log-joint trace))
-                 own (- (get-in proposed [:trace/entries address :note :log-prob])
-                        (get-in trace [:trace/entries address :note :log-prob]))]
+           (when (or (:trace/error proposed) (not (tc/at-frontier? context proposed)))
+             (trace/release! proposed trace)
+             (throw (ex-info "Block replay failed or left its declared frontier"
+                             {:type ::invalid-replay :address address} (:trace/error proposed))))
+           (let [entry-score (tc/entry-score context)
+                 joint (- (tc/score context proposed) (tc/score context trace))
+                 own (- (entry-score (get-in proposed [:trace/entries address]))
+                        (entry-score (get-in trace [:trace/entries address])))]
              (when (or (:trace/error proposed) (> (Math/abs (double (- joint own))) 1e-6))
                (trace/release! proposed trace)
                (throw (ex-info "A block move needs the block's complete conditional as its target: the move changed sites outside the block"
                                {:type ::incomplete-target :address address :outside (- joint own)})))
-             (when-not keep-old? (trace/release! trace proposed))
+             (tc/settle! context trace proposed true)
              (resolve proposed))
            (catch #?(:clj Throwable :cljs :default) e (reject e))))
        reject))))
@@ -85,7 +90,7 @@
   stream keyed by `key`, then one write-back (`keep-old?` as for it).
   Resolves {:trace :accepted :steps}; the trace is unchanged when no step was
   accepted."
-  [trace address {:keys [beta scales steps key keep-old?]}]
+  [trace address {:keys [beta scales steps key] :as context}]
   (fn [resolve reject]
     (try
       (let [{q0 :value {d :dist} :note} (get-in trace [:trace/entries address])
@@ -93,7 +98,7 @@
                                                          #(walk (density d beta) q0 scales steps))]
         (if (zero? accepted)
           (resolve {:trace trace :accepted 0 :steps steps})
-          ((write-back trace address q beta keep-old?)
+          ((write-back trace address q beta context)
            (fn [t] (resolve {:trace t :accepted accepted :steps steps}))
            reject)))
       (catch #?(:clj Throwable :cljs :default) e (reject e)))))
@@ -120,9 +125,10 @@
   and `:constraints` and stops at `:until`. Resolves {:trace :accepted?
   :screened}: `:screened` true when the subchain did not move and the
   program was not run."
-  [trace address {:keys [coarse scales steps key policy-options constraints until] anchor-pred :anchor?}]
+  [trace address {:keys [coarse scales steps key until] :as context}]
   (fn [resolve reject]
     (try
+      (tc/require-untempered! context :delayed-acceptance)
       (let [q0 (get-in trace [:trace/entries address :value])
             _ (let [c0 (coarse q0)]
                 ;; outside the coarse support the subchain cannot leave and
@@ -134,14 +140,11 @@
                                                          #(walk coarse q0 scales steps))]
         (if (zero? accepted)
           (resolve {:trace trace :accepted? false :screened true})
-          (let [move (itrace/policy (assoc policy-options
-                                           :keep? true
-                                           :constraints (merge (:constraints policy-options) constraints)
-                                           :draw (fn [s _] (when (= address (:savepoint/address s))
-                                                             {:value q :symmetric? true}))))]
+          (let [move (tc/policy context (fn [s _]
+                                          (when (= address (:savepoint/address s))
+                                            {:value q :symmetric? true})))]
             ((trace/replay trace address move
-                           (cond-> {:anchor? (or anchor-pred itrace/anchor?)}
-                             until (assoc :until until)
+                           (cond-> (tc/replay-options context)
                              (sp/seed (:trace/world trace))
                              (assoc :seed (sp/derive-seed (sp/seed (:trace/world trace)) ::da-move [address key]))))
              (fn [proposed]
@@ -150,15 +153,13 @@
                                      ;; a partial move must end where the trace did
                                      (and until (not (:trace/pending proposed))))
                                ##-Inf
-                               (- (itrace/mh-log-ratio trace proposed (constantly 0.0) address)
+                               (- (itrace/mh-log-ratio trace proposed (constantly 0.0) address (tc/entry-score context))
                                   (- (coarse q) (coarse q0))))
                        accept? (and (== ratio ratio)
                                     (or (>= ratio 0.0)
                                         (random/in-world-stream (:trace/world proposed) [::da-accept address key]
                                                                 #(random/accept-log? ratio))))]
-                   (if accept?
-                     (trace/release! trace proposed)
-                     (trace/release! proposed trace))
+                   (tc/settle! context trace proposed accept?)
                    (resolve {:trace (if accept? proposed trace) :accepted? accept? :screened false}))
                  (catch #?(:clj Throwable :cljs :default) e (reject e))))
              reject))))
@@ -195,10 +196,11 @@
                                   (throw (ex-info "One scale per coordinate of the block, or one number for all"
                                                   {:type ::scales-dimension :address address
                                                    :dimension dim :scales (count sc)})))]
-                          ((da-move t address (merge (select-keys chain-opts [:policy-options :constraints :until :anchor?])
+                          ((da-move t address (merge (select-keys chain-opts tc/keys)
                                                      {:coarse (get coarse address) :scales sc
                                                       :steps (or steps dim) :key [iteration]}))
-                           (fn [{t' :trace a? :accepted? s? :screened}]
+                           (fn [{t' :trace a? :accepted? s? :screened :as r}]
+                             (when-let [visit (:on-visit chain-opts)] (visit r))
                              (go t' more (inc moves) (if a? (inc accepted) accepted)
                                  (if s? (inc screened) screened)))
                            reject))
@@ -212,7 +214,9 @@
                                                       :select (fn [t' _]
                                                                 {:targets #{(m/pick-uniformly (others t'))}
                                                                  :log-selection #(- (Math/log (double (count (others %)))))})))
-                             (fn [r] (done (:trace r) (inc moves) (+ accepted (if (:accepted? r) 1 0))))
+                             (fn [r]
+                               (when-let [visit (:on-visit chain-opts)] (visit r))
+                               (done (:trace r) (inc moves) (+ accepted (if (:accepted? r) 1 0))))
                              reject)
                             (done t moves accepted)))))]
             (go trace named 0 0 0)))))))
@@ -257,9 +261,10 @@
   [{:keys [step-size burn steps] :or {burn 0}}]
   (let [adaptation (atom {})
         propose (itrace/random-walk-proposal step-size)]
-    (fn [trace {:keys [iteration] :as chain-opts}]
+    (fn [trace {:keys [iteration adaptation-iteration] :as chain-opts}]
       (fn [resolve reject]
-        (let [blocks (filterv #(block-site? trace %) (itrace/latent-addresses trace))]
+        (let [local-iteration (or adaptation-iteration iteration)
+              blocks (filterv #(block-site? trace %) (itrace/latent-addresses trace))]
           (letfn [(others [t] (vec (remove #(block-site? t %) (itrace/latent-addresses t))))
                   (go [t [address & more] moves accepted]
                       (if address
@@ -269,11 +274,13 @@
                                       :log-lambda (Math/log (/ 2.38 (Math/sqrt dim)))
                                       :step-size step-size})
                               k (or steps dim)]
-                          ((move t address {:scales (scales st) :steps k :key [iteration]})
-                           (fn [{t' :trace n-accepted :accepted}]
-                             (when (< iteration burn)
+                          ((move t address (merge (select-keys chain-opts tc/keys)
+                                                  {:scales (scales st) :steps k :key [iteration]}))
+                           (fn [{t' :trace n-accepted :accepted :as r}]
+                             (when-let [visit (:on-visit chain-opts)] (visit r))
+                             (when (< local-iteration burn)
                                (swap! adaptation assoc address
-                                      (adapt st iteration (get-in t' [:trace/entries address :value])
+                                      (adapt st local-iteration (get-in t' [:trace/entries address :value])
                                              (/ (double n-accepted) k))))
                              (when-not (contains? @adaptation address)
                                (swap! adaptation assoc address st))
@@ -288,7 +295,9 @@
                                                  (assoc :select (fn [t' _]
                                                                   {:targets #{(m/pick-uniformly (others t'))}
                                                                    :log-selection #(- (Math/log (double (count (others %)))))}))))
-                             (fn [r] (done (:trace r) (inc moves) (+ accepted (if (:accepted? r) 1 0))))
+                             (fn [r]
+                               (when-let [visit (:on-visit chain-opts)] (visit r))
+                               (done (:trace r) (inc moves) (+ accepted (if (:accepted? r) 1 0))))
                              reject)
                             (done t moves accepted)))))]
             (go trace blocks 0 0)))))))

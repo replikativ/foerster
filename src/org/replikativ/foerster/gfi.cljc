@@ -24,7 +24,8 @@
   given and leave that trace intact: the caller keeps one of the two and gives
   the other back with `spindel.trace/release!`."
   (:refer-clojure :exclude [update])
-  (:require [org.replikativ.spindel.effects.savepoint :as sp]
+  (:require [org.replikativ.foerster.scope :as scope]
+            [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.trace :as trace]
@@ -45,15 +46,18 @@
   root world, the rest are session options (`effects.savepoint/open!`). A run
   that fails — the program throws — closes its session and rejects
   (`::model-failed`, the program's error its cause)."
-  [model policy {:keys [executor] :as opts}]
+  [model policy {:keys [executor inference-scope] :as opts}]
   (let [root (if executor
                (ctx/create-execution-context :executor executor)
                (ctx/create-execution-context))
-        session (sp/open! root (merge {:purpose :gfi
-                                       :seed (random/fresh-seed)
-                                       :fork-opts {:systems :none}
-                                       :retain-released? false}
-                                      (dissoc opts :executor)))]
+        allocate #(sp/open! root (merge {:purpose :gfi
+                                         :seed (random/fresh-seed)
+                                         :fork-opts {:systems :none}
+                                         :retain-released? false}
+                                        (dissoc opts :executor :inference-scope)))
+        session (if inference-scope
+                  (scope/acquire! inference-scope allocate sp/close!)
+                  (allocate))]
     {:session session
      :operation (fn [resolve reject]
                   (let [fail (fn [error]

@@ -49,9 +49,12 @@
 
 (def ^:private site-fns
   '{org.replikativ.foerster.effects/sample :latent
+    org.replikativ.foerster.core/sample :latent
     org.replikativ.foerster.effects/observe :observed
+    org.replikativ.foerster.core/observe :observed
     org.replikativ.foerster.effects/choose :choose
-    org.replikativ.foerster.effects/factor :factor})
+    org.replikativ.foerster.effects/factor :factor
+    org.replikativ.foerster.core/factor :factor})
 
 (def ^:private spin-macros
   '#{org.replikativ.spindel.spin.cps/spin})
@@ -237,7 +240,7 @@
       (update :env into (map vector syms vals))
       (update :loops conj frame)))
 
-(defn- sequential?
+(defn- sequential-loop?
   "Whether a site in the body of a loop reads a value one of its variables
   carries from a site of an earlier iteration. `vals` are the variables'
   fixpoint values; sites met in passes that do not record are numbered
@@ -299,7 +302,7 @@
                                 vals')
                    :else (recur vals' (inc k)))))
         unrolled (when (and record? (every? :known? inits)
-                            (or (:unroll-plates? st) (sequential? st syms vals body n0)))
+                            (or (:unroll-plates? st) (sequential-loop? st syms vals body n0)))
                    (iterations st syms inits body))
         id (when record? (let [id (count (:loops @state))]
                            (swap! state assoc-in [:loops id] {:bindings syms :sites #{}})
@@ -388,7 +391,7 @@
                  (assoc (reads t a b)
                         :expr (when (and (:expr t) (:expr a) (or (nil? else) (:expr b)))
                                 (list 'if (:expr t) (:expr a) (:expr b)))))))
-        case* (let [[e _shift _mask default imap] (rest form)
+        case* (let [[_e _shift _mask default imap] (rest form)
                     t (walk st (second form))
                     st' (-> st (update :control set/union (:reads t)) (assoc :uncertain? true))]
                 (apply reads t (walk st' default) (map #(walk st' (second %)) (vals imap))))
@@ -441,48 +444,48 @@
          st {:ns (the-ns ns) :locals (into (set locals) (keys given))
              :env (into {} (for [[sym v] given] [sym (known v sym)]))
              :control #{} :path [] :loops [] :state state :record? true
-             :unroll-plates? unroll-plates?}]
-     (let [result (walk st form)
-           {:keys [sites loops unknown escapes]} @state
-           marker? vector?
-           strip (fn [xs] (into #{} (remove marker?) xs))]
-       {:sites (into {} (for [[n s] sites]
-                          [n (-> s
-                                 (update :reads strip)
-                                 (update :control strip)
-                                 (update :address-reads strip)
+             :unroll-plates? unroll-plates?}
+         result (walk st form)
+         {:keys [sites loops unknown escapes]} @state
+         marker? vector?
+         strip (fn [xs] (into #{} (remove marker?) xs))]
+     {:sites (into {} (for [[n s] sites]
+                        [n (-> s
+                               (update :reads strip)
+                               (update :control strip)
+                               (update :address-reads strip)
                                  ;; a known argument keeps its value if it is a scalar
-                                 (update-in [:dist :args]
-                                            (fn [as] (mapv #(cond-> (update % :reads strip)
-                                                              (not (scalar? (:value %))) (dissoc :value))
-                                                           as)))
-                                 (cond-> (escapes n) (assoc :escapes (escapes n))))]))
-        :loops (into {} (for [[id l] loops]
-                          (let [;; the loop's sites whose values a site of the loop
+                               (update-in [:dist :args]
+                                          (fn [as] (mapv #(cond-> (update % :reads strip)
+                                                            (not (scalar? (:value %))) (dissoc :value))
+                                                         as)))
+                               (cond-> (escapes n) (assoc :escapes (escapes n))))]))
+      :loops (into {} (for [[id l] loops]
+                        (let [;; the loop's sites whose values a site of the loop
                                 ;; reads in a later iteration
-                                carried (if (:unrolled l)
-                                          (into #{}
-                                                (for [n (:sites l)
-                                                      m (concat (:reads (sites n)) (:control (sites n)))
-                                                      :when (and (integer? m) (contains? (:sites l) m)
-                                                                 (< (get-in sites [m :iterations id])
-                                                                    (get-in sites [n :iterations id])))]
-                                                  m))
-                                          (into #{}
-                                                (for [n (:sites l)
-                                                      m (concat (:reads (sites n)) (:control (sites n)))
-                                                      :when (and (marker? m) (= id (second m)))
-                                                      c (set/intersection (get (:carried l) (nth m 2)) (:sites l))]
-                                                  c)))]
-                            [id (cond-> {:bindings (:bindings l)
-                                         :sites (:sites l)
-                                         :carried carried
-                                         :kind (if (seq carried) :sequential :plate)}
-                                  (:unrolled l) (assoc :unrolled (:unrolled l)))])))
-        :unknown unknown
+                              carried (if (:unrolled l)
+                                        (into #{}
+                                              (for [n (:sites l)
+                                                    m (concat (:reads (sites n)) (:control (sites n)))
+                                                    :when (and (integer? m) (contains? (:sites l) m)
+                                                               (< (get-in sites [m :iterations id])
+                                                                  (get-in sites [n :iterations id])))]
+                                                m))
+                                        (into #{}
+                                              (for [n (:sites l)
+                                                    m (concat (:reads (sites n)) (:control (sites n)))
+                                                    :when (and (marker? m) (= id (second m)))
+                                                    c (set/intersection (get (:carried l) (nth m 2)) (:sites l))]
+                                                c)))]
+                          [id (cond-> {:bindings (:bindings l)
+                                       :sites (:sites l)
+                                       :carried carried
+                                       :kind (if (seq carried) :sequential :plate)}
+                                (:unrolled l) (assoc :unrolled (:unrolled l)))])))
+      :unknown unknown
         ;; the model's value: known, or its expression of the sites
-        :result (cond (:known? result) {:value (:value result)}
-                      (some? (:expr result)) {:expr (:expr result)})}))))
+      :result (cond (:known? result) {:value (:value result)}
+                    (some? (:expr result)) {:expr (:expr result)})})))
 
 (defmacro analyze
   "The site graph of the model `body` (a `spin` form or the forms inside one),
@@ -769,7 +772,7 @@
      "\n"
      (concat
       ["Sites:"]
-      (for [[n s] (sort-by key sites)]
+      (for [[_ s] (sort-by key sites)]
         (format "  %-14s %-8s %-18s reads %s%s"
                 (pr-str (:address s)) (name (:kind s))
                 (or (some-> s :dist :ctor str) (pr-str (get-in s [:dist :expr])))

@@ -74,3 +74,90 @@
   "Whether distribution `d` can be read as a mechanism."
   [d]
   (satisfies? PMechanism d))
+
+(defn mechanism
+  "Give distribution `d` an explicit structural interpretation. `ops` has
+  zero-argument :noise, one-argument :push and one-argument :abduct functions.
+  :abduct samples the conditional noise, not an arbitrary inverse. These
+  functions declare the coupling across interventions; the density alone
+  does not determine it."
+  [d {:keys [noise push abduct]}]
+  (when-not (and (fn? noise) (fn? push) (fn? abduct))
+    (throw (ex-info "A mechanism needs :noise, :push and :abduct functions"
+                    {:type ::invalid-mechanism})))
+  (reify
+    dist/Distribution
+    (-draw [_] (push (noise)))
+    (-logpdf [_ x] (dist/logpdf d x))
+    dist/Finite
+    (-support [_] (dist/support d))
+    dist/Continuous
+    (-continuous? [_] (dist/continuous? d))
+    PMechanism
+    (noise [_] (noise))
+    (push [_ u] (push u))
+    (abduct [_ x] (abduct x))))
+
+(defn shifted
+  "Translate a law, preserving its noise coordinate when it is a mechanism."
+  [d delta]
+  (let [law (reify dist/Distribution
+              (-draw [_] (+ (dist/draw d) delta))
+              (-logpdf [_ x] (dist/logpdf d (- x delta)))
+              dist/Finite
+              (-support [_] (when-let [support (dist/support d)] (mapv #(+ % delta) support)))
+              dist/Continuous
+              (-continuous? [_] (dist/continuous? d)))]
+    (if (mechanism? d)
+      (mechanism law {:noise #(noise d)
+                      :push #(+ (push d %) delta)
+                      :abduct #(abduct d (- % delta))})
+      law)))
+
+(defn inverse-cdf
+  "Explicit inverse-CDF mechanism for a law with working cdf/quantile.
+  `lower-cdf`, when supplied, returns P(X < x) for a discrete law. Without
+  it the law is interpreted as continuous. Category ordering is part of
+  this structural assumption. Unsupported quantiles fail explicitly."
+  ([d] (inverse-cdf d nil))
+  ([d lower-cdf]
+   (mechanism d {:noise m/uniform01
+                 :push #(dist/quantile d %)
+                 :abduct (fn [x]
+                           (let [hi (dist/cdf d x)]
+                             (if lower-cdf
+                               (let [lo (lower-cdf x)]
+                                 (when-not (< lo hi)
+                                   (throw (ex-info "Cannot abduct a zero-mass value"
+                                                   {:type ::impossible-value :value x})))
+                                 (uniform-between lo hi))
+                               hi)))})))
+
+;; These laws have implemented continuous quantiles. Do not extend every
+;; Univariate: e.g. Gamma declares the protocol but its quantile is refused.
+(extend-protocol PMechanism
+  org.replikativ.foerster.dist.LogNormal
+  (noise [_] (m/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
+  org.replikativ.foerster.dist.HalfNormal
+  (noise [_] (m/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
+  org.replikativ.foerster.dist.Cauchy
+  (noise [_] (m/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
+  org.replikativ.foerster.dist.HalfCauchy
+  (noise [_] (m/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
+  org.replikativ.foerster.dist.Weibull
+  (noise [_] (m/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
+  org.replikativ.foerster.dist.Laplace
+  (noise [_] (m/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
+  org.replikativ.foerster.dist.Gumbel
+  (noise [_] (m/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x)))
+
+(extend-type org.replikativ.foerster.dist.Categorical
+  PMechanism
+  (noise [_] (m/uniform01))
+  (push [d u]
+    (nth (:values d) (push (dist/->Discrete (:weights d) (:total d)) u)))
+  (abduct [d x]
+    (let [i (first (keep-indexed #(when (= %2 x) %1) (:values d)))]
+      (when (nil? i)
+        (throw (ex-info "Value outside categorical support" {:type ::impossible-value :value x})))
+      (abduct (dist/->Discrete (:weights d) (:total d)) i))))

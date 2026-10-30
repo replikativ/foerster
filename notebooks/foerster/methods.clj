@@ -504,8 +504,8 @@ exact
   :row-vectors
   [["exact" 1.0 0.3 "–" "–" "–"]
    (chain-row "HMC, 0.1 × 8 steps" :a (run 13 #(infer/kernel-infer (block-model gauss-block)
-                                                                    (k/hmc-kernel 600 {:step-size 0.1 :steps 8 :samples :all :burn 100})
-                                                                    2)))
+                                                                   (k/hmc-kernel 600 {:step-size 0.1 :steps 8 :samples :all :burn 100})
+                                                                   2)))
    (chain-row "NUTS, variance metric" :a (run 13 #(infer/infer (block-model gauss-block)
                                                                {:method :nuts :iterations 600 :burn 300 :chains 2})))
    (chain-row "NUTS, Fisher metric" :a (run 13 #(infer/infer (block-model gauss-block)
@@ -611,7 +611,7 @@ exact
   (array-map
    "tempered SMC, 1000 particles" (run 15 #(infer/infer (block-model bimodal-block) {:method :tempered :particles 1000}))
    "parallel tempering, 12 chains, 11 rounds" (run 15 #(infer/infer (block-model bimodal-block)
-                                                                     {:method :parallel-tempering :chains 12 :rounds 11}))))
+                                                                    {:method :parallel-tempering :chains 12 :rounds 11}))))
 
 (kind/table
  {:column-names ["method" "P(a > 0)" "log evidence" "ms"]
@@ -724,10 +724,11 @@ exact
                                                  (- (/ (* -0.5 r r) 0.25) (* 0.5 (Math/log 0.25)) 0.9189385332046727)))
                     :batches (partition 20 regression-data)}
                    {:particles 300 :memory 30 :seed [1]})
-      moments (fn [j] (let [v (map #(nth % j) (:particles r)) n (count v) mu (/ (reduce + v) n)]
+      moments (fn [j] (let [v (map #(nth (m/get-value (first %)) j) (m/get-particles r)) n (count v) mu (/ (reduce + v) n)]
                         [mu (Math/sqrt (/ (reduce + (map #(let [e (- % mu)] (* e e)) v)) (dec n)))]))]
   {:exact regression-exact
    :a (moments 0) :b (moments 1)
+   :log-evidence (m/log-marginal r)
    :coreset-size (count (:coreset r)) :steps (:steps r)
    :ms (long (/ (- (System/nanoTime) t0) 1e6))})
 

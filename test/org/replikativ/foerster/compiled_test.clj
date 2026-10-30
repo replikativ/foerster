@@ -1,5 +1,5 @@
 (ns org.replikativ.foerster.compiled-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.analysis :as a]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.compiled :as c]
@@ -8,8 +8,6 @@
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.foerster.measure :as m]))
-
-(defn- sigmoid [z] (/ 1.0 (+ 1.0 (Math/exp (- z)))))
 
 (def ^:private logistic
   (a/model [xs ns ys]

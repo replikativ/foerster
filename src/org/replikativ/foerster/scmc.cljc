@@ -27,6 +27,7 @@
   resamples, then moves every particle by population-scaled random-walk
   Metropolis."
   (:require [org.replikativ.foerster.population :as pop]
+            [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]))
 
 ;; =============================================================================
@@ -128,12 +129,14 @@
   with options `:particles` (1000), `:memory` M (100), `:scale` (2.38, the
   random walk in population standard deviations), `:seed`.
 
-  Returns {:particles [θ …] (equally weighted) :log-z (the evidence estimate,
-  its increments exact, its moves approximate) :coreset [[w datum] …] (at
-  most M) :steps :max-coreset-size (the largest core-set the moves used,
-  before recompression: at most M plus a batch) :moves
-  :accepted}. Throws `::zero-evidence` when a batch has zero likelihood
-  under every particle."
+  Returns an EmpiricalMeasure of equally weighted Samples containing θ
+  vectors. `m/log-marginal` reports the evidence estimate: its increments are
+  exact, its moves approximate. Metadata includes :inference-contract,
+  :coreset [[w datum] …] (at most M), :steps, :max-coreset-size (the largest
+  core-set the moves used, before recompression: at most M plus a batch),
+  :moves and :accepted. This optimized numeric API returns synchronously.
+  Throws `::zero-evidence` when a batch has zero likelihood under every
+  particle."
   [{:keys [prior-sample prior-log-density log-lik batches]}
    & [{:keys [particles memory scale seed] :or {particles 1000 memory 100 scale 2.38}}]]
   (when-not (pos-int? particles)
@@ -144,6 +147,7 @@
         ;; consumed one batch at a time, never holding the sequence's head:
         ;; a stream of batches runs in bounded memory
         remaining (atom (seq batches))
+        compressed? (atom false)
         stats (atom {:moves 0 :accepted 0})
         ;; [steps, the largest expanded core-set]: bounded, unlike a history
         sizes (atom [0 0])
@@ -153,7 +157,8 @@
               :advance (fn [qs lw {:keys [t coreset]}]
                          ;; lw: the population's normalized log weights
                          (let [coreset (if (> (count coreset) memory)
-                                         (recompress qs lw coreset log-lik memory)
+                                         (do (reset! compressed? true)
+                                             (recompress qs lw coreset log-lik memory))
                                          coreset)
                                batch (first @remaining)
                                _ (swap! remaining next)
@@ -178,10 +183,14 @@
                                                               :keys {:resample ::resample :move ::move}})
         final (:coreset (peek positions))
         uniform (vec (repeat (count qs) (- (Math/log (count qs)))))]
-    {:particles qs
-     :log-z log-z
-     :coreset (if (> (count final) memory) (recompress qs uniform final log-lik memory) final)
-     :steps (first @sizes)
-     :max-coreset-size (second @sizes)
-     :moves (:moves @stats)
-     :accepted (:accepted @stats)}))
+    (assoc (m/empirical (mapv (fn [q] [(m/sample-particle q {}) 0.0]) qs))
+           :inference-contract {:semantics (if @compressed? :approximate-population :weighted-population)
+                                :normalizer {:status :unverified}
+                                :adaptation :population
+                                :approximation (when @compressed? :coreset-rejuvenation)}
+           :log-normalizer log-z
+           :coreset (if (> (count final) memory) (recompress qs uniform final log-lik memory) final)
+           :steps (first @sizes)
+           :max-coreset-size (second @sizes)
+           :moves (:moves @stats)
+           :accepted (:accepted @stats))))

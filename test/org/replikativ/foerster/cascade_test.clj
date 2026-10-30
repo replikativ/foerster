@@ -13,7 +13,7 @@
   (doseq [[label opts] [["room to branch" {}] ["a tight cap" {:cap 300}]]]
     (testing label
       (let [measure (b/run-infer 71 #(cascade/cascade (b/conjugate-model) 300 opts))
-            {:keys [peak collapsed]} (:cascade measure)]
+            {:keys [peak]} (:cascade measure)]
         ;; over 8 runs per setting the log error stayed within ±0.25
         (is (< (Math/abs (- (m/log-marginal measure) b/conjugate-log-evidence)) 0.4)
             (str (m/log-marginal measure) " vs " b/conjugate-log-evidence))

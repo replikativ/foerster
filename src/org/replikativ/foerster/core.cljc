@@ -14,14 +14,15 @@
 
   All functions return Spin<EmpiricalMeasure> for composability;
   post-processing is measure-centric (query, predict)."
+  (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.hmc :as hmc]
-            [org.replikativ.foerster.nuts :as nuts]
-            [org.replikativ.foerster.block-mh :as block-mh]
             [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.transition :as transition]
             [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.particle-mcmc :as pmcmc]
             [org.replikativ.foerster.smc2 :as smc2]
             [org.replikativ.foerster.enumerate :as enumerate]
             [org.replikativ.foerster.gfi :as gfi]
@@ -33,12 +34,8 @@
             #?(:clj [org.replikativ.foerster.compiled :as compiled])
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.world.scope :as world-scope]
-            [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.state-backend :as backend]
-            [org.replikativ.spindel.engine.executor :as sched]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.combinators :as comb]
@@ -78,203 +75,6 @@
 ;; =============================================================================
 ;; Markov chains: replay plus accept
 ;; =============================================================================
-
-(defn- block-gibbs-options
-  "Translate a BlockGibbsKernel into `itrace/mh-step` options. The classifier
-  and the selector see the trace in its legacy shape; only latent
-  sites are classified, and a step whose block is empty or has no kernel moves
-  nothing. The selection probability is taken to be the same in both traces,
-  which holds when a move does not change which sites belong to the block."
-  [{:keys [block-selector block-kernels address-classifier]}]
-  (let [proposals (atom nil)]
-    {:select
-     (fn [current iteration]
-       (let [legacy (itrace/legacy-trace current)
-             latent (set (itrace/latent-addresses current))
-             blocks (reduce-kv (fn [acc address entry]
-                                 (if-let [block-id (and (latent address)
-                                                        (address-classifier address entry))]
-                                   (update acc block-id (fnil conj #{}) address)
-                                   acc))
-                               {} legacy)
-             block-id (k/select-block block-selector legacy iteration)
-             targets (get blocks block-id #{})
-             kernel (get block-kernels block-id)]
-         (reset! proposals (when (and kernel (seq targets)
-                                      (not (instance? org.replikativ.foerster.kernel.PriorBlockKernel kernel)))
-                             (k/propose-block kernel legacy targets)))
-         ;; Blocks are selected by id, independently of the trace.
-         {:targets targets :log-selection (constantly 0.0)}))
-     :propose
-     (fn [sp-value old-entry]
-       (if-let [proposed @proposals]
-         ;; A block kernel's move is taken to be symmetric (the random walk
-         ;; is; a custom kernel must be).
-         {:value (get proposed (:savepoint/address sp-value)) :symmetric? true}
-         (itrace/prior-proposal sp-value old-entry)))}))
-
-(declare mh-options)
-
-(defn- span
-  "How many moves one iteration of a Markov-chain kernel makes at most: its
-  moves are numbered within that span, so every move of a chain has its own
-  number (`itrace/mh-chain`'s `:first-iteration`)."
-  [kernel]
-  (case (k/kernel-id kernel)
-    :cycle (reduce + (map #(* (:num-iterations %) (span %)) (:kernels kernel)))
-    :mixture (apply max (map #(* (:num-iterations %) (span %)) (:kernels kernel)))
-    1))
-
-(declare iteration-of)
-
-(defn- run-kernel
-  "CPS: `kernel`'s whole run from `trace`, its moves numbered from `base`;
-  resolves {:trace :moves :accepted-moves}."
-  [kernel trace base]
-  (fn [resolve reject]
-    (if (#{:cycle :mixture} (k/kernel-id kernel))
-      (letfn [(run [current i moves accepted]
-                (if (= i (:num-iterations kernel))
-                  (resolve {:trace current :moves moves :accepted-moves accepted})
-                  ((iteration-of kernel current (+ base (* i (span kernel))))
-                   (fn [r] (run (:trace r) (inc i) (+ moves (:moves r)) (+ accepted (:accepted-moves r))))
-                   reject)))]
-        (run trace 0 0 0))
-      (let [{:keys [iterations] :as opts} (or (::options kernel) (mh-options kernel))]
-        ((itrace/mh-chain trace iterations (-> opts (dissoc :iterations) (assoc :first-iteration base)))
-         (fn [{:keys [trace moves accepted]}]
-           (resolve {:trace trace :moves moves :accepted-moves accepted}))
-         reject)))))
-
-(defn- iteration-of
-  "CPS: one iteration of a composed kernel from `trace`, its moves numbered
-  from `base`: every component in turn (cycle) or one picked by weight
-  (mixture)."
-  [kernel trace base]
-  (fn [resolve reject]
-    (let [ks (:kernels kernel)
-          offsets (reductions + 0 (map #(* (:num-iterations %) (span %)) ks))
-          parts (case (k/kernel-id kernel)
-                  :cycle (map vector ks offsets)
-                  :mixture [[(nth ks (m/sample-categorical (:weights kernel))) 0]])]
-      (letfn [(run [current [[component offset] & more] moves accepted]
-                (if-not component
-                  (resolve {:trace current :moves moves :accepted-moves accepted})
-                  ((run-kernel component current (+ base offset))
-                   (fn [r] (run (:trace r) more (+ moves (:moves r)) (+ accepted (:accepted-moves r))))
-                   reject)))]
-        (run trace parts 0 0)))))
-
-(defn- compiled
-  "A composed kernel with each component's options made once (`::options`):
-  a component that adapts as it runs (NUTS) keeps its state from one of the
-  composition's iterations to the next."
-  [kernel]
-  (if (#{:cycle :mixture} (k/kernel-id kernel))
-    (update kernel :kernels #(mapv compiled %))
-    (assoc kernel ::options (mh-options kernel))))
-
-(defn- mh-options
-  "`itrace/mh-step` options of a Markov-chain kernel, or nil for kernels
-  that decide sites of savepoint SMC."
-  [kernel]
-  (case (k/kernel-id kernel)
-    (:cycle :mixture) (let [kernel (compiled kernel)]
-                        {:iterations (:num-iterations kernel)
-                         :step (fn [trace {:keys [iteration]}]
-                                 (iteration-of kernel trace (* iteration (span kernel))))})
-    :single-site-mh {:iterations (:num-iterations kernel)}
-    :random-walk-mh {:iterations (:num-iterations kernel)
-                     :step (block-mh/within-gibbs {:step-size (:step-size kernel)
-                                                   :burn (:burn kernel 0)})}
-    :delayed-acceptance {:iterations (:num-iterations kernel)
-                         :step (block-mh/delayed-acceptance
-                                (select-keys kernel [:coarse :scales :steps :step-size]))}
-    :block-gibbs (assoc (block-gibbs-options kernel)
-                        :iterations (:num-iterations kernel))
-    :hmc {:iterations (:num-iterations kernel)
-          :step (hmc/within-gibbs (select-keys kernel [:step-size :steps]))}
-    :nuts {:iterations (:num-iterations kernel)
-           :step (nuts/within-gibbs {:burn (:burn kernel 0)
-                                     :target-accept (:target-accept kernel)
-                                     :max-depth (:max-depth kernel)
-                                     :metric (:metric kernel)})}
-    nil))
-
-(defn- project-posterior-context
-  "A parentless immutable context holding what the posterior needs of
-  `world`'s inference state: the world itself would retain its ancestry."
-  [world]
-  (assoc world
-         :backend (backend/create-immutable-backend
-                   {:inference (select-keys (rtp/get-state world [:inference])
-                                            [:log-weight :trace :result :mcmc])}
-                   {:source-fork-id (:fork-id world)
-                    :projection :inference-posterior})
-         :parent-ctx nil
-         :bindings {}
-         :metadata {:inference/projection true}
-         :running nil
-         :drain-active nil))
-
-(defn- run-markov-chain
-  "One chain in its own world: run the model, move it `iterations` times,
-  give every world back. Returns the chain's particles: its projected final
-  state, or (kernel `:samples :all`) every state after `:burn` as a Sample."
-  [model-task kernel executor seed]
-  (spin-core/with-causal-descendant-egress
-    (spin
-     (let [;; per chain: a block Gibbs description closes over its own state
-           {:keys [iterations] :as step-opts} (mh-options kernel)
-           _ (when (and (= :all (:samples kernel)) (>= (:burn kernel 0) iterations))
-               (throw (ex-info ":burn leaves no draws: it must be below :iterations"
-                               {:type ::burn-exceeds-iterations :burn (:burn kernel) :iterations iterations})))
-           root (ctx/create-execution-context :executor executor)
-           session (sp/open! root {:purpose :mcmc :seed seed :fork-opts {:systems :none}
-                                   :retain-released? false})]
-       (try
-         (let [initial (await (trace/run session model-task (itrace/policy {:init? true})
-                                         {:anchor? itrace/anchor?}))
-               _ (when (contains? initial :trace/error)
-                   (throw (ex-info "Inference failed during model execution"
-                                   {:type ::inference-failed}
-                                   (:trace/error initial))))
-             ;; From an impossible state every ratio is NaN and nothing is
-             ;; ever accepted; say so instead of returning that state.
-               _ (when (= ##-Inf (itrace/log-joint initial))
-                   (throw (ex-info "The initial state of the chain has zero density"
-                                   {:type ::impossible-initial-state})))
-               samples (volatile! [])
-               step-opts (cond-> step-opts
-                           (= :all (:samples kernel))
-                           (assoc :on-step
-                                  (let [i (volatile! 0)]
-                                    (fn [{t :trace :keys [sampler-stats]}]
-                                      (when (> (vswap! i inc) (:burn kernel 0))
-                                        (vswap! samples conj
-                                                [(cond-> (m/sample-particle (:trace/result t)
-                                                                            (itrace/legacy-trace t))
-                                                   sampler-stats (assoc :sampler-stats sampler-stats))
-                                                 0.0]))))))
-               {final :trace moves :moves accepted :accepted}
-               (await (itrace/mh-chain initial iterations step-opts))
-               world (:trace/world final)]
-           (rtp/swap-state! world [:inference]
-                            (fn [state]
-                              (assoc state
-                                     :result (:trace/result final)
-                                     :trace (itrace/legacy-trace final)
-                                     :mcmc {:completed-iterations iterations
-                                            :moves moves
-                                            :acceptance-count accepted})))
-           (if (= :all (:samples kernel))
-             @samples
-             [[(project-posterior-context world) 0.0]]))
-         (finally
-         ;; Closing the session cancels and joins every world of the chain.
-         ;; The root is not stopped here: `stop-context!` waits for the
-         ;; context's drains, and this body may be running inside one.
-           (await-finalization (sp/close! session))))))))
 
 (defn- world-policy
   "The `:world-policy` of `opts`, :fresh by default; refuses any other."
@@ -324,39 +124,6 @@
                       {:type ::fresh-only-options
                        :options (vec misplaced)}))))
   opts)
-
-(defn- markov-chain-infer
-  [model-task kernel num-chains opts]
-  ;; Chains run in fresh worlds of their own. Running them in forks of the
-  ;; caller's world, as `:world-policy :fork` does for particles, is not
-  ;; implemented; refuse it, do not ignore it.
-  (when (or (= :fork (:world-policy opts)) (some? (:world-opts opts)))
-    (throw (ex-info "Markov-chain kernels run in fresh worlds"
-                    {:type ::invalid-world-policy
-                     :world-policy (:world-policy opts)
-                     :supported #{:fresh}})))
-  (spin-core/with-causal-descendant-egress
-    (spin
-     (let [own-executor (when-not (:executor opts)
-                          #?(:clj (sched/thread-pool-executor {:threads 2}) :cljs nil))
-           executor (or (:executor opts) own-executor)]
-       (try
-         (let [;; derived from :seed, else drawn here in order: the chains
-               ;; then run concurrently
-               seeds (if-let [seed (:seed opts)]
-                       (mapv #(sp/derive-seed seed ::chain %) (range num-chains))
-                       (vec (repeatedly num-chains random/fresh-seed)))
-               chains (await (apply comb/parallel
-                                    (mapv #(run-markov-chain model-task kernel executor %) seeds)))]
-           ;; the draws in chain order, each chain's count kept: the
-           ;; convergence diagnostics need them by chain (`foerster.diagnostics`)
-           (cond-> (assoc (m/empirical (into [] cat chains))
-                          :chain-lengths (mapv count chains))
-             (some? (:seed opts)) (assoc :seed (:seed opts))))
-         (finally
-           (when own-executor
-             #?(:clj (.close ^java.lang.AutoCloseable own-executor)
-                :cljs nil))))))))
 
 (declare particles)
 
@@ -412,16 +179,16 @@
                                          {:barrier-policy :none}))]
         (query measure identity)))"
   [model-task kernel num-particles & [opts]]
-  (check-options! opts (if (mh-options kernel)
+  (check-options! opts (if (k/markov-kernel? kernel)
                          #{:executor :world-policy :seed}
                          (conj particle-options :barrier-policy)))
   (let [smc-opts (cond-> (dissoc opts :barrier-policy)
                    (= :none (:barrier-policy opts)) (assoc :resample-threshold 0.0))]
     (cond
-      (mh-options kernel)
+      (k/markov-kernel? kernel)
       ;; Markov-chain kernels are replay plus accept over traces; each of the
       ;; `num-particles` is an independent chain.
-      (markov-chain-infer model-task kernel num-particles opts)
+      (transition/infer model-task kernel num-particles opts)
 
       (= :prior (k/kernel-id kernel))
       (particles model-task num-particles smc-opts)
@@ -689,7 +456,10 @@
    (loop [[[particle _] & more] (m/sample-measure measure n) out []]
      (if-not particle
        out
-       (let [latents (into {} (keep (fn [[address {:keys [value observed? deterministic?]}]]
+       (let [_ (when (nil? (m/get-trace particle))
+                 (throw (ex-info "Posterior predictive replay needs traces; use amortized/predictive with an explicit forward binding for learned draws"
+                                 {:type ::missing-predictive-trace})))
+             latents (into {} (keep (fn [[address {:keys [value observed? deterministic?]}]]
                                       (when-not (or observed? deterministic?) [address value])))
                            (m/get-trace particle))
              t (await (gfi/run-policy model (itrace/policy {:constraints latents
@@ -711,17 +481,10 @@
 ;; Particle MCMC Methods
 ;; =============================================================================
 
-(defn- normalized-samples
-  "A sweep's particles (`Sample`s) with weights that sum to one, so sweeps
-   can be pooled into one MCMC estimate (a sweep of impossible particles:
-   all zero)."
-  [measure]
-  (let [ps (m/get-particles measure)
-        lse (m/log-sum-exp (mapv second ps))]
-    ;; a sweep of impossible particles keeps its zero weights
-    (if (= ##-Inf lse)
-      ps
-      (mapv (fn [[s lw]] [s (- lw lse)]) ps))))
+(defn- particle-sweep [model n opts]
+  (fn [key retained seed]
+    (particles model n (cond-> (assoc opts :seed (sp/derive-seed seed ::sweep key))
+                         retained (assoc :retained retained)))))
 
 (defn pimh-infer
   "Particle Independent Metropolis-Hastings (Andrieu et al. 2010).
@@ -739,50 +502,9 @@
   (check-options! opts (into particle-options smc-options))
   (if (on-savepoints? opts)
     (on-savepoints (smc/pimh model-task num-particles num-iterations opts))
-    (spin
-     (let [seed (or (:seed opts) (random/fresh-seed))
-           sweep-opts #(assoc opts :seed (sp/derive-seed seed ::sweep %))
-           initial (await (particles model-task num-particles (sweep-opts :initial)))]
-       (loop [current (normalized-samples initial)
-              current-log-Z (m/log-marginal initial)
-              iteration 0
-              all-samples []]
-         (if (>= iteration num-iterations)
-           (m/empirical all-samples)
-           (let [proposed (await (particles model-task num-particles (sweep-opts iteration)))
-                 proposed-log-Z (m/log-marginal proposed)
-                 log-alpha (- proposed-log-Z current-log-Z)
-                 u (random/with-stream* seed [::pimh-accept iteration] m/uniform01)
-                 accept? (or (>= log-alpha 0.0) (< (Math/log u) log-alpha))
-                 [current' log-Z'] (if accept?
-                                     [(normalized-samples proposed) proposed-log-Z]
-                                     [current current-log-Z])]
-             (log/trace :pimh/mh-step {:iteration iteration :log-alpha log-alpha :accept? accept?})
-             (recur current' log-Z' (inc iteration) (into all-samples current')))))))))
-
-(defn- csmc-chain
-  "Iterated conditional SMC: each sweep keeps one retained trajectory (from
-   the previous sweep) alive through resampling, the next retained
-   trajectory is drawn from the sweep's weights, and every sweep's
-   particles are emitted normalized."
-  [model-task num-particles num-iterations opts]
-  (spin
-   (let [seed (or (:seed opts) (random/fresh-seed))
-         sweep-opts #(assoc opts :seed (sp/derive-seed seed ::sweep %))
-         initial (await (particles model-task num-particles (sweep-opts :initial)))
-         pick (fn [measure k]
-                (let [ps (m/get-particles measure)]
-                  (random/with-stream* seed [::pick k]
-                    #(m/get-trace (first (nth ps (m/sample-categorical
-                                                  (m/normalize-log-weights (mapv second ps)))))))))]
-     (loop [retained-trace (pick initial :initial)
-            iteration 0
-            all-samples []]
-       (if (>= iteration num-iterations)
-         (m/empirical all-samples)
-         (let [sweep (await (particles model-task num-particles
-                                       (assoc (sweep-opts iteration) :retained (smc/retained-choices retained-trace))))]
-           (recur (pick sweep iteration) (inc iteration) (into all-samples (normalized-samples sweep)))))))))
+    (pmcmc/pimh
+     (particle-sweep model-task num-particles opts)
+     num-iterations {:seed (:seed opts) :accept-key ::pimh-accept})))
 
 (defn pgibbs-infer
   "Particle Gibbs (conditional SMC, Andrieu et al. 2010).
@@ -800,28 +522,13 @@
   (check-options! opts (into particle-options #{:anchors :rejuvenate}))
   (if (on-savepoints? opts)
     (on-savepoints (smc/pgibbs model-task num-particles num-iterations opts))
-    (csmc-chain model-task num-particles num-iterations opts)))
+    (pmcmc/pgibbs
+     (particle-sweep model-task num-particles opts)
+     num-iterations {:seed (:seed opts) :pick-key ::pick})))
 
 ;; =============================================================================
 ;; IPMCMC - Interacting Particle MCMC
 ;; =============================================================================
-
-(defn- norm-exp
-  "Normalized exponential. Returns [probabilities log-mean-weight].
-   If all weights are -infinity, returns uniform probabilities."
-  [log-weights]
-  (let [max-log-weight (apply max log-weights)]
-    (if (or (nil? max-log-weight)
-            (= max-log-weight ##-Inf))
-      ;; All -infinity: return uniform
-      (let [n (count log-weights)]
-        [(vec (repeat n (/ 1.0 n))) ##-Inf])
-      ;; Normal case
-      (let [weights (mapv #(Math/exp (- % max-log-weight)) log-weights)
-            total (reduce + weights)
-            probs (mapv #(/ % total) weights)
-            log-mean-weight (+ (Math/log (/ total (count log-weights))) max-log-weight)]
-        [probs log-mean-weight]))))
 
 (defn- gibbs-update-csmc-indices
   "Perform Gibbs sweep on CSMC node indices.
@@ -848,7 +555,7 @@
         (let [;; Candidate indices: current SMC nodes + current CSMC node i
               proposal-indices (conj smc-indices (csmc-indices i))
               proposal-log-Zs (mapv #(nth log-Zs %) proposal-indices)
-              [probs _] (norm-exp proposal-log-Zs)
+              probs (m/normalize-log-weights proposal-log-Zs)
 
               ;; Update zeta sums for Rao-Blackwellization
               new-zeta-sums (reduce (fn [zs [idx p]]
@@ -887,7 +594,7 @@
     ;; CSMC sweep with retained trace
     :else
     (particles model-task num-particles
-               (assoc opts :retained (smc/retained-choices retained-trace)))))
+               (assoc opts :retained (pmcmc/retained-choices retained-trace)))))
 
 (defn- run-parallel-sweeps
   "Run SMC/CSMC sweeps in parallel across all nodes.
@@ -964,10 +671,10 @@
                                                  (vec (repeat num-nodes nil)) (sweep-opts :initial)))
             all-samples []]
        (if (>= iteration num-iterations)
-         (m/empirical all-samples)
+         (m/markov-measure all-samples)
          (let [log-Zs (mapv m/log-marginal measures)
                ;; the iteration's Gibbs draws from its own stream of the run's seed
-               [csmc-indices zeta-sums samples retained-traces]
+               [csmc-indices _zeta-sums samples retained-traces]
                (random/with-stream*
                  seed [::gibbs iteration]
                  (fn []
@@ -978,7 +685,7 @@
                          samples (vec (mapcat
                                        (fn [node-idx]
                                          (let [zeta (nth zeta-sums node-idx)
-                                               node (normalized-samples (nth measures node-idx))]
+                                               node (pmcmc/normalized (nth measures node-idx))]
                                            (when (pos? zeta)
                                              (if all-particles?
                                                (map (fn [[smp lw]] [smp (+ lw (Math/log zeta))]) node)
@@ -1014,7 +721,8 @@
   (check-options! opts particle-options)
   (if (on-savepoints? opts)
     (on-savepoints (smc/pgas model-task num-particles num-iterations opts))
-    (csmc-chain model-task num-particles num-iterations (assoc opts :ancestor-sampling? true))))
+    (pmcmc/pgibbs (particle-sweep model-task num-particles (assoc opts :ancestor-sampling? true))
+                  num-iterations {:seed (:seed opts) :pick-key ::pick})))
 
 ;; =============================================================================
 ;; Black Box Variational Inference (BBVI)
@@ -1176,7 +884,8 @@
 (defn- compiled-rmh
   "`:rmh` on the model compiled (`foerster.compiled`): the spin must come
   from an `analysis/model` whose structure is static given its arguments."
-  [model iterations burn step-size chains opts]
+  #?(:clj [model iterations burn step-size chains opts]
+     :cljs [_model _iterations _burn _step-size _chains _opts])
   #?(:clj
      (let [[m args] (or (analysis/applied model)
                         (throw (ex-info ":compiled? needs a model made by foerster.analysis/model"
@@ -1269,13 +978,18 @@
   The inner inference runs in fresh worlds of its own. Under exact
   enumeration the distribution is exact; otherwise it is the inner measure,
   so it has as many atoms as distinct values. Memoize it (`process/mem`) when
-  the outer program asks the same question repeatedly."
+  the outer program asks the same question repeatedly. A finite inner
+  approximation may bias nonlinear outer computations; more outer draws do
+  not remove fixed inner error, and memoization does not make it exact. The
+  returned distribution carries :inference/nesting provenance metadata."
   [model opts]
   (spin
    (let [measure (await (infer model opts))
          ps (m/get-particles measure)
-         ws (m/normalize-log-weights (mapv second ps))
+         ws (weights/normalize (mapv second ps))
          by-value (reduce (fn [acc [[particle _] w]]
                             (update acc (m/get-value particle) (fnil + 0.0) w))
                           {} (map vector ps ws))]
-     (dist/categorical (vec (filter (comp pos? second) by-value))))))
+     (with-meta (dist/categorical (vec (filter (comp pos? second) by-value)))
+       {:inference/nesting {:kind :empirical-conditional :method (:method opts)
+                            :exact? (= :enumerate (:method opts)) :particles (count ps)}}))))

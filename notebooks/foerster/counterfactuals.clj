@@ -136,6 +136,44 @@
 ;; branch the factual run did not take — has no factual noise; it is drawn
 ;; fresh and reported in `:unaligned`.
 
+;; ## Reuse a posterior across worlds
+;;
+;; Factual inference can be chosen separately from the counterfactual query.
+;; The ordinary measure keeps site laws and values, enough to reconstruct
+;; supported noise. The same abducted draw is shared across all named worlds.
+;; `query` is strict by default: an unsupported or newly reached stochastic
+;; mechanism is refused instead of silently weakening the coupling.
+
+(def factual-posterior
+  (sp/with-context world
+    @(infer/importance-sampling (scm) 25
+       {:policy (trace/policy {:constraints {:x 1.0 :y 2.5}})})))
+
+(def named-worlds
+  (let [p (promise)]
+    ((cf/query (sp/with-context world (scm))
+               {:posterior factual-posterior
+                :worlds [[:untreated {:x {:do 0.0}}]
+                         [:treated {:x {:do 2.0}}]]})
+     #(deliver p %) #(deliver p %))
+    (let [result (deref p 60000 ::timeout)]
+      (when (or (= ::timeout result) (instance? Throwable result))
+        (throw (ex-info "Counterfactual query failed" {:result result})))
+      result)))
+
+;; The factual residual Y − X is 1.5. Each draw therefore predicts Y = 3.5
+;; under X = 2 and a paired effect of 2 between X = 0 and X = 2, despite
+;; uncertainty in the confounder Z. Existing posterior weights are retained.
+
+{:treated-y (cf/expectation named-worlds #(get-in % [:worlds :treated :y]))
+ :paired-effect (cf/expectation named-worlds
+                               #(- (get-in % [:worlds :treated :y])
+                                   (get-in % [:worlds :untreated :y])))}
+
+;; See the [causal guide](https://github.com/replikativ/foerster/blob/main/doc/causal.md)
+;; for nested worlds, conditioning on hypothetical events, identification
+;; from graphs or observation maps, attribution and actual-cause queries.
+
 ;; ## References
 ;;
 ;; - J. Pearl. *Causality: Models, Reasoning, and Inference.* 2nd ed.,

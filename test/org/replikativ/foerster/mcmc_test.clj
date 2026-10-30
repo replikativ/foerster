@@ -29,12 +29,12 @@
            (let [meas @(spin (aw/await (infer/kernel-infer (model-fn)
                                                            (k/random-walk-mh-kernel iterations {:step-size step-size})
                                                            1 {})))
-                 [c lw] (first (measure/get-particles meas))]
-             (let [mh (rtp/get-state c [:inference :mcmc])]
-               {:ctx c :value (measure/get-value c) :log-weight lw
-                :mh (assoc mh :acceptance-rate
-                           (/ (double (:acceptance-count mh 0))
-                              (max 1 (:moves mh 0))))})))
+                 [c lw] (first (measure/get-particles meas))
+                 mh (rtp/get-state c [:inference :mcmc])]
+             {:ctx c :value (measure/get-value c) :log-weight lw
+              :mh (assoc mh :acceptance-rate
+                         (/ (double (:acceptance-count mh 0))
+                            (max 1 (:moves mh 0))))}))
          (finally (ctx/stop-context! root)))))
 
 (def visited (atom []))

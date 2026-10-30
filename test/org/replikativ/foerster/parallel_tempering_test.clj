@@ -1,7 +1,8 @@
 (ns org.replikativ.foerster.parallel-tempering-test
   "Non-reversible parallel tempering on blocks whose posterior and evidence
   are known in closed form."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.weights :as weights]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.diagnostics :as d]
@@ -72,8 +73,8 @@
   ;; in the mode it starts in; the tempered chains carry states between them
   (let [res (b/run-infer 9 #(pt/parallel-tempering
                              (block-model (fn [[a b]]
-                                            (+ (pop/log-sum-exp [(+ (Math/log 0.3) (lnorm a -4.0 0.4))
-                                                                 (+ (Math/log 0.7) (lnorm a 4.0 0.4))])
+                                            (+ (weights/log-sum-exp [(+ (Math/log 0.3) (lnorm a -4.0 0.4))
+                                                                     (+ (Math/log 0.7) (lnorm a 4.0 0.4))])
                                                (lnorm b 0.0 0.4))))
                              {:chains 12 :rounds 11}))
         right (/ (count (filter #(pos? (:a (:result %))) (m/get-contexts res)))

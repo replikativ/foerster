@@ -1,0 +1,1 @@
+{:draws 16, :seed 601, :seconds 0.700933183, :max-draw-error 0.0, :observations-clamped? true, :public-sampler-posterior {:mean 0.684178554500868, :variance 0.45703104794421406, :draws 16}}
