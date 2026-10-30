@@ -14,16 +14,15 @@
 
   All functions return Spin<EmpiricalMeasure> for composability;
   post-processing is measure-centric (query, predict)."
+  (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.hmc :as hmc]
-            [org.replikativ.foerster.nuts :as nuts]
-            [org.replikativ.foerster.block-mh :as block-mh]
             [org.replikativ.foerster.kernel :as k]
             [org.replikativ.foerster.transition :as transition]
             [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.particle-mcmc :as pmcmc]
             [org.replikativ.foerster.smc2 :as smc2]
             [org.replikativ.foerster.enumerate :as enumerate]
             [org.replikativ.foerster.gfi :as gfi]
@@ -35,10 +34,8 @@
             #?(:clj [org.replikativ.foerster.compiled :as compiled])
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.world.scope :as world-scope]
-            [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.combinators :as comb]
@@ -484,17 +481,10 @@
 ;; Particle MCMC Methods
 ;; =============================================================================
 
-(defn- normalized-samples
-  "A sweep's particles (`Sample`s) with weights that sum to one, so sweeps
-   can be pooled into one MCMC estimate (a sweep of impossible particles:
-   all zero)."
-  [measure]
-  (let [ps (m/get-particles measure)
-        lse (m/log-sum-exp (mapv second ps))]
-    ;; a sweep of impossible particles keeps its zero weights
-    (if (= ##-Inf lse)
-      ps
-      (mapv (fn [[s lw]] [s (- lw lse)]) ps))))
+(defn- particle-sweep [model n opts]
+  (fn [key retained seed]
+    (particles model n (cond-> (assoc opts :seed (sp/derive-seed seed ::sweep key))
+                         retained (assoc :retained retained)))))
 
 (defn pimh-infer
   "Particle Independent Metropolis-Hastings (Andrieu et al. 2010).
@@ -512,50 +502,9 @@
   (check-options! opts (into particle-options smc-options))
   (if (on-savepoints? opts)
     (on-savepoints (smc/pimh model-task num-particles num-iterations opts))
-    (spin
-     (let [seed (or (:seed opts) (random/fresh-seed))
-           sweep-opts #(assoc opts :seed (sp/derive-seed seed ::sweep %))
-           initial (await (particles model-task num-particles (sweep-opts :initial)))]
-       (loop [current (normalized-samples initial)
-              current-log-Z (m/log-marginal initial)
-              iteration 0
-              all-samples []]
-         (if (>= iteration num-iterations)
-           (m/markov-measure all-samples)
-           (let [proposed (await (particles model-task num-particles (sweep-opts iteration)))
-                 proposed-log-Z (m/log-marginal proposed)
-                 log-alpha (- proposed-log-Z current-log-Z)
-                 u (random/with-stream* seed [::pimh-accept iteration] m/uniform01)
-                 accept? (or (>= log-alpha 0.0) (< (Math/log u) log-alpha))
-                 [current' log-Z'] (if accept?
-                                     [(normalized-samples proposed) proposed-log-Z]
-                                     [current current-log-Z])]
-             (log/trace :pimh/mh-step {:iteration iteration :log-alpha log-alpha :accept? accept?})
-             (recur current' log-Z' (inc iteration) (into all-samples current')))))))))
-
-(defn- csmc-chain
-  "Iterated conditional SMC: each sweep keeps one retained trajectory (from
-   the previous sweep) alive through resampling, the next retained
-   trajectory is drawn from the sweep's weights, and every sweep's
-   particles are emitted normalized."
-  [model-task num-particles num-iterations opts]
-  (spin
-   (let [seed (or (:seed opts) (random/fresh-seed))
-         sweep-opts #(assoc opts :seed (sp/derive-seed seed ::sweep %))
-         initial (await (particles model-task num-particles (sweep-opts :initial)))
-         pick (fn [measure k]
-                (let [ps (m/get-particles measure)]
-                  (random/with-stream* seed [::pick k]
-                    #(m/get-trace (first (nth ps (m/sample-categorical
-                                                  (m/normalize-log-weights (mapv second ps)))))))))]
-     (loop [retained-trace (pick initial :initial)
-            iteration 0
-            all-samples []]
-       (if (>= iteration num-iterations)
-         (m/markov-measure all-samples)
-         (let [sweep (await (particles model-task num-particles
-                                       (assoc (sweep-opts iteration) :retained (smc/retained-choices retained-trace))))]
-           (recur (pick sweep iteration) (inc iteration) (into all-samples (normalized-samples sweep)))))))))
+    (pmcmc/pimh
+     (particle-sweep model-task num-particles opts)
+     num-iterations {:seed (:seed opts) :accept-key ::pimh-accept})))
 
 (defn pgibbs-infer
   "Particle Gibbs (conditional SMC, Andrieu et al. 2010).
@@ -573,28 +522,13 @@
   (check-options! opts (into particle-options #{:anchors :rejuvenate}))
   (if (on-savepoints? opts)
     (on-savepoints (smc/pgibbs model-task num-particles num-iterations opts))
-    (csmc-chain model-task num-particles num-iterations opts)))
+    (pmcmc/pgibbs
+     (particle-sweep model-task num-particles opts)
+     num-iterations {:seed (:seed opts) :pick-key ::pick})))
 
 ;; =============================================================================
 ;; IPMCMC - Interacting Particle MCMC
 ;; =============================================================================
-
-(defn- norm-exp
-  "Normalized exponential. Returns [probabilities log-mean-weight].
-   If all weights are -infinity, returns uniform probabilities."
-  [log-weights]
-  (let [max-log-weight (apply max log-weights)]
-    (if (or (nil? max-log-weight)
-            (= max-log-weight ##-Inf))
-      ;; All -infinity: return uniform
-      (let [n (count log-weights)]
-        [(vec (repeat n (/ 1.0 n))) ##-Inf])
-      ;; Normal case
-      (let [weights (mapv #(Math/exp (- % max-log-weight)) log-weights)
-            total (reduce + weights)
-            probs (mapv #(/ % total) weights)
-            log-mean-weight (+ (Math/log (/ total (count log-weights))) max-log-weight)]
-        [probs log-mean-weight]))))
 
 (defn- gibbs-update-csmc-indices
   "Perform Gibbs sweep on CSMC node indices.
@@ -621,7 +555,7 @@
         (let [;; Candidate indices: current SMC nodes + current CSMC node i
               proposal-indices (conj smc-indices (csmc-indices i))
               proposal-log-Zs (mapv #(nth log-Zs %) proposal-indices)
-              [probs _] (norm-exp proposal-log-Zs)
+              probs (m/normalize-log-weights proposal-log-Zs)
 
               ;; Update zeta sums for Rao-Blackwellization
               new-zeta-sums (reduce (fn [zs [idx p]]
@@ -660,7 +594,7 @@
     ;; CSMC sweep with retained trace
     :else
     (particles model-task num-particles
-               (assoc opts :retained (smc/retained-choices retained-trace)))))
+               (assoc opts :retained (pmcmc/retained-choices retained-trace)))))
 
 (defn- run-parallel-sweeps
   "Run SMC/CSMC sweeps in parallel across all nodes.
@@ -740,7 +674,7 @@
          (m/markov-measure all-samples)
          (let [log-Zs (mapv m/log-marginal measures)
                ;; the iteration's Gibbs draws from its own stream of the run's seed
-               [csmc-indices zeta-sums samples retained-traces]
+               [csmc-indices _zeta-sums samples retained-traces]
                (random/with-stream*
                  seed [::gibbs iteration]
                  (fn []
@@ -751,7 +685,7 @@
                          samples (vec (mapcat
                                        (fn [node-idx]
                                          (let [zeta (nth zeta-sums node-idx)
-                                               node (normalized-samples (nth measures node-idx))]
+                                               node (pmcmc/normalized (nth measures node-idx))]
                                            (when (pos? zeta)
                                              (if all-particles?
                                                (map (fn [[smp lw]] [smp (+ lw (Math/log zeta))]) node)
@@ -787,7 +721,8 @@
   (check-options! opts particle-options)
   (if (on-savepoints? opts)
     (on-savepoints (smc/pgas model-task num-particles num-iterations opts))
-    (csmc-chain model-task num-particles num-iterations (assoc opts :ancestor-sampling? true))))
+    (pmcmc/pgibbs (particle-sweep model-task num-particles (assoc opts :ancestor-sampling? true))
+                  num-iterations {:seed (:seed opts) :pick-key ::pick})))
 
 ;; =============================================================================
 ;; Black Box Variational Inference (BBVI)
@@ -949,7 +884,8 @@
 (defn- compiled-rmh
   "`:rmh` on the model compiled (`foerster.compiled`): the spin must come
   from an `analysis/model` whose structure is static given its arguments."
-  [model iterations burn step-size chains opts]
+  #?(:clj [model iterations burn step-size chains opts]
+     :cljs [_model _iterations _burn _step-size _chains _opts])
   #?(:clj
      (let [[m args] (or (analysis/applied model)
                         (throw (ex-info ":compiled? needs a model made by foerster.analysis/model"

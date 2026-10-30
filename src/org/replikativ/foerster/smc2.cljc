@@ -21,14 +21,18 @@
   Priors for θ come from the program itself: a θ-particle starts from a
   simulation of the program (`foerster.gfi/simulate`). Correlated PMMH, which
   needs SMC driven by explicit noise, is not provided."
-  (:require [org.replikativ.foerster.weights :as weights]
+  (:require [org.replikativ.foerster.execution :as execution]
+            [org.replikativ.foerster.scope :as scope]
+            [org.replikativ.foerster.cursor :as cursor]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.smc :as smc]
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.foerster.dist :as dist]
-            [org.replikativ.spindel.effects.savepoint :as sp]))
+            [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.engine.protocols :as rtp]))
 
 (defn- then [operation f]
   (fn [resolve reject]
@@ -36,39 +40,28 @@
                             (catch #?(:clj Throwable :cljs :default) e (reject e))))
                reject)))
 
-(defn- all-settled
-  "Run `(start i resolve reject)` for i < n together; resolves the results in
-  order, or rejects with the first failure."
-  [n start]
-  (fn [resolve reject]
-    (if (zero? n)
-      (resolve [])
-      (let [out (object-array n)
-            remaining (atom n)
-            failed? (atom false)]
-        (dotimes [i n]
-          (start i
-                 (fn [v]
-                   (aset out i v)
-                   (when (zero? (swap! remaining dec))
-                     (resolve (vec out))))
-                 (fn [e]
-                   (when (compare-and-set! failed? false true)
-                     (reject e)))))))))
-
 (defn- prior-draw
   "θ from the program's own prior: a simulation's values at `params`."
-  [model params opts]
-  (then (gfi/simulate model (select-keys opts [:executor]))
+  [model params opts & [parameter-prefix?]]
+  (then (gfi/simulate model (select-keys opts [:executor :inference-scope]))
         (fn [t resolve reject]
           (let [choices (itrace/choices t)
-                missing (remove #(contains? choices %) params)]
+                missing (remove #(contains? choices %) params)
+                misplaced (when parameter-prefix?
+                            (loop [[entry & more] (itrace/entries t) inner? false]
+                              (when entry
+                                (cond
+                                  (and inner? (contains? params (:address entry))) (:address entry)
+                                  :else (recur more (or inner? (and (itrace/latent? entry)
+                                                                    (not (contains? params (:address entry))))))))))]
             ((gfi/close! t)
              (fn [_]
-               (if (seq missing)
-                 (reject (ex-info "A parameter site was not reached" {:type ::missing-params
-                                                                      :params (vec missing)}))
-                 (resolve (select-keys choices params))))
+               (cond
+                 (seq missing) (reject (ex-info "A parameter site was not reached" {:type ::missing-params
+                                                                                    :params (vec missing)}))
+                 misplaced (reject (ex-info "SMC² parameters must precede every inner latent site"
+                                            {:type ::parameter-prior-not-prefix :address misplaced}))
+                 :else (resolve (select-keys choices params))))
              reject)))))
 
 (defn- invalid-parameters?
@@ -85,12 +78,45 @@
   (fn [resolve reject]
     (operation resolve (fn [e] (if (invalid-parameters? e) (resolve nil) (reject e))))))
 
+(defn- parameter-prefix-policy
+  "Check every conditioned execution, including proposal branches and forks.
+  World-local trace entries follow forks; a shared callback atom would not."
+  [policy params]
+  (with-meta
+    (fn [savepoint old-entry]
+      (when (and (= itrace/choose-site (:savepoint/site savepoint))
+                 (not (contains? params (:savepoint/address savepoint))))
+        (let [entries (:trace/entries (rtp/get-state (:savepoint/world savepoint) [:savepoint/trace]))
+              missing (remove #(= itrace/choose-site (:site (get entries %))) params)]
+          (when (seq missing)
+            (throw (ex-info "SMC² parameters must precede every inner sample site"
+                            {:type ::parameter-prior-not-prefix
+                             :address (:savepoint/address savepoint) :params (vec missing)})))))
+      (policy savepoint old-entry))
+    (meta policy)))
+
 (defn- conditioned
-  "SMC options that hold the parameter sites at θ, over the caller's policy."
-  [theta opts]
-  (let [base (some-> (:policy opts) itrace/policy-options)]
+  "SMC options holding θ. SMC² additionally guards its prior-prefix contract;
+  ordinary PMMH keeps the full joint estimate and needs no prior cancellation."
+  [theta opts & [prefix-params]]
+  (let [base (some-> (:policy opts) itrace/policy-options)
+        policy (itrace/policy (update base :constraints merge theta))]
     (assoc (dissoc opts :params :propose :scale :ess-target :moves :n-theta :n-x :burn)
-           :policy (itrace/policy (update base :constraints merge theta)))))
+           :policy (if prefix-params (parameter-prefix-policy policy prefix-params) policy))))
+
+(defn- parameter-step!
+  "Do not publish a stream barrier or completion that skipped a parameter."
+  [step params]
+  (doseq [[particle _] (m/get-particles (:measure step))]
+    (let [t (m/get-trace particle)
+          missing (remove #(contains? t %) params)]
+      (when (seq missing)
+        (throw (ex-info "SMC² parameters must precede the first inner stream barrier"
+                        {:type ::parameter-prior-not-prefix :params (vec missing)})))))
+  step)
+
+(defn- checked-step [operation params]
+  (then operation (fn [step resolve _] (resolve (parameter-step! step params)))))
 
 (defn- log-prior
   "Σ log p of the parameter sites in a particle of `measure`: what the
@@ -143,6 +169,9 @@
   [model n iterations {:keys [params propose scale burn] :or {scale 0.1 burn 0} :as opts}]
   (when-not (seq params)
     (throw (ex-info "pmmh needs :params" {:type ::no-params})))
+  (when (or (= :fork (:world-policy opts)) (:world-opts opts))
+    (throw (ex-info "Parameter filters currently use fresh inner worlds"
+                    {:type ::unsupported-world-policy :supported #{:fresh}})))
   (fn [resolve reject]
     (let [seed (or (:seed opts) (random/fresh-seed))
           propose (or propose (random-walk (zipmap params (repeat scale))))
@@ -195,7 +224,9 @@
   "SMC² over the parameter sites of `model` (a spin whose data arrive at
   stream sites, as for `foerster.smc/stream`). Options:
 
-    :params      the parameter addresses (required)
+    :params      the parameter addresses (required); all must be sampled
+                 before every other sample/observation and the first stream
+                 barrier, on every initial or proposed execution
     :n-theta     θ-particles (default 50)
     :n-x         particles of each inner filter (default 100)
     :ess-target  resample and move the θ-particles when their ESS falls below
@@ -213,129 +244,148 @@
           :or {n-theta 50 n-x 100 ess-target 0.5 moves 1 scale 2.38} :as opts}]
   (when-not (seq params)
     (throw (ex-info "smc2 needs :params" {:type ::no-params})))
-  (fn [resolve reject]
-    (let [seed (or (:seed opts) (random/fresh-seed))
+  (when (or (= :fork (:world-policy opts)) (:world-opts opts))
+    (throw (ex-info "Parameter filters currently use fresh inner worlds"
+                    {:type ::unsupported-world-policy :supported #{:fresh}})))
+  (when-let [option (some #(when (get opts %) %) [:anchors :retained :copy?])]
+    (throw (ex-info "SMC² requires independently forkable active inner filters"
+                    {:type ::nonforkable-inner-filter :option option})))
+  (cursor/operation
+   (fn [resolve reject]
+     (let [resources (scope/create)
+           seed (or (:seed opts) (random/fresh-seed))
           ;; each inner filter's seed comes from this run's and a fixed key:
           ;; they start inside concurrent callbacks
-          inner (fn [theta key]
-                  (smc/stream model n-x (assoc (conditioned theta opts)
-                                               :seed (sp/derive-seed seed ::inner key))))
+           inner (fn [theta key]
+                   (checked-step
+                    (smc/stream model n-x (assoc (conditioned theta opts params)
+                                                 :inference-scope resources
+                                                 :seed (sp/derive-seed seed ::inner key))) params))
           ;; a fresh inner filter for θ fed the data so far
-          refit (fn [theta ys key]
-                  (or-impossible
-                   (fn [res rej]
-                     ((inner theta key)
-                      (fn [step0]
-                        (letfn [(feed [step [y & more :as left]]
-                                  (if (empty? left)
-                                    (res step)
-                                    (((:push step) y) #(feed % more) rej)))]
-                          (feed step0 ys)))
-                      rej))))
-          close-all! (fn [ps] (doseq [p ps] ((:close (:step p)))))
-          started (atom [])
-          stats (atom {:moves 0 :accepted 0})]
-      (letfn [(measure [ps lw log-z]
-                (assoc (m/empirical (mapv (fn [p w] [(m/sample-particle (:theta p) {}) w]) ps lw))
-                       :log-normalizer log-z
-                       :moves (:moves @stats) :accepted (:accepted @stats)))
-              (step-of [ps lw log-z ys]
-                (let [done? (every? (comp :done? :step) ps)]
-                  (cond-> {:measure (measure ps lw log-z)
-                           :done? done?
-                           :close (fn [] (close-all! ps))}
-                    (not done?) (assoc :push (fn [y] (push ps lw log-z (conj ys y) y))))))
-              (push [ps lw log-z ys y]
-                (fn [res rej]
-                  ((all-settled (count ps) (fn [i r j]
-                                             (let [step (:step (nth ps i))]
+           refit (fn [theta ys key]
+                   (or-impossible
+                    (fn [res rej]
+                      ((inner theta key)
+                       (fn [step0]
+                         (letfn [(feed [step [y & more :as left]]
+                                   (if (empty? left)
+                                     (res step)
+                                     ((checked-step ((:push step) y) params) #(feed % more) rej)))]
+                           (feed step0 ys)))
+                       rej))))
+           stats (atom {:moves 0 :accepted 0})]
+       (letfn [(fail [reject error]
+                 ;; Sessions register before starting. Closing the owning scope
+                 ;; cancels and joins all children, including concurrent starts.
+                 ((scope/close! resources)
+                  (fn [_] (reject error))
+                  (fn [cleanup]
+                    (reject (ex-info "SMC² failed and cleanup also failed"
+                                     {:type ::scope/cleanup-failed :cleanup cleanup} error)))))
+               (measure [ps lw log-z]
+                 (assoc (m/empirical (mapv (fn [p w] [(m/sample-particle (:theta p) {}) w]) ps lw))
+                        :log-normalizer log-z
+                        :moves (:moves @stats) :accepted (:accepted @stats)))
+               (step-of [ps lw log-z ys]
+                 (let [done? (every? (comp :done? :step) ps)]
+                   (cond-> {:measure (measure ps lw log-z)
+                            :done? done?
+                            :close (fn [] ((scope/close! resources) (fn [_]) (fn [_])))
+                            :close-operation (scope/close! resources)}
+                     (not done?) (assoc :push (fn [y] (push ps lw log-z (conj ys y) y))))))
+               (push [ps lw log-z ys y]
+                 (fn [res reject]
+                   (let [rej #(fail reject %)]
+                     ((execution/parallel nil (count ps) (fn [i r j]
+                                                           (let [step (:step (nth ps i))]
                                                ;; a population that has finished
                                                ;; takes no more data
-                                               (if-let [push (:push step)]
-                                                 ((push y) r j)
-                                                 (r step)))))
-                   (fn [steps]
-                     (try
-                       (let [incs (mapv (fn [p s]
-                                          (let [z (m/log-marginal (:measure s))]
-                                            (if (= ##-Inf z) ##-Inf (- z (:log-z p)))))
-                                        ps steps)
-                             ps (mapv (fn [p s] (assoc p :step s :log-z (m/log-marginal (:measure s)))) ps steps)
-                             lw (mapv + lw incs)
-                             mass (weights/from-log lw log-z)
-                             selection (weights/normalize lw {:zero :uniform})]
-                         (if (< (m/compute-ess selection) (* ess-target (count ps)))
-                           ((rejuvenate ps selection (:log-mass mass) ys)
-                            res rej)
-                           (res (step-of ps lw log-z ys))))
-                       (catch #?(:clj Throwable :cljs :default) e (rej e))))
-                   (fn [e] (close-all! ps) (rej e)))))
-              (rejuvenate [ps weights log-z ys]
+                                                             (if-let [push-step (:push step)]
+                                                               ((push-step y) r j)
+                                                               (r step)))))
+                      (fn [steps]
+                        (try
+                          (doseq [step steps] (parameter-step! step params))
+                          (let [incs (mapv (fn [p s]
+                                             (let [z (m/log-marginal (:measure s))]
+                                               (if (= ##-Inf z) ##-Inf (- z (:log-z p)))))
+                                           ps steps)
+                                ps (mapv (fn [p s] (assoc p :step s :log-z (m/log-marginal (:measure s)))) ps steps)
+                                lw (mapv + lw incs)
+                                mass (weights/from-log lw log-z)
+                                selection (weights/normalize lw {:zero :uniform})]
+                            (if (< (m/compute-ess selection) (* ess-target (count ps)))
+                              ((rejuvenate ps selection (:log-mass mass) ys)
+                               res rej)
+                              (res (step-of ps lw log-z ys))))
+                          (catch #?(:clj Throwable :cljs :default) e (rej e))))
+                      rej))))
+               (rejuvenate [ps weights log-z ys]
                 ;; resample: a duplicate forks its inner population
-                (fn [res rej]
-                  (let [k (count ys)
-                        ancestors (random/with-stream* seed [::resample k]
-                                    #(m/systematic-resample weights (count ps)))
-                        firsts (atom #{})
-                        pick (fn [i a res' rej']
-                               (let [p (nth ps a)]
-                                 (if (and (contains? (first (swap-vals! firsts conj a)) a)
-                                          ;; a finished population takes no more
-                                          ;; data: duplicates may share it
-                                          (:fork (:step p)))
-                                   (((:fork (:step p))) #(res' (assoc p :step %)) rej')
-                                   (res' p))))]
+                 (fn [res rej]
+                   (let [k (count ys)
+                         ancestors (random/with-stream* seed [::resample k]
+                                     #(m/systematic-resample weights (count ps)))
+                         firsts (atom #{})
+                         pick (fn [_ a res' rej']
+                                (let [p (nth ps a)]
+                                  (if-not (contains? (first (swap-vals! firsts conj a)) a)
+                                    (res' p)
+                                    (cond
+                                      (:done? (:step p)) (res' p)
+                                      (:fork (:step p)) (((:fork (:step p))) #(res' (assoc p :step %)) rej')
+                                      :else (rej' (ex-info "An active inner filter cannot be shared by outer particles"
+                                                           {:type ::nonforkable-inner-filter}))))))]
                     ;; give back the populations no one descends from
-                    (doseq [i (range (count ps)) :when (not (some #{i} ancestors))]
-                      ((:close (:step (nth ps i)))))
-                    ((all-settled (count ancestors) (fn [i r j] (pick i (nth ancestors i) r j)))
-                     (fn [resampled]
-                       (let [scales (population-scales (map :theta resampled) scale)
-                             propose (random-walk scales)]
-                         ((all-settled (count resampled)
-                                       (fn [i r j] ((move (nth resampled i) propose ys [k i] moves) r j)))
-                          (fn [moved]
-                            (res (step-of moved (vec (repeat (count moved) 0.0)) log-z ys)))
-                          rej)))
-                     rej))))
-              (move [p propose ys key n]
+                     (doseq [i (range (count ps)) :when (not (some #{i} ancestors))]
+                       ((:close (:step (nth ps i)))))
+                     ((execution/parallel nil (count ancestors) (fn [i r j] (pick i (nth ancestors i) r j)))
+                      (fn [resampled]
+                        (let [scales (population-scales (map :theta resampled) scale)
+                              propose (random-walk scales)]
+                          ((execution/parallel nil (count resampled)
+                                               (fn [i r j] ((move (nth resampled i) propose ys [k i] moves) r j)))
+                           (fn [moved]
+                             (res (step-of moved (vec (repeat (count moved) 0.0)) log-z ys)))
+                           rej)))
+                      rej))))
+               (move [p propose ys key n]
                 ;; n PMMH steps of one θ-particle on the data so far
-                (fn [res rej]
-                  (if (zero? n)
-                    (res p)
-                    (let [{theta' :theta lr :log-ratio}
-                          (random/with-stream* seed [::propose key n] #(propose (:theta p)))]
-                      ((refit theta' ys [key n])
-                       (fn [step']
-                         (let [log-z' (if step' (m/log-marginal (:measure step')) ##-Inf)
-                               ratio (+ (- log-z' (:log-z p)) (or lr 0.0))
-                               u (random/with-stream* seed [::accept key n] m/uniform01)
-                               accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
-                                            (< (Math/log u) ratio))]
-                           (swap! stats #(-> % (update :moves inc)
-                                             (update :accepted + (if accept? 1 0))))
-                           (if accept?
-                             (do ((:close (:step p)))
-                                 ((move {:theta theta' :step step' :log-z log-z'} propose ys key (dec n)) res rej))
-                             (do (when step' ((:close step')))
-                                 ((move p propose ys key (dec n)) res rej)))))
-                       rej)))))]
-        ((all-settled n-theta
-                      (fn [i res rej]
-                        ((then (prior-draw model params opts)
-                               (fn [theta r j]
-                                 ((inner theta [::init i])
-                                  (fn [step]
-                                    (let [p {:theta theta :step step
-                                             :log-z (m/log-marginal (:measure step))}]
-                                      (swap! started conj p)
-                                      (r p)))
-                                  j)))
-                         res rej)))
-         (fn [ps]
+                 (fn [res rej]
+                   (if (zero? n)
+                     (res p)
+                     (let [{theta' :theta lr :log-ratio}
+                           (random/with-stream* seed [::propose key n] #(propose (:theta p)))]
+                       ((refit theta' ys [key n])
+                        (fn [step']
+                          (let [log-z' (if step' (m/log-marginal (:measure step')) ##-Inf)
+                                ratio (+ (- log-z' (:log-z p)) (or lr 0.0))
+                                u (random/with-stream* seed [::accept key n] m/uniform01)
+                                accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
+                                             (< (Math/log u) ratio))]
+                            (swap! stats #(-> % (update :moves inc)
+                                              (update :accepted + (if accept? 1 0))))
+                            (if accept?
+                              (do ((:close (:step p)))
+                                  ((move {:theta theta' :step step' :log-z log-z'} propose ys key (dec n)) res rej))
+                              (do (when step' ((:close step')))
+                                  ((move p propose ys key (dec n)) res rej)))))
+                        rej)))))]
+         ((execution/parallel nil n-theta
+                              (fn [i res rej]
+                                ((then (prior-draw model params (assoc opts :inference-scope resources) true)
+                                       (fn [theta r j]
+                                         ((inner theta [::init i])
+                                          (fn [step]
+                                            (let [p {:theta theta :step step
+                                                     :log-z (m/log-marginal (:measure step))}]
+                                              (r p)))
+                                          j)))
+                                 res rej)))
+          (fn [ps]
            ;; a θ-particle starts weighted by what the program observed before
            ;; its first stream site: its inner evidence without the prior
            ;; it was drawn from
-           (resolve (step-of ps (mapv (fn [p] (- (:log-z p) (log-prior (:measure (:step p)) params))) ps)
-                             0.0 [])))
-         (fn [e] (close-all! @started) (reject e)))))))
+            (resolve (step-of ps (mapv (fn [p] (- (:log-z p) (log-prior (:measure (:step p)) params))) ps)
+                              0.0 [])))
+          (fn [e] (fail reject e))))))))

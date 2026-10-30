@@ -7,6 +7,7 @@
             [org.replikativ.foerster.kernel :as k]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.trace-owner :as owner]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -39,9 +40,9 @@
                                           p (await (ip/move scope p (k/single-site-mh-kernel 3)))]
                                       (ip/finish scope p))))))]
         (is (= 128 @closed))
-        (is (= 128 (count (m/get-particles (:measure result)))))
+        (is (= 128 (count (m/get-particles result))))
         (is (< (Math/abs (- (Math/log 0.41) (:log-mass result))) 0.15))
-        (is (< (Math/abs (- (:log-mass result) (m/log-marginal (:measure result)))) 1e-10))
+        (is (< (Math/abs (- (:log-mass result) (m/log-marginal result))) 1e-10))
         (is (= [:advance :resample :move] (mapv :operation (:history result))))
         (is (= :unverified (get-in result [:inference-contract :normalizer :status])))))))
 
@@ -60,7 +61,7 @@
                                       exact (ip/invariant-kernel next (fn [_] (d/draw (d/flip (/ 0.27 0.41)))))
                                       p (await (ip/move scope p exact))]
                                   (ip/finish scope p))))))]
-    (is (= 256 (count (m/get-particles (:measure result)))))
+    (is (= 256 (count (m/get-particles result))))
     (is (< (Math/abs (- (Math/log 0.41) (:log-mass result))) 0.15))
     (is (= :unverified (get-in result [:inference-contract :normalizer :status])))))
 
@@ -140,9 +141,106 @@
                                   (ip/finish scope p))))))]
     (is (= @before (mapv vec @source)))
     (is (= (mapv (comp - first) @before)
-           (mapv (comp m/get-value first) (m/get-particles (:measure result)))))))
+           (mapv (comp m/get-value first) (m/get-particles result))))))
 
 (deftest unsupported-options-and-unscored-proposals-fail-before-running
   (is (thrown? clojure.lang.ExceptionInfo (ip/run {:world-opts {:systems :all}} identity)))
   (is (thrown? clojure.lang.ExceptionInfo (ip/trace-target nil {:world-opts {:systems :all}})))
   (is (thrown? clojure.lang.ExceptionInfo (ip/value-target identity identity nil))))
+
+(deftest long-moves-reclaim-intermediate-traces-before-completion
+  (let [reclaimed (atom [])
+        reclaim! owner/reclaim!]
+    (with-redefs [owner/reclaim! (fn [dropped live]
+                                   (swap! reclaimed conj {:dropped (count dropped) :live (count live)})
+                                   (reclaim! dropped live))]
+      (let [result (run #(ip/run {:seed 42}
+                                 (fn [scope]
+                                   (spin
+                                    (let [p (await (ip/initialize scope (ip/trace-target (coin-model) {:beta 1.0}) 4))
+                                          p (await (ip/move scope p (k/cycle 2 [(k/single-site-mh-kernel 10)])))]
+                                      (ip/finish scope p))))))]
+        (is (= 4 (count (m/get-particles result))))
+        ;; Every completed inner move offers its displaced state immediately;
+        ;; retaining all 80 visited traces until the outer move ends would leak
+        ;; worlds for the duration of a long programmable transition.
+        (is (>= (count @reclaimed) 81))
+        (is (every? #(= 1 (:dropped %)) (take 80 @reclaimed)))
+        (is (every? #(= 4 (:live %)) @reclaimed))))))
+
+(deftest trace-forks-survive-source-retirement-and-stale-handles-fail
+  (let [stale (atom nil)
+        result (run #(ip/run {:seed 31}
+                             (fn [scope]
+                               (spin
+                                (let [source (await (ip/initialize scope (ip/trace-target (coin-model)) 6))
+                                      child (await (ip/fork scope source))
+                                      parent (ip/advance scope source (ip/temperature (:target source) 1.0))
+                                      _ (reset! stale (try (ip/finish scope source) nil
+                                                           (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
+                                      _ (ip/finish scope parent)
+                                      child (await (ip/resample scope child))
+                                      child (ip/advance scope child (ip/temperature (:target child) 1.0))
+                                      child (await (ip/move scope child (k/single-site-mh-kernel 4)))]
+                                  (ip/finish scope child))))))]
+    (is (= :org.replikativ.foerster.program/stale-population @stale))
+    (is (= 6 (count (m/get-particles result))))
+    (is (every? boolean? (map (comp m/get-value first) (m/get-particles result))))
+    (is (Double/isFinite (m/log-marginal result)))))
+
+(deftest population-moves-reject-nested-warmup
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"frozen tuning"
+                        (run #(ip/run (fn [scope]
+                                        (spin
+                                         (let [p (await (ip/initialize scope (ip/trace-target (coin-model) {:beta 1.0}) 2))
+                                               p (await (ip/move scope p
+                                                                 (k/cycle 1 [(k/single-site-mh-kernel 1)
+                                                                             (k/random-walk-mh-kernel 2 {:burn 1})])))]
+                                           (ip/finish scope p)))))))))
+
+(deftest transport-requires-resampling-away-zero-weight-slots
+  (let [draws (atom false)
+        source (ip/value-target #(if % 0.0 ##-Inf) #(swap! draws not) (constantly (- (Math/log 2.0))))
+        destination (ip/retarget source :next (constantly 0.0))
+        kernel (ip/transport-kernel source destination
+                                    (fn [x] {:value x :log-q 0.0 :reverse nil})
+                                    (fn [_ _] 0.0))]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"resample first"
+                          (run #(ip/run (fn [scope]
+                                          (spin
+                                           (let [p (await (ip/initialize scope source 2))
+                                                 p (await (ip/transport scope p destination kernel))]
+                                             (ip/finish scope p))))))))))
+
+(deftest live-handles-cannot-escape-their-resource-scope
+  (let [escaped (atom nil)]
+    (run #(ip/run (fn [scope]
+                    (spin
+                     (let [p (await (ip/initialize scope (ip/trace-target (coin-model)) 2))]
+                       (reset! escaped [scope p])
+                       (ip/finish scope p))))))
+    (let [[scope p] @escaped]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"no longer live"
+                            (ip/finish scope p))))))
+
+(deftest rejected-transport-preconditions-leave-trace-populations-usable
+  (let [rejected (atom nil)
+        result (run #(ip/run {:seed 42}
+                             (fn [scope]
+                               (spin
+                                (let [model (spin (let [h (sample (d/flip 0.5) :id :h)]
+                                                    (observe (d/flip (if h 1.0 0.0)) true :id :y)
+                                                    h))
+                                      source (ip/trace-target model {:beta 1.0})
+                                      destination (ip/temperature source 1.0)
+                                      kernel (ip/transport-kernel source destination
+                                                                  (fn [_ _] {:updates {} :log-q 0.0 :reverse nil})
+                                                                  (fn [_ _] 0.0))
+                                      p (await (ip/initialize scope source 16))
+                                      _ (try (await (ip/transport scope p destination kernel))
+                                             (catch clojure.lang.ExceptionInfo e
+                                               (reset! rejected (:type (ex-data e)))))
+                                      p (await (ip/resample scope p))]
+                                  (ip/finish scope p))))))]
+    (is (= :org.replikativ.foerster.program/zero-weight-transport @rejected))
+    (is (every? true? (map (comp m/get-value first) (m/get-particles result))))))

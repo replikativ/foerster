@@ -29,7 +29,7 @@ is a handler that decides, scores, forks, copies or abandons those savepoints:
 - **one call shape** for every method: `(infer/infer model {:method :smc
   :particles 1000})`
 - **[programmable populations](doc/inference-programs.org)**: scoped initialization,
-  target advancement, resampling and invariant moves over traces or numerical
+  target advancement, resampling, invariant moves and scored transport over traces or numerical
   values, composed using ordinary `spin` control flow
 - **exact enumeration** of finite discrete models over forked worlds
 - **SMC** and streaming SMC, importance sampling, tempered SMC (also

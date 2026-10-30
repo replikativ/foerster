@@ -1,6 +1,7 @@
 (ns org.replikativ.foerster.amortized-test
   (:refer-clojure :exclude [await])
-  (:require #?(:clj [clojure.test :refer [deftest is]]
+  (:require [clojure.set :as set]
+            #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer-macros [deftest is async]])
             [org.replikativ.foerster.amortized :as a]
             [org.replikativ.foerster.block :as block]
@@ -35,11 +36,10 @@
     ((factory) (fn [value] (check value) (done))
                (fn [error] (is false (str error)) (done)))))
 
-(defn sync-case [factory check]
-  #?(:clj (let [p (promise)]
+#?(:clj (defn sync-case [factory check]
+          (let [p (promise)]
             (run-case factory #(deliver p %) (fn []))
-            (check (deref p 30000 ::timeout)))
-     :cljs nil))
+            (check (deref p 30000 ::timeout)))))
 
 (deftest numeric-and-finite-schema-round-trips
   (doseq [[descriptor value] [[{:type :real :shape [2 2]} [[1.0 2.0] [3.0 4.0]]]
@@ -210,7 +210,7 @@
         check (fn [{:keys [record first-record expected initial passed failed resumed]}]
                 (is (= 4 (count (:rows first-record))))
                 (is (= expected (:validation first-record)))
-                (is (empty? (clojure.set/intersection (set (:rows first-record)) (set expected))))
+                (is (empty? (set/intersection (set (:rows first-record)) (set expected))))
                 (is (= expected (:rows record)))
                 (is (= :unvalidated (:deployment-status initial)))
                 (is (= :validation-passed (:deployment-status passed)))

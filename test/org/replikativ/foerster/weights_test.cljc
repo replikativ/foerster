@@ -1,6 +1,6 @@
 (ns org.replikativ.foerster.weights-test
-  (:require #?(:clj [clojure.test :refer [deftest is testing]]
-               :cljs [cljs.test :refer-macros [deftest is testing]])
+  (:require #?(:clj [clojure.test :refer [deftest is]]
+               :cljs [cljs.test :refer-macros [deftest is]])
             [org.replikativ.foerster.weights :as w]))
 
 (defn- near? [a b] (< (Math/abs (- a b)) 1e-10))

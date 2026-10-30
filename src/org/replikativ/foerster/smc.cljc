@@ -15,7 +15,10 @@
 
   Worlds are forks of savepoints, so particles are frozen, coherent worlds
   (see docs/forking.md) and inherit whatever world state the program holds."
-  (:require [org.replikativ.spindel.effects.savepoint :as sp]
+  (:require [org.replikativ.foerster.scope :as scope]
+            [org.replikativ.foerster.cursor :as cursor]
+            [org.replikativ.foerster.transport :as transport]
+            [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.engine.protocols :as rtp]
@@ -23,6 +26,7 @@
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.foerster.derive :as derive]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.particle-mcmc :as pmcmc]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.dist :as dist]
             [replikativ.logging :as log]))
@@ -401,15 +405,18 @@
         ;; last one to finish closes it
         leases (or (:leases adopt) (atom 1))
         forks (atom 0)
+        allocate-session #(sp/open! root (merge {:purpose :smc
+                                                 :seed seed
+                                                 :fork-opts {:systems :none}
+                                                 :retain-released? false}
+                                                (dissoc opts :resample-threshold :policy :executor :retained :enumerate
+                                                        :resampling :genealogy? :smcp3 :batch
+                                                        :ancestor-sampling? :root :copy? :anchors :rejuvenate :adopt
+                                                        :inference-scope ::retained-paths)))
         session (or (:session adopt)
-                    (sp/open! root (merge {:purpose :smc
-                                           :seed seed
-                                           :fork-opts {:systems :none}
-                                           :retain-released? false}
-                                          (dissoc opts :resample-threshold :policy :executor :retained :enumerate
-                                                  :resampling :genealogy? :smcp3 :batch
-                                                  :ancestor-sampling? :root :copy? :anchors :rejuvenate :adopt
-                                                  ::retained-paths))))
+                    (if-let [resources (:inference-scope opts)]
+                      (scope/acquire! resources allocate-session sp/close!)
+                      (allocate-session)))
         ;; {:parked {slot {:sp sp :value v}}  at an observe (or a supplied stream
         ;;                                    site), resumed with v after the barrier
         ;;  :streaming {slot sp}               at a stream site, waiting for a value
@@ -647,8 +654,9 @@
                   (if (empty? updates)
                     ;; staying is a move too: its densities still weigh
                     (do (rtp/swap-state! world0 [:inference :log-weight]
-                                         (constantly (+ w0 ((:backward smcp3) (itrace/choices t0) reverse)
-                                                        (- (or log-q 0.0)) (or log-jacobian 0.0))))
+                                         (constantly (+ w0 (transport/correction 0.0 (or log-q 0.0)
+                                                                                 ((:backward smcp3) (itrace/choices t0) reverse)
+                                                                                 log-jacobian))))
                         (done entry))
                     (let [from (trace/earliest t0 (keys updates))
                           _ (when-let [fixed (seq (filter #(let [n (:note (get-in t0 [:trace/entries %]))]
@@ -681,10 +689,9 @@
                              (do (trace/release! t1 t0)
                                  (rtp/swap-state! world0 [:inference :log-weight] (constantly ##-Inf))
                                  (done entry))
-                             (let [increment (+ (itrace/mh-log-ratio t0 t1 (constantly 0.0) from)
-                                                ((:backward smcp3) (itrace/choices t1) reverse)
-                                                (- log-q)
-                                                (or log-jacobian 0.0))
+                             (let [increment (transport/correction (itrace/mh-log-ratio t0 t1 (constantly 0.0) from)
+                                                                   log-q ((:backward smcp3) (itrace/choices t1) reverse)
+                                                                   log-jacobian)
                                    w1 (:trace/world t1)]
                                (rtp/swap-state! w1 [:inference :slot] (constantly slot))
                                (rtp/swap-state! w1 [:inference :log-weight] (constantly (+ w0 increment)))
@@ -1018,7 +1025,7 @@
        ;; conditional filters on one reference) or copied worlds
        :fork (when-not (or anchors retained copy?)
                (fn [callbacks]
-                 (let [{:keys [parked streaming] :as st} @state]
+                 (let [st @state]
                    (when-not (:idle? st)
                      (throw (ex-info "Only a population waiting at stream sites can be forked"
                                      {:type ::fork-while-running})))
@@ -1120,7 +1127,9 @@
                        (fn []
                          (let [[res _] @waiting]
                            (res (cond-> {:measure m :done? done?
-                                         :close (fn [] ((:close! (controller))))}
+                                         :close (fn [] ((:close! (controller))))
+                                         :close-operation (fn [resolve _]
+                                                            ((:close! (controller)) #(resolve nil)))}
                                   (not done?)
                                   (assoc :push (fn [y]
                                                  (fn [res' rej']
@@ -1157,108 +1166,32 @@
   Each push costs the particles' work up to their next stream site; nothing
   already seen is re-run. `opts` as for `smc`."
   [model n & [opts]]
-  (stream-steps (fn [callbacks] (run-particles model n opts callbacks))))
+  (cursor/operation (stream-steps (fn [callbacks] (run-particles model n opts callbacks)))))
 
 ;; =============================================================================
 ;; Particle MCMC on savepoint SMC
 ;; =============================================================================
 
-(defn- normalized
-  "A measure's particles with their weights normalized to sum to one (a
-  sweep of impossible particles: all zero)."
-  [measure]
-  (let [ps (m/get-particles measure)
-        lse (m/log-sum-exp (mapv second ps))]
-    ;; a sweep of impossible particles keeps its zero weights
-    (if (= ##-Inf lse)
-      ps
-      (mapv (fn [[s lw]] [s (- lw lse)]) ps))))
-
-(defn retained-choices
-  "{address value} of the unobserved sample sites of `trace` (a Sample's):
-  the `:retained` of a conditional sweep that keeps that trajectory."
-  [trace]
-  (into {} (keep (fn [[a e]] (when-not (or (:observed? e) (:deterministic? e)) [a (:value e)]))) trace))
-
-(defn- choices-of [sample] (retained-choices (m/get-trace sample)))
-
-(defn- sweeps
-  "Run `step` — (fn [state]) -> CPS resolving [state' samples] — `k` times,
-  pooling the samples. Resolves an EmpiricalMeasure."
-  [k init step]
-  (fn [resolve reject]
-    (letfn [(go [i state acc]
-                (if (= i k)
-                  (resolve (m/markov-measure acc))
-                  ((step state)
-                   (fn [[state' samples]] (go (inc i) state' (into acc samples)))
-                   reject)))]
-      (go 0 init []))))
-
-(defn- sweep-seeds
-  "[seed (fn [key] opts)]: the run's seed — `opts`' `:seed`, or a fresh one
-  — and the options of its sweep `key`, whose seed derives from it, so
-  every sweep draws afresh and `:seed` fixes them all."
-  [opts]
-  (let [seed (or (:seed opts) (random/fresh-seed))]
-    [seed (fn [key] (assoc opts :seed (sp/derive-seed seed ::sweep key)))]))
+(defn- particle-chain [method roles model n iterations opts]
+  (method
+   (fn [key retained seed]
+     (smc model n (cond-> (assoc opts :seed (sp/derive-seed seed ::sweep key))
+                    retained (assoc :retained retained))))
+   iterations (merge {:seed (:seed opts) :first-iteration 1} roles)))
 
 (defn pgibbs
-  "Particle Gibbs (Andrieu et al. 2010) as iterated conditional SMC: each
-  sweep keeps the trajectory drawn from the previous one, and every sweep's
-  particles are pooled, normalized per sweep. `opts` as for `smc`."
+  "Particle Gibbs over savepoint sweeps. Shared chain orchestration lives in
+  particle-mcmc; conditional SMC retains its specialized frontier semantics."
   [model n iterations & [opts]]
-  (fn [resolve reject]
-    (let [[seed sweep-opts] (sweep-seeds opts)
-          k (volatile! 0)
-          pick (fn [measure]
-                 (let [ps (m/get-particles measure)]
-                   (random/with-stream* seed [::pick (vswap! k inc)]
-                     #(choices-of (first (nth ps (m/sample-categorical
-                                                  (m/normalize-log-weights (mapv second ps)))))))))]
-      ((smc model n (sweep-opts :initial))
-       (fn [initial]
-         ((sweeps iterations (pick initial)
-                  (fn [retained]
-                    (fn [res rej]
-                      ((smc model n (assoc (sweep-opts @k) :retained retained))
-                       (fn [sweep] (res [(pick sweep) (normalized sweep)]))
-                       rej))))
-          resolve reject))
-       reject))))
+  (particle-chain pmcmc/pgibbs {:pick-key ::pick :initial-pick 1 :pick-offset 1}
+                  model n iterations opts))
 
 (defn pgas
-  "Particle Gibbs with ancestor sampling (Lindsten et al. 2014): `pgibbs`
-  whose retained particle redraws its ancestor at every barrier. Improves
-  mixing where plain particle Gibbs degenerates; costs a replay of the
-  retained future per parked particle per barrier."
+  "Particle Gibbs with ancestor sampling. Options as for pgibbs."
   [model n iterations & [opts]]
   (pgibbs model n iterations (assoc opts :ancestor-sampling? true)))
 
 (defn pimh
-  "Particle independent Metropolis-Hastings: each iteration proposes a fresh
-  SMC sweep and accepts it on the ratio of evidence estimates; the current
-  sweep's particles, normalized, are emitted every iteration. `opts` as for
-  `smc`."
+  "Particle independent MH over savepoint sweeps. Options as for smc."
   [model n iterations & [opts]]
-  (fn [resolve reject]
-    ;; each iteration's accept draws from its own stream of the chain's seed
-    (let [[seed sweep-opts] (sweep-seeds opts)
-          iteration (volatile! 0)]
-      ((smc model n (sweep-opts :initial))
-       (fn [initial]
-         ((sweeps iterations [(normalized initial) (m/log-marginal initial)]
-                  (fn [[current log-z]]
-                    (fn [res rej]
-                      ((smc model n (sweep-opts (inc @iteration)))
-                       (fn [proposed]
-                         (let [log-z' (m/log-marginal proposed)
-                               ratio (- log-z' log-z)
-                               u (random/with-stream* seed [::accept (vswap! iteration inc)]
-                                   m/uniform01)
-                               accept? (or (>= ratio 0.0) (< (Math/log u) ratio))
-                               state' (if accept? [(normalized proposed) log-z'] [current log-z])]
-                           (res [state' (first state')])))
-                       rej))))
-          resolve reject))
-       reject))))
+  (particle-chain pmcmc/pimh {:accept-key ::accept} model n iterations opts))

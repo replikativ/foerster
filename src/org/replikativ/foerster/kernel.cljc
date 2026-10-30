@@ -54,7 +54,7 @@
 
   (kernel-id [_] :prior)
 
-  (step [_ ctx checkpoint trace]
+  (step [_ _ctx checkpoint _trace]
     (let [{:keys [source options]} checkpoint
           {:keys [observe init]} options
           value (cond

@@ -7,7 +7,7 @@
             [org.replikativ.spindel.engine.addressing :refer [with-scope]]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.foerster.trace :as itrace]
-            [org.replikativ.foerster.effects :refer [sample observe]]
+            [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]

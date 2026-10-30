@@ -65,7 +65,7 @@
   "Encode ONE declared variable into numeric coordinates. Positive/interval
   values use log/logit; simplex uses additive log ratios in its interior;
   finite values use one-hot coordinates. Embeddings are observation features."
-  [{:keys [name type shape values bounds encoder] :as variable} value]
+  [{:keys [name type shape values bounds encoder]} value]
   (if (= type :finite)
     (do (when-not (some #(= value %) values)
           (fail "Value outside finite domain" {:variable name :value value}))
@@ -313,9 +313,9 @@
      (when-not (seq encoded) (fail "Training examples cannot be empty" {}))
      (let [payload (await ((:train backend) task encoded
                                             (assoc (dissoc options :examples :simulations :validation-examples :validation-simulations :posterior-validator)
-                                                   :validation-rows (mapv #(encode-row task %) held-out))))]
-       (let [fitted (artifact task backend payload)]
-         (if posterior-validator (await (validate fitted posterior-validator)) fitted))))))
+                                                   :validation-rows (mapv #(encode-row task %) held-out))))
+           fitted (artifact task backend payload)]
+       (if posterior-validator (await (validate fitted posterior-validator)) fitted)))))
 
 (defn resume
   "Continue training a live or thawed artifact. Reuses its simulator count and

@@ -2,7 +2,9 @@
   "A seeded run draws the same numbers however its particles and chains are
   scheduled: every draw made in a world reads a stream keyed by the world's
   seed and what is drawn."
-  (:require [clojure.walk :as walk]
+  (:require [clojure.string :as str]
+            [org.replikativ.spindel.engine.hash :as hash]
+            [clojure.walk :as walk]
             [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :refer [run-infer weighted-values]]
             [org.replikativ.foerster.core :as infer]
@@ -162,10 +164,10 @@
                                (str (long v)) v))
                      seed)
           _ (is (= canonical (#'org.replikativ.foerster.random/canonical seed)))
-          uuid (org.replikativ.spindel.engine.hash/content-hash
+          uuid (hash/content-hash
                 [:org.replikativ.foerster.random/stream
                  canonical])
-          hex (clojure.string/replace (str uuid) "-" "")
+          hex (str/replace (str uuid) "-" "")
           words (mapv #(Long/parseLong (subs hex (* 8 %) (* 8 (inc %))) 16)
                       (range 4))
           expected (if (every? zero? words) [1 0 0 0] words)

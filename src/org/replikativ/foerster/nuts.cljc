@@ -16,7 +16,8 @@
 
   The kernel is `(k/nuts-kernel iterations {:burn … :target-accept 0.8
   :max-depth 10})`: the first `:burn` iterations adapt and are dropped."
-  (:require [org.replikativ.foerster.block :as block]
+  (:require [org.replikativ.foerster.transition-context :as tc]
+            [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
@@ -261,10 +262,13 @@
 (defn- nuts-move
   "Move the block site at `address` by one NUTS transition and replay; the
   chain's adaptation state is in the atom `adaptation`."
-  [trace address iteration {:keys [burn target-accept max-depth metric constraints]} adaptation]
+  [trace address iteration {:keys [burn target-accept max-depth metric adaptation-iteration]
+                            :as context} adaptation]
   (fn [resolve reject]
     (try
-      (let [{q0 :value {dist :dist} :note} (get-in trace [:trace/entries address])
+      (tc/require-untempered! context :nuts)
+      (let [local-iteration (or adaptation-iteration iteration)
+            {q0 :value {dist :dist} :note} (get-in trace [:trace/entries address])
             dim (count q0)
             st (or (get @adaptation address)
                    {:eps 0.1 :da (da-init 0.1) :inv-metric (vec (repeat dim 1.0))
@@ -272,28 +276,33 @@
             {:keys [q g accept-stat divergent?] :as tr}
             (random/in-world-stream (:trace/world trace) [::transition address iteration]
                                     #(transition dist q0 (:eps st) (:inv-metric st) max-depth))
-            st' (if (< iteration burn)
-                  (cond-> (adapt st iteration q g accept-stat target-accept)
+            st' (if (< local-iteration burn)
+                  (cond-> (adapt st local-iteration q g accept-stat target-accept)
                     ;; warm-up over: the averaged step size
-                    (= (inc iteration) burn) (as-> s (assoc s :eps (Math/exp (:x-bar (:da s))))))
+                    (= (inc local-iteration) burn) (as-> s (assoc s :eps (Math/exp (:x-bar (:da s))))))
                   st)]
         (swap! adaptation assoc address st')
         (if (= q q0)
           (resolve {:trace trace :accepted? false :divergent? divergent? :stat tr})
-          (let [move (itrace/policy {:keep? true :constraints constraints
-                                     :draw (fn [sp _] (when (= address (:savepoint/address sp))
-                                                        {:value q :symmetric? true}))})]
-            ((trace/replay trace address move {:anchor? itrace/anchor?})
+          (let [move (tc/policy context (fn [sp _]
+                                          (when (= address (:savepoint/address sp))
+                                            {:value q :symmetric? true})))]
+            ((trace/replay trace address move (tc/replay-options context trace [::move address iteration]))
              (fn [proposed]
                (try
-                 (let [joint (- (itrace/log-joint proposed) (itrace/log-joint trace))
-                       own (- (get-in proposed [:trace/entries address :note :log-prob])
-                              (get-in trace [:trace/entries address :note :log-prob]))]
+                 (when (or (:trace/error proposed) (not (tc/at-frontier? context proposed)))
+                   (trace/release! proposed trace)
+                   (throw (ex-info "NUTS replay failed or left its declared frontier"
+                                   {:type ::invalid-replay :address address} (:trace/error proposed))))
+                 (let [entry-score (tc/entry-score context)
+                       joint (- (tc/score context proposed) (tc/score context trace))
+                       own (- (entry-score (get-in proposed [:trace/entries address]))
+                              (entry-score (get-in trace [:trace/entries address])))]
                    (when (or (:trace/error proposed) (> (Math/abs (double (- joint own))) 1e-6))
                      (trace/release! proposed trace)
                      (throw (ex-info "NUTS needs the block's complete conditional as its target: the move changed sites outside the block"
                                      {:type ::incomplete-target :address address :outside (- joint own)})))
-                   (trace/release! trace proposed)
+                   (tc/settle! context trace proposed true)
                    (resolve {:trace proposed :accepted? true :divergent? divergent? :stat tr}))
                  (catch #?(:clj Throwable :cljs :default) e (reject e))))
              reject))))
@@ -322,7 +331,8 @@
                       (if address
                         ((nuts-move t address iteration opts adaptation)
                          (fn [r]
-                           (when (and (:divergent? r) (>= iteration burn)) (swap! divergences inc))
+                           (when-let [visit (:on-visit chain-opts)] (visit r))
+                           (when (and (:divergent? r) (>= (or (:adaptation-iteration opts) iteration) burn)) (swap! divergences inc))
                            (go (:trace r) more (inc moves)
                                (conj stats (assoc (select-keys (:stat r) [:accept-stat :depth :n-leapfrog])
                                                   :divergent? (boolean (:divergent? r))))))
@@ -343,7 +353,9 @@
                                                       :select (fn [t' _]
                                                                 {:targets #{(m/pick-uniformly (others t'))}
                                                                  :log-selection #(- (Math/log (double (count (others %)))))})))
-                             (fn [r] (done (:trace r) (inc moves) (+ moves (if (:accepted? r) 1 0))))
+                             (fn [r]
+                               (when-let [visit (:on-visit chain-opts)] (visit r))
+                               (done (:trace r) (inc moves) (+ moves (if (:accepted? r) 1 0))))
                              reject)
                             (done t moves moves)))))]
             (go trace blocks 0 [])))))))

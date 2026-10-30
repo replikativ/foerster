@@ -3,7 +3,7 @@
   their anchors up to the observation they are parked at. The posterior stays
   exact, degeneracy falls, a lag window bounds the live anchors, and seeded
   runs reproduce."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]

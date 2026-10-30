@@ -21,11 +21,11 @@
   keys the caller names, so a sampler moved onto this engine keeps its
   draws."
   (:require [org.replikativ.foerster.weights :as weights]
+            [org.replikativ.foerster.population.path :as path]
+            [org.replikativ.foerster.execution :as execution]
             [org.replikativ.foerster.block-mh :as block-mh]
-            [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.trace :as itrace]
-            [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.trace :as trace]))
 
 (defn relative-cess
@@ -51,30 +51,6 @@
             (if (>= (relative-cess lw ls mid) target)
               (recur mid hi (inc i))
               (recur lo mid (inc i)))))))))
-
-(defn all-settled
-  "Run `(start i resolve reject)` for i < n together, spread over `executor`'s
-  threads (`executor/spread!`; on this thread when nil); resolves the results
-  in order, or rejects with the first failure."
-  [executor n start]
-  (fn [resolve reject]
-    (if (zero? n)
-      (resolve [])
-      (let [out (object-array n)
-            remaining (atom n)
-            failed? (atom false)
-            launch (fn [i]
-                     (start i
-                            (fn [v]
-                              (aset out i v)
-                              (when (zero? (swap! remaining dec))
-                                (resolve (vec out))))
-                            (fn [e]
-                              (when (compare-and-set! failed? false true)
-                                (reject e)))))]
-        (if executor
-          (ex/spread! executor n launch)
-          (dotimes [i n] (launch i)))))))
 
 (defn executor-of [trace] (:executor (:trace/world trace)))
 
@@ -112,10 +88,10 @@
   (fn [resolve reject]
     (let [distinct-qs (vec (distinct qs))
           policy (fn [q] (itrace/policy {:constraints {address q}}))]
-      ((all-settled (executor-of template) (count distinct-qs)
-                    (fn [i res rej]
-                      ((trace/replay template address (policy (nth distinct-qs i)) {:anchor? itrace/anchor?})
-                       res rej)))
+      ((execution/parallel (executor-of template) (count distinct-qs)
+                           (fn [i res rej]
+                             ((trace/replay template address (policy (nth distinct-qs i)) {:anchor? itrace/anchor?})
+                              res rej)))
        (fn [ts]
          (if-let [error (some :trace/error ts)]
            (reject (ex-info "The program failed on a final state" {:type ::model-failed} error))
@@ -142,35 +118,27 @@
   k's resampling ([k-resample k]) and chain i's moves ([k-move k i]), and
   `:positions?` (true): false keeps only the last position in `:positions`."
   [qs path {:keys [n waste-free scale max-steps seed stats keys positions?] :or {positions? true}}]
-  (let [steps-per-chain (if waste-free (dec waste-free) 1)
-        chains (if waste-free (quot n waste-free) n)
-        dim (count (first qs))
-        {:keys [start done? advance density exhausted]} path]
-    (loop [qs qs mass (weights/uniform (count qs)) pos start
-           positions [start] k 0]
-      (cond
-        (done? pos) {:qs qs :log-z (:log-mass mass) :positions positions}
-        (>= k max-steps) (throw (exhausted pos))
-        :else
-        (let [{pos' :pos inc-w :log-incr} (advance qs (:log-weights mass) pos)
-              mass' (weights/reweight mass inc-w)
-              selection (weights/selection mass')
-              ancestors (random/with-stream* seed [(:resample keys) k]
-                          #(m/systematic-resample selection chains))
-              starts (mapv #(nth qs %) ancestors)
-              scales (theta-scales starts scale)
-              f (density pos')
-              moved (vec (map-indexed
-                          (fn [i q0]
-                            (random/with-stream* seed [(:move keys) k i]
-                              #(loop [s 0 q q0 states []]
-                                 (if (= s steps-per-chain)
-                                   states
-                                   (let [{q' :q a :accepted} (block-mh/walk f q scales dim)]
-                                     (swap! stats (fn [st] (-> st (update :moves + dim) (update :accepted + a))))
-                                     (recur (inc s) q' (conj states q')))))))
-                          starts))
-              qs' (vec (mapcat (fn [start states] (if waste-free (into [start] states) states))
-                               starts moved))]
-          (recur qs' (weights/resampled mass' (count qs')) pos'
-                 (if positions? (conj positions pos') [pos']) (inc k)))))))
+  (let [dim (count (first qs))
+        backend {:move
+                 (fn [starts position k steps]
+                   (fn [resolve reject]
+                     (try
+                       (let [scales (theta-scales starts scale)
+                             f ((:density path) position)
+                             chains (mapv
+                                     (fn [i q0]
+                                       (random/with-stream* seed [(:move keys) k i]
+                                         #(loop [s 0 q q0 states []]
+                                            (if (= s steps) states
+                                                (let [{q' :q accepted :accepted} (block-mh/walk f q scales dim)]
+                                                  (swap! stats (fn [st] (-> st (update :moves + dim)
+                                                                            (update :accepted + accepted))))
+                                                  (recur (inc s) q' (conj states q')))))))
+                                     (range) starts)]
+                         (resolve {:chains chains}))
+                       (catch #?(:clj Throwable :cljs :default) e (reject e)))))}
+        result (path/run-sync
+                (path/run {:particles (vec qs) :mass (weights/uniform (count qs)) :position (:start path)}
+                          path backend {:n n :waste-free waste-free :seed seed :keys keys
+                                        :max-steps max-steps :positions? positions?}))]
+    {:qs (:particles result) :log-z (get-in result [:mass :log-mass]) :positions (:positions result)}))

@@ -631,19 +631,23 @@
   moves reports `:moves` and `:accepted-moves`, otherwise it is one move,
   accepted when `:accepted?`. A move's randomness is keyed by its number in
   the trace's world, so the moves made from one world need distinct numbers:
-  they are numbered from `:first-iteration`, or — when it is not given —
+  :iteration-stride (default 1) reserves that many RNG indices per outer
+  iteration, for composed transitions. They are numbered from
+  `:first-iteration`, or — when it is not given —
   from a counter the world keeps, so calling `mh-chain` again on the same
   trace (after a rejection, the world is the same) draws afresh."
   ([trace n] (mh-chain trace n nil))
-  ([trace n {:keys [on-step first-iteration] move :step :or {move mh-step} :as opts}]
+  ([trace n {:keys [on-step first-iteration iteration-stride] move :step
+             :or {move mh-step iteration-stride 1} :as opts}]
    (fn [resolve reject]
-     (let [first-iteration (or first-iteration
-                               (- (rtp/swap-state! (:trace/world trace) [:inference ::chain-moves] #(+ (or % 0) n))
-                                  n))]
+     (let [span (* n iteration-stride)
+           first-iteration (or first-iteration
+                               (- (rtp/swap-state! (:trace/world trace) [:inference ::chain-moves] #(+ (or % 0) span))
+                                  span))]
        (letfn [(step [current i moves accepted]
                  (if (= i n)
                    (resolve {:trace current :moves moves :accepted accepted})
-                   ((move current (assoc opts :iteration (+ first-iteration i)))
+                   ((move current (assoc opts :iteration (+ first-iteration (* i iteration-stride))))
                     (fn [{:keys [accepted?] next-trace :trace :as result}]
                       (when on-step (on-step result))
                       (step next-trace (inc i)

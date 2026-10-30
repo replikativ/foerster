@@ -2,7 +2,7 @@
   "PMMH and SMC² against exact answers: the observation noise s of a
   Gaussian random walk, whose likelihood the Kalman filter gives exactly, so
   its posterior and the evidence follow by quadrature over s."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]

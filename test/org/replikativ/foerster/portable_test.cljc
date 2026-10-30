@@ -83,9 +83,9 @@
 
 (deftest programmable-populations-are-portable
   (let [check (fn [result]
-                (is (= 64 (count (m/get-particles (:measure result)))))
+                (is (= 64 (count (m/get-particles result))))
                 (is (= [:advance :resample :move] (mapv :operation (:history result))))
-                (is (< (Math/abs (- (:log-mass result) (m/log-marginal (:measure result)))) 1e-10)))]
+                (is (< (Math/abs (- (:log-mass result) (m/log-marginal result))) 1e-10)))]
     #?(:clj (let [p (promise)]
               (run-spin custom-inference #(deliver p %) (fn []))
               (check (deref p 30000 ::timeout)))

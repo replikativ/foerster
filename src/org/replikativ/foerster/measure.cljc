@@ -4,7 +4,6 @@
   Measures represent probability distributions over execution traces.
   This is the foundation for compositional inference algorithms."
   (:require [org.replikativ.foerster.weights :as weights]
-            [replikativ.logging :as log]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.foerster.random :as random]))
 

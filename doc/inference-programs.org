@@ -31,19 +31,30 @@ engines share mass accounting; Markov transitions are a separate interface.
 =trace-target= initially targets the prior, beta=0. Each temperature changes the
 weight of observations/factors without changing the trace's state space.
 =advance= returns updated immutable bookkeeping; =initialize=, =resample= and
-=move= return awaitable computations. =finish= returns an InferenceResult with
-=:measure=, =:target=, =:log-mass=, =:inference-contract= and =:history=. =run= settles
+=move= return awaitable computations. =finish= returns a =PMeasure=, the same
+empirical measure used by built-in inference, enriched with =:target=,
+=:log-mass=, =:inference-contract= and =:history=. The result goes directly to
+=infer/query=, =infer/predict= and diagnostics; there is no =:measure= wrapper.
+For example, inside a caller's =spin=, =(infer/query (await (anneal model)) identity)=
+computes statistics of numeric model results. =run= settles
 all owned sessions before delivering the result, including on cancellation.
 A program must finish rather than return a live population.
 
-These targets are complete traces, not streaming observation prefixes. Only
-fresh execution worlds and single-site MH population moves are currently
-supported. Other built-in drivers retain their documented capabilities; this
-API does not silently import caller systems or run unsupported block transitions
-at the wrong temperature. Live traces remain owned until scope finalization;
-long runs can therefore retain substantial intermediate state. They are not
-serializable checkpoints. This initial API does not expose standalone transport
-or nested unbiased-evidence adapters.
+These targets are complete traces, not streaming observation prefixes, and
+currently use fresh execution worlds. Trace moves use the shared Markov
+transition interpreter, including =k/cycle= and =k/mixture=. Population moves
+require frozen tuning; warm-up belongs to a separate chain run. At intermediate
+temperatures, only transitions declaring tempered-target support are accepted.
+Unsupported block transitions are refused rather than run at the wrong target.
+
+A trace population is a live, versioned resource: advancing, resampling, moving,
+transporting or finishing consumes that version. Reusing an old version or
+starting concurrent operations on it fails. =(await (ip/fork scope p))= creates
+an independent population while keeping =p= usable; future random streams are
+independent. Value populations remain persistent snapshots, subject to the
+mutable-value copy contract below. Consumed trace state is reclaimed as it
+becomes unreachable from live populations and forks. Final scope cleanup joins
+all remaining resources. Live populations are not serializable checkpoints.
 
 * Persistent numerical values
 
@@ -72,6 +83,19 @@ resampling preserves the population average, not each ordered slot separately.
 Particle-specific RNG streams remain internal. This
 constructor is an extension contract, not an automatic proof. Built-in randomness
 should use =foerster.random= / =foerster.dist= so each particle has a keyed stream.
+
+* Scored transport
+
+=transport-kernel= binds forward and backward proposal laws to source and
+destination target identities. =(await (ip/transport scope p destination kernel))=
+proposes new particles and corrects each weight by the target-score difference,
+minus the forward log density, plus the backward log density and any supplied
+log Jacobian. Value transport may change dimension when these laws justify it.
+Trace transport retains its model representation and updates anchored latent
+choices; observed and constrained sites cannot be changed. Forward/backward
+support and Jacobians are the caller's obligations. This is a weighted proposal,
+not an invariant Markov move. Resample zero-weight source particles before
+transporting them.
 
 * What the outputs mean
 
@@ -107,21 +131,37 @@ estimation need separate contracts and retained inner state.
 
 * Consolidated implementation
 
-- =weights.cljc= owns stable math and normalized-weight / total-mass accounting.
-  Measure utilities delegate to it; vector SMC, trace tempering and SMC² use it.
+- =weights.cljc= owns stable normalization and normalized-weight / total-mass
+  accounting; measure utilities delegate to it.
+- =population/path.cljc= is the shared population-path interpreter for numerical
+  vector populations and complete-trace tempering. It owns statistical
+  reweighting, ancestor selection, mass retention and retained-chain accounting,
+  including waste-free SMC. Representation backends supply execution, copying,
+  moves and ownership; fused numerical loops remain available through its
+  synchronous entry point.
+- =program.cljc= exposes these population operations to user inference programs.
+  =population.cljc= supplies the numerical backend; =tempering.cljc= supplies
+  complete-trace phases. =scmc.cljc= uses the numerical path engine and returns
+  the same settled =PMeasure= interface, with its numerical diagnostics attached.
+- =particle_mcmc.cljc= owns sweep normalization, PIMH acceptance and conditional
+  SMC chain retention. Fresh-savepoint and canonical-world drivers inject their
+  sweep operations instead of maintaining duplicate statistical chain loops.
 - =PInferenceKernel= describes site proposals; =PMarkovKernel= describes Markov
   transitions. Existing constructors are unchanged. Use =transition-id= for the
   latter; they no longer pretend to implement a site =step=.
-- =transition.cljc= is the single interpreter for built-in chain descriptions;
-  it was removed from core. Classification does not instantiate NUTS adaptation.
-- =scope.cljc= owns asynchronous resource finalization. The GFI accepts an
-  =:inference-scope= option. Tempering and parallel tempering use this scope
-  instead of private session registries and cleanup loops.
-- Optimized vector backends remain optimized loops, sharing the accounting
-  primitives. They do not allocate an execution world per parameter vector.
-- Canonical application-world particles and conditional/streaming filters retain
-  their specialized ownership machinery. Migrating these requires retaining
-  their stronger grades, budgets, prefix and retained-trajectory contracts.
+- =transition.cljc= is the shared interpreter for built-in chains and population
+  moves. Prepared transitions retain per-particle counters and tuning state;
+  resampling resets that state for new descendants. =transport.cljc= separately
+  scores forward/backward weighted proposals and change-of-variables corrections.
+- =execution.cljc= batches independent CPS operations in index order. It rejects
+  on the first failure; cancellation and joining already-started work remain the
+  owning scope's responsibility. =scope.cljc= settles asynchronous finalization;
+  GFI, tempering and nested SMC² filters register their resources with scopes.
+- =trace_owner.cljc= reclaims trace worlds and anchors unreachable from all live
+  populations. =cursor.cljc= guards streaming SMC and SMC² step versions and
+  controller-wide close. Canonical worlds retain their specialized grade,
+  budget and world-scope authority; conditional filters retain their stronger
+  prefix and retained-trajectory contracts.
 
 * Random streams
 
@@ -140,21 +180,19 @@ duplicated population log-mass calculations and the private multi-session
 cleanup registries in tempering. Specialized conditional/streaming filters and
 canonical worlds retain their existing engines and stronger ownership rules.
 
-The remaining migration work is explicit: score-aware transport/SMCP3,
-proper-weighted/evidence eligibility adapters and owned nested filters, broader
-population transitions including block kernels, and incremental reclamation of
-live intermediate trace state. These are not silently approximated by the
-initial interface, and empirical conditionals remain distinct from likelihood
-estimators. Built-in callback contracts still require valid scores, proposal
+SMC² already owns its inner filter lifetimes through the shared scope/cursor
+machinery. Remaining work concerns general certified nesting: adapters that
+establish properly weighted estimates or unbiased-evidence eligibility for
+arbitrary user-defined inner estimators, plus broader tempered-transition
+capabilities. Scored
+transport is available through the population program; specialized SMCP3 and
+streaming drivers retain their own execution engines. Empirical conditionals
+remain distinct from likelihood estimators. Built-in callback contracts still require valid scores, proposal
 support and invariant transitions; metadata does not prove arbitrary user code.
 
-Validation on the implementation branch:
-- JVM: 349 tests, 4,498 assertions; no failures/errors.
-- ClojureScript/Node: 57 tests, 958 assertions; no failures/errors; compilation
-  completed without compiler warnings.
-- Formatting and diff-whitespace checks pass.
-- The guide's Gaussian annealing example executes in the REPL with 256 particles.
-- Target-identity, wrong-target transitions, independent population streams,
-  mutable value copies, finite importance-weight identities, zero-mass behavior,
-  and asynchronous failure/cancellation have dedicated checks. Scope finalization
-  also releases 10,000 synchronous resources exactly once without overflowing.
+Validation commands are =clojure -M:test=, =bin/lint=, =clojure -M:format= and
+=npx shadow-cljs compile test=. Dedicated checks cover target identities,
+wrong-target transitions, independent population streams, mutable value copies,
+finite importance-weight identities, zero-mass behavior, cursor versions and
+asynchronous failure/cancellation. Scope finalization releases 10,000 synchronous
+resources exactly once without overflowing.

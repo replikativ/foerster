@@ -1,5 +1,8 @@
 (ns org.replikativ.foerster.scope-test
   (:require [clojure.test :refer [deftest is]]
+            [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.spindel.effects.await :as await]
+            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.foerster.scope :as scope]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
@@ -62,23 +65,23 @@
                                                       (deliver releasing true)
                                                       (future
                                                         @proceed
-                                                        (binding [is.simm.partial-cps.async/*in-trampoline* false]
+                                                        (binding [pcps/*in-trampoline* false]
                                                           (resolve nil))))))
                                   (spin
                                    (deliver entered true)
-                                   (org.replikativ.spindel.effects.await/await (fn [_ _] nil)))))]
+                                   (await/await (fn [_ _] nil)))))]
                       (reset! task* task)
                       (try @task (catch Throwable e e)))))]
     (try
       (is (= true (deref entered 5000 ::timeout)))
       (binding [ec/*execution-context* root]
-        (org.replikativ.spindel.spin.core/cancel-spin! @task*))
+        (spin-core/cancel-spin! @task*))
       (is (= true (deref releasing 5000 ::timeout)))
       (is (= ::waiting (deref outcome 20 ::waiting)))
       (deliver proceed true)
       (let [error (deref outcome 5000 ::timeout)]
         (is (instance? Throwable error))
-        (is (= org.replikativ.spindel.spin.core/spin-cancelled (:type (ex-data error)))))
+        (is (= spin-core/spin-cancelled (:type (ex-data error)))))
       (finally (deliver proceed true) (ctx/close-context! root)))))
 
 (deftest thousands-of-synchronous-releases-are-stack-safe-and-exactly-once

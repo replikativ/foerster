@@ -8,12 +8,15 @@
             [org.replikativ.foerster.scope :as scope]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.kernel :as k]
             [org.replikativ.foerster.transition :as transition]
+            [org.replikativ.foerster.population.path :as path]
+            [org.replikativ.foerster.trace-owner :as owner]
+            [org.replikativ.foerster.transport :as transport]
             [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.foerster.trace :as it]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]))
 
@@ -35,6 +38,7 @@
   (initialize-particles [representation scope target n opts])
   (copy-particles [representation scope target particles ancestors opts])
   (move-particles [representation scope target particles kernel opts])
+  (transport-particles [representation source destination particles kernel opts])
   (project-particle [representation target particle]))
 
 (defn- sequential [xs f]
@@ -44,8 +48,6 @@
        out
        (let [value (await (f (first remaining)))]
          (recur (next remaining) (conj out value)))))))
-
-(defrecord InferenceResult [measure target log-mass inference-contract history])
 
 (defrecord InvariantValueKernel [target-id step])
 
@@ -81,6 +83,13 @@
                          (random/with-stream* seed [::move step i] #((:step kernel) (copy x))))
                        (range) particles))
         (catch #?(:clj Throwable :cljs :default) e (reject e)))))
+  (transport-particles [_ source destination particles kernel {:keys [seed step]}]
+    (sequential (map-indexed vector particles)
+                (fn [[i x]]
+                  (fn [resolve reject]
+                    (try (resolve (random/with-stream* seed [::transport step i]
+                                    #(transport/value-step source destination kernel copy x)))
+                         (catch #?(:clj Throwable :cljs :default) e (reject e)))))))
   (project-particle [_ _ particle] (m/sample-particle (project particle) {})))
 
 (defn value-target
@@ -97,10 +106,7 @@
                                          :representation (->ValueRepresentation draw log-proposal project copy)})))
 
 (defn- trace-score [beta t]
-  (transduce (map (fn [{:keys [note]}]
-                    (if (contains? note :log-lik)
-                      (if (zero? beta) 0.0 (* beta (:log-lik note)))
-                      (:log-prob note)))) + 0.0 (it/entries t)))
+  (transduce (map (it/tempered-score beta)) + 0.0 (it/entries t)))
 
 (defrecord TraceRepresentation [model executor]
   PRepresentation
@@ -126,19 +132,23 @@
                          (fn [copy]
                            (if-let [e (:trace/error copy)] (reject e) (resolve copy)))
                          reject)))))))
-  (move-particles [_ _ target particles kernel {:keys [step]}]
-    ;; More block/chain kernels can be admitted once their coordinate, warm-up
-    ;; and tempered-target contracts are represented. Never silently use beta=1.
-    (when-not (and (k/markov-kernel? kernel) (= :single-site-mh (k/transition-id kernel)))
-      (throw (ex-info "Trace population moves currently require single-site MH" {:type ::unsupported-kernel})))
-    (let [{:keys [iterations] :as compiled} (transition/options kernel)]
-      (sequential particles
-                  (fn [t]
+  (move-particles [_ _ target particles _ {:keys [prepared on-visit]}]
+    (sequential (map-indexed vector particles)
+                (fn [[i t]]
+                  (fn [resolve reject]
+                    ((transition/step (nth prepared i) t
+                                      {:temperature (:position target) :keep-old? true
+                                       :shared-anchors? true :on-visit (when on-visit #(on-visit i %))})
+                     #(resolve (:trace %)) reject)))))
+  (transport-particles [this source destination particles kernel {:keys [seed step]}]
+    (when-not (= this (:representation destination))
+      (throw (ex-info "Trace transport must retain its model representation" {:type ::wrong-target})))
+    (sequential (map-indexed vector particles)
+                (fn [[i t]]
+                  (let [proposal-seed (sp/derive-seed seed ::transport [step i])]
                     (fn [resolve reject]
-                      ((it/mh-chain t iterations
-                                    (assoc compiled :temperature (:position target) :keep-old? true
-                                           :shared-anchors? true))
-                       #(resolve (:trace %)) reject))))))
+                      ((transport/trace-step source destination kernel t proposal-seed)
+                       resolve reject))))))
   (project-particle [_ _ t]
     (m/sample-particle (:trace/result t) (it/legacy-trace t))))
 
@@ -184,11 +194,11 @@
      (throw (ex-info "This program representation does not import caller systems" {:type ::unsupported-world-policy})))
    (scope/run (fn [resources]
                 (spin
-                 (let [result (await (body {:resources resources :seed (or (:seed opts) (random/fresh-seed))
-                                            :owner (random-uuid)
-                                            :population-counter (atom -1)
-                                            :population-ids (atom #{})}))]
-                   (when-not (instance? InferenceResult result)
+                 (let [context {:resources resources :seed (or (:seed opts) (random/fresh-seed))
+                                :owner (random-uuid) :population-counter (atom -1)
+                                :population-ids (atom #{}) :live-populations (atom {}) :retired (atom [])}
+                       result (await (body context))]
+                   (when-not (satisfies? m/PMeasure result)
                      (throw (ex-info "Finish the population before returning from inference"
                                      {:type ::unfinished-population})))
                    result))))))
@@ -197,6 +207,35 @@
   (when-not (= (:owner scope) (:owner population))
     (throw (ex-info "A population belongs to another inference scope" {:type ::wrong-scope})))
   (live! scope))
+
+(defn- claim! [scope population]
+  (owned! scope population)
+  (when-let [lease (:lease population)]
+    (swap! lease
+           (fn [state]
+             (when-not (and (= :idle (:phase state)) (= (:version population) (:version state)))
+               (throw (ex-info "Trace population is stale or already in flight" {:type ::stale-population})))
+             (assoc state :phase :in-flight)))))
+
+(defn- remember! [scope population]
+  (when (:lease population)
+    (swap! (:live-populations scope) assoc (:population-id population) (:particles population)))
+  population)
+
+(defn- publish [scope previous next]
+  (let [next (if-let [lease (:lease previous)]
+               (let [version (inc (:version previous))]
+                 (reset! lease {:phase :idle :version version})
+                 (assoc next :version version)) next)]
+    (remember! scope next)))
+
+(defn- reclaim [scope previous seen next]
+  (remember! scope next)
+  (if (:lease previous)
+    (let [[retired _] (swap-vals! (:retired scope) (constantly []))]
+      (owner/reclaim (into (:particles previous) retired) seen
+                     (into [] cat (vals @(:live-populations scope)))))
+    (fn [resolve _] (resolve nil))))
 
 (defn initialize
   "Initialize an independent population. Optional :id names its logical RNG
@@ -221,17 +260,20 @@
           draws (await (initialize-particles (:representation target) (:resources scope) target n
                                              (assoc scope :seed seed)))
           _ (population-size! draws n)]
-      {:target target :particles (mapv :particle draws) :mass (w/from-log (mapv :log-weight draws))
-       :owner (:owner scope) :population-id population-id :seed seed :step 0 :history []
-       :inference-contract {:semantics :weighted-population
-                            :weight-contract :requires-operation-assumptions
-                            :normalizer {:status :unverified}}}))))
+      (remember! scope
+                 {:target target :particles (mapv :particle draws) :mass (w/from-log (mapv :log-weight draws))
+                  :owner (:owner scope) :population-id population-id :seed seed :step 0 :history []
+                  :inference-contract {:semantics :weighted-population
+                                       :weight-contract :requires-operation-assumptions
+                                       :normalizer {:status :unverified}}
+                  :lease (when (instance? TraceRepresentation (:representation target))
+                           (atom {:phase :idle :version 0})) :version 0 :transitions {} :forks (atom 0)})))))
 
 (defn advance
-  "Reweight on an explicitly derived target in the same state space. Adaptive
-  target selection needs its own justification; no unbiasedness is inferred."
+  "Reweight in the same state space. A trace population version is consumed;
+  target adaptation needs its own statistical justification."
   [scope population target]
-  (owned! scope population)
+  (claim! scope population)
   (when-not (and (= (:id (:target population)) (:parent target))
                  (= (:family (:target population)) (:family target))
                  (= (:representation (:target population)) (:representation target)))
@@ -239,8 +281,9 @@
   (let [score (:score target) old-score (:score (:target population))
         increments (mapv (fn [x lw] (if (= ##-Inf lw) 0.0 (- (score x) (old-score x))))
                          (:particles population) (get-in population [:mass :log-weights]))]
-    (-> population (assoc :target target :mass (w/reweight (:mass population) increments))
-        (update :step inc) (update :history conj {:operation :advance :target (:id target)}))))
+    (publish scope population
+             (-> (path/reweight population increments) (assoc :target target)
+                 (update :step inc) (update :history conj {:operation :advance :target (:id target)})))))
 
 (defn ess [population]
   (if (= :zero-mass (get-in population [:mass :status])) 0.0
@@ -250,43 +293,121 @@
   ([scope population] (resample scope population {}))
   ([scope population {:keys [particles method] :or {method :systematic} :as opts}]
    (options! opts #{:particles :method})
-   (owned! scope population)
-   (let [n (or particles (count (:particles population)))
-         _ (when-not (pos-int? n)
-             (throw (ex-info "Resampling needs a positive population size" {:type ::invalid-particles})))
-         selection (w/selection (:mass population))
-         ancestors (random/with-stream* (:seed population) [::resample (:step population)]
-                     #(m/resample method selection n))]
-     (spin
-      (let [copies (await (copy-particles (get-in population [:target :representation]) (:resources scope)
-                                          (:target population) (:particles population) ancestors
-                                          (assoc scope :seed (:seed population) :step (:step population))))
-            _ (population-size! copies n)]
-        (-> population (assoc :particles copies :mass (w/resampled (:mass population) n))
-            (update :step inc) (update :history conj {:operation :resample :ancestors ancestors})))))))
+   (spin
+    (claim! scope population)
+    (let [n (or particles (count (:particles population)))
+          plan (path/selection-plan population n {:method method :seed (:seed population)
+                                                  :key [::resample (:step population)]})
+          copies (await (copy-particles (get-in population [:target :representation]) (:resources scope)
+                                        (:target population) (:particles population) (:ancestors plan)
+                                        (assoc scope :seed (:seed population) :step (:step population))))
+          next (-> (path/selected population plan copies) (assoc :transitions {})
+                   (update :step inc) (update :history conj {:operation :resample :ancestors (:ancestors plan)}))]
+      (await (reclaim scope population [] next))
+      (publish scope population next)))))
+
+(defn- visit-trace!
+  "Replace only the visited slot. Consumed intermediate states can then be
+  reclaimed immediately, while other slots and independent forks remain live."
+  [scope population current i result]
+  (let [next (:trace result)
+        previous (nth @current i)]
+    ;; A completed replay no longer needs its old world as a reuse source.
+    (rtp/swap-state! (:trace/world next) [:engine/reuse-source] (constantly nil))
+    (swap! current assoc i next)
+    (swap! (:live-populations scope) assoc (:population-id population) @current)
+    (owner/reclaim! [previous]
+                    (into [] cat (vals @(:live-populations scope))))))
 
 (defn move [scope population kernel]
-  (owned! scope population)
-  (w/selection (:mass population))
   (spin
-   (let [moved (await (move-particles (get-in population [:target :representation]) (:resources scope)
+   (claim! scope population)
+   (w/selection (:mass population))
+   (let [traced? (some? (:lease population))
+         prepared (when traced?
+                    (or (get (:transitions population) kernel)
+                        (mapv (fn [_] (transition/prepare kernel)) (:particles population))))
+         _ (when (some transition/adaptation? prepared)
+             (throw (ex-info "Population transitions require frozen tuning; run chain warm-up separately"
+                             {:type ::adaptive-population-kernel})))
+         current (when traced? (atom (:particles population)))
+         moved (await (move-particles (get-in population [:target :representation]) (:resources scope)
                                       (:target population) (:particles population) kernel
-                                      (assoc scope :seed (:seed population) :step (:step population))))
-         _ (population-size! moved (count (:particles population)))]
-     (-> population (assoc :particles moved) (update :step inc)
-         (update :history conj {:operation :move})))))
+                                      (assoc scope :seed (:seed population) :step (:step population)
+                                             :prepared prepared
+                                             :on-visit (when traced?
+                                                         #(visit-trace! scope population current %1 %2)))))
+         next (cond-> (-> (path/moved population moved) (update :step inc)
+                          (update :history conj {:operation :move}))
+                traced? (assoc-in [:transitions kernel] prepared))]
+     (await (reclaim scope population [] next))
+     (publish scope population next))))
+
+(def transport-kernel transport/kernel)
+
+(defn transport
+  "Propose and reweight through scored forward/backward laws. Unlike move,
+  this operation can change targets and value dimension; weights are corrected."
+  [scope population destination kernel]
+  (spin
+   (owned! scope population)
+   (when-not (and (= (:id (:target population)) (:source kernel))
+                  (= (:id destination) (:destination kernel)))
+     (throw (ex-info "Transport proposal belongs to different targets" {:type ::wrong-target})))
+   (when-not (= (type (get-in population [:target :representation]))
+                (type (:representation destination)))
+     (throw (ex-info "Transport requires compatible particle representations"
+                     {:type ::incompatible-representation})))
+   (when (some #(or (= ##-Inf %) (= ##Inf %)) (get-in population [:mass :log-weights]))
+     (throw (ex-info "Transport requires positive source weights; resample first"
+                     {:type ::zero-weight-transport})))
+   (claim! scope population)
+   (let [results (await (transport-particles (get-in population [:target :representation])
+                                             (:target population) destination (:particles population) kernel
+                                             (assoc scope :seed (:seed population) :step (:step population))))
+         _ (population-size! results (count (:particles population)))
+         next (-> (path/moved population (mapv :particle results))
+                  (path/reweight (mapv :log-increment results))
+                  (assoc :target destination :transitions {}) (update :step inc)
+                  (update :history conj {:operation :transport :target (:id destination)}))]
+     (await (reclaim scope population [] next))
+     (publish scope population next))))
+
+(defn fork
+  "Copy a live population with independent future random streams. The source
+  remains usable. Trace copies share read-only anchors under the owner scope."
+  [scope population]
+  (spin
+   (claim! scope population)
+   (let [i (swap! (:forks population) inc)
+         id [:fork (:population-id population) i]
+         seed (sp/derive-seed (:seed population) ::fork i)
+         copies (await (copy-particles (get-in population [:target :representation]) (:resources scope)
+                                       (:target population) (:particles population)
+                                       (vec (range (count (:particles population))))
+                                       (assoc scope :seed seed :step (:step population))))
+         child (assoc population :population-id id :seed seed :particles copies
+                      :lease (when (:lease population) (atom {:phase :idle :version 0}))
+                      :version 0 :forks (atom 0) :transitions {})]
+     (population-size! copies (count (:particles population)))
+     (when-let [lease (:lease population)]
+       (reset! lease {:phase :idle :version (:version population)}))
+     (remember! scope child))))
 
 (defn finish
-  "Project settled values and trace data. Scope.run releases all live resources
-  before delivering these results; log mass is not an unbiasedness certificate."
+  "Project to the shared settled measure API. run joins resource cleanup before
+  delivery. Live trace handles are consumed; numeric value snapshots persist."
   [scope population]
-  (owned! scope population)
+  (claim! scope population)
   (let [{:keys [target particles mass]} population
         logs (:log-weights mass)
-        ;; EmpiricalMeasure's legacy convention is log-mean, not log-sum.
         measure (assoc (m/empirical (mapv (fn [x lw] [(project-particle (:representation target) target x)
                                                       (+ lw (Math/log (count particles)))]) particles logs))
-                       :log-normalizer (:log-mass mass)
-                       :inference-contract (:inference-contract population))]
-    (->InferenceResult measure (dissoc target :score :representation)
-                       (:log-mass mass) (:inference-contract population) (:history population))))
+                       :log-normalizer (:log-mass mass) :inference-contract (:inference-contract population)
+                       :target (dissoc target :score :representation) :log-mass (:log-mass mass)
+                       :history (:history population))]
+    (when-let [lease (:lease population)]
+      (reset! lease {:phase :finished :version (:version population)})
+      (swap! (:live-populations scope) dissoc (:population-id population))
+      (swap! (:retired scope) into particles))
+    measure))

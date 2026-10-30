@@ -202,13 +202,21 @@ is recompressed with GIGA (Campbell & Broderick 2018), fitted where the
 current particles are:
 
 ```clojure
-(scmc/scmc {:prior-sample (fn [] [a b])
-            :prior-log-density (fn [[a b]] …)
-            :log-lik (fn [[a b] [x y]] …)       ; one datum
-            :batches (partition 20 data)}
-           {:particles 500 :memory 50})
-;; => {:particles [θ …] :log-z … :coreset [[w datum] …] :steps … :max-coreset-size …}
+(def posterior
+  (scmc/scmc {:prior-sample (fn [] [a b])
+              :prior-log-density (fn [[a b]] …)
+              :log-lik (fn [[a b] [x y]] …)       ; one datum
+              :batches (partition 20 data)}
+             {:particles 500 :memory 50}))
+(mapv (comp m/get-value first) (m/get-particles posterior)) ; θ vectors
+(m/log-marginal posterior)                             ; evidence estimate
+(:coreset posterior)                                  ; [[w datum] …]
 ```
+
+The synchronous numeric API returns the same `EmpiricalMeasure` of `Sample`s
+as the program-based inference APIs, with equal particle weights. Its
+`:inference-contract`, `:coreset`, `:steps`, `:max-coreset-size`, `:moves` and
+`:accepted` fields describe approximation and execution.
 
 The reweighting by each batch is exact, and only the moves use the
 core-set. The result therefore carries the core-set's approximation error,

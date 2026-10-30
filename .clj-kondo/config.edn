@@ -1,0 +1,21 @@
+{:lint-as
+ {org.replikativ.foerster.analysis/model clojure.core/fn
+  org.replikativ.foerster.amortized.compiler/model clojure.core/fn
+  ;; analyze walks source forms, retaining the caller's namespace aliases.
+  org.replikativ.foerster.analysis/analyze clojure.core/do}
+
+ :config-in-call
+ {;; These forms are input data for source analysis, not code to execute here.
+  ;; They may deliberately contain free symbolic inputs such as ys or n.
+  ;; Keep usage analysis so required simulator aliases are not reported dead.
+  org.replikativ.foerster.analysis/analyze
+  {:linters {:unresolved-symbol {:level :off}
+             :redundant-do {:level :off}}}}
+
+ :hooks
+ {:analyze-call
+  {org.replikativ.foerster.gfi-test/with-root hooks.foerster/scoped-bindings
+   org.replikativ.foerster.trace-test/with-session hooks.foerster/scoped-bindings
+   org.replikativ.foerster.world-particles-test/capturing-scopes hooks.foerster/scoped-bindings}}
+
+ :linters {:unused-private-var {:level :warning}}}

@@ -1,5 +1,5 @@
 (ns org.replikativ.foerster.causal-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.causal :as c]))
 
 (defn- assignments [nodes]

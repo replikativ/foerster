@@ -2,7 +2,9 @@
   "Compilation and execution of Markov kernels. Site proposal policies and
   weighted population operations do not pass through this interpreter."
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.foerster.kernel :as k]
+  (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.transition-context :as tc]
+            [org.replikativ.foerster.kernel :as k]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.hmc :as hmc]
@@ -14,11 +16,12 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.state-backend :as backend]
-            [org.replikativ.spindel.engine.executor :as sched]
+            #?(:clj [org.replikativ.spindel.engine.executor :as sched])
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.combinators :as comb]
-            [org.replikativ.spindel.effects.await :refer [await await-finalization]]))
+            [org.replikativ.spindel.effects.await :refer [await await-finalization]])
+  #?(:cljs (:require-macros [is.simm.partial-cps.async :as pcps])))
 
 (defn- block-gibbs-options
   "Translate a BlockGibbsKernel into `itrace/mh-step` options. The classifier
@@ -54,94 +57,140 @@
          {:value (get proposed (:savepoint/address sp-value)) :symmetric? true}
          (itrace/prior-proposal sp-value old-entry)))}))
 
-(declare options)
-
-(defn- span
-  "How many moves one iteration of a Markov-chain kernel makes at most: its
-  moves are numbered within that span, so every move of a chain has its own
-  number (`itrace/mh-chain`'s `:first-iteration`)."
-  [kernel]
+(defn- leaf-options [kernel]
   (case (k/transition-id kernel)
-    :cycle (reduce + (map #(* (:num-iterations %) (span %)) (:kernels kernel)))
-    :mixture (apply max (map #(* (:num-iterations %) (span %)) (:kernels kernel)))
-    1))
-
-(declare iteration-of)
-
-(defn- run-kernel
-  "CPS: `kernel`'s whole run from `trace`, its moves numbered from `base`;
-  resolves {:trace :moves :accepted-moves}."
-  [kernel trace base]
-  (fn [resolve reject]
-    (if (#{:cycle :mixture} (k/transition-id kernel))
-      (letfn [(run [current i moves accepted]
-                (if (= i (:num-iterations kernel))
-                  (resolve {:trace current :moves moves :accepted-moves accepted})
-                  ((iteration-of kernel current (+ base (* i (span kernel))))
-                   (fn [r] (run (:trace r) (inc i) (+ moves (:moves r)) (+ accepted (:accepted-moves r))))
-                   reject)))]
-        (run trace 0 0 0))
-      (let [{:keys [iterations] :as opts} (or (::options kernel) (options kernel))]
-        ((itrace/mh-chain trace iterations (-> opts (dissoc :iterations) (assoc :first-iteration base)))
-         (fn [{:keys [trace moves accepted]}]
-           (resolve {:trace trace :moves moves :accepted-moves accepted}))
-         reject)))))
-
-(defn- iteration-of
-  "CPS: one iteration of a composed kernel from `trace`, its moves numbered
-  from `base`: every component in turn (cycle) or one picked by weight
-  (mixture)."
-  [kernel trace base]
-  (fn [resolve reject]
-    (let [ks (:kernels kernel)
-          offsets (reductions + 0 (map #(* (:num-iterations %) (span %)) ks))
-          parts (case (k/transition-id kernel)
-                  :cycle (map vector ks offsets)
-                  :mixture [[(nth ks (m/sample-categorical (:weights kernel))) 0]])]
-      (letfn [(run [current [[component offset] & more] moves accepted]
-                (if-not component
-                  (resolve {:trace current :moves moves :accepted-moves accepted})
-                  ((run-kernel component current (+ base offset))
-                   (fn [r] (run (:trace r) more (+ moves (:moves r)) (+ accepted (:accepted-moves r))))
-                   reject)))]
-        (run trace parts 0 0)))))
-
-(defn- compiled
-  "A composed kernel with each component's options made once (`::options`):
-  a component that adapts as it runs (NUTS) keeps its state from one of the
-  composition's iterations to the next."
-  [kernel]
-  (if (#{:cycle :mixture} (k/transition-id kernel))
-    (update kernel :kernels #(mapv compiled %))
-    (assoc kernel ::options (options kernel))))
-
-(defn options
-  "Compile a Markov-kernel description once per chain. This creates any
-  component adaptation state; classification must use kernel/markov-kernel?."
-  [kernel]
-  (case (k/transition-id kernel)
-    (:cycle :mixture) (let [kernel (compiled kernel)]
-                        {:iterations (:num-iterations kernel)
-                         :step (fn [trace {:keys [iteration]}]
-                                 (iteration-of kernel trace (* iteration (span kernel))))})
-    :single-site-mh {:iterations (:num-iterations kernel)}
-    :random-walk-mh {:iterations (:num-iterations kernel)
-                     :step (block-mh/within-gibbs {:step-size (:step-size kernel)
+    :single-site-mh {}
+    :random-walk-mh {:step (block-mh/within-gibbs {:step-size (:step-size kernel)
                                                    :burn (:burn kernel 0)})}
-    :delayed-acceptance {:iterations (:num-iterations kernel)
-                         :step (block-mh/delayed-acceptance
+    :delayed-acceptance {:step (block-mh/delayed-acceptance
                                 (select-keys kernel [:coarse :scales :steps :step-size]))}
-    :block-gibbs (assoc (block-gibbs-options kernel)
-                        :iterations (:num-iterations kernel))
-    :hmc {:iterations (:num-iterations kernel)
-          :step (hmc/within-gibbs (select-keys kernel [:step-size :steps]))}
-    :nuts {:iterations (:num-iterations kernel)
-           :step (nuts/within-gibbs {:burn (:burn kernel 0)
+    :block-gibbs (block-gibbs-options kernel)
+    :hmc {:step (hmc/within-gibbs (select-keys kernel [:step-size :steps]))}
+    :nuts {:step (nuts/within-gibbs {:burn (:burn kernel 0)
                                      :target-accept (:target-accept kernel)
                                      :max-depth (:max-depth kernel)
                                      :metric (:metric kernel)})}
-    (throw (ex-info "Unsupported Markov transition" {:type ::unsupported-kernel
-                                                     :kernel (k/transition-id kernel)}))))
+    (throw (ex-info "Unsupported Markov transition"
+                    {:type ::unsupported-kernel :kernel (k/transition-id kernel)}))))
+
+(defn- compile-tree [kernel path]
+  (if (#{:cycle :mixture} (k/transition-id kernel))
+    (let [children (mapv (fn [i child] (compile-tree child (conj path i)))
+                         (range) (:kernels kernel))
+          spans (map #(* (:num-iterations %) (::span %)) children)]
+      (assoc kernel :kernels children ::path path
+             ::span (if (= :cycle (k/transition-id kernel))
+                      (reduce + spans) (apply max spans))))
+    (assoc kernel ::options (leaf-options kernel) ::local-counter (atom -1)
+           ::span 1 ::path path)))
+
+(defn- leaves [tree]
+  (if (#{:cycle :mixture} (k/transition-id tree))
+    (mapcat leaves (:kernels tree)) [tree]))
+
+(defn prepare
+  "Compile once per independently moving chain or particle. The result owns
+  local tuning counters and must not be shared by resampled descendants.
+  `step` reuses this state across calls. `:adaptation?` reports warm-up in
+  any component; such a transition is not a fixed invariant Markov kernel."
+  [kernel]
+  (when-not (k/markov-kernel? kernel)
+    (throw (ex-info "Only Markov kernels can be prepared" {:type ::unsupported-kernel})))
+  (let [tree (compile-tree kernel [])]
+    {::tree tree
+     :adaptation? (boolean (some #(and (#{:nuts :random-walk-mh} (k/transition-id %))
+                                       (pos? (:burn % 0))) (leaves tree)))
+     :capabilities {:retention #{:keep-old? :shared-anchors?}
+                    :tempering? (every? #(#{:single-site-mh :block-gibbs}
+                                          (k/transition-id %)) (leaves tree))}}))
+
+(defn adaptation? [prepared] (:adaptation? prepared))
+
+(defn- validate-context! [prepared context]
+  (let [beta (get context :temperature 1.0)]
+    (when-not (and (number? beta) (<= 0.0 beta 1.0))
+      (throw (ex-info "Transition temperature must be between zero and one"
+                      {:type ::invalid-temperature :temperature beta})))
+    (when (and (not= 1.0 (double beta))
+               (not (get-in prepared [:capabilities :tempering?])))
+      (tc/require-untempered! context (k/transition-id (::tree prepared))))))
+
+(declare run-tree)
+
+(defn- iteration-of [tree current base context]
+  (pcps/async
+   (if (#{:cycle :mixture} (k/transition-id tree))
+     (let [children (:kernels tree)
+           offsets (reductions + 0 (map #(* (:num-iterations %) (::span %)) children))
+           parts (if (= :cycle (k/transition-id tree))
+                   (map vector children offsets)
+                   [[(nth children
+                          (random/in-world-stream (:trace/world current)
+                                                  [::mixture base (::path tree)]
+                                                  #(m/sample-categorical (:weights tree)))) 0]])]
+       (loop [t current remaining (seq parts) moves 0 accepted 0]
+         (if-not remaining
+           {:trace t :moves moves :accepted-moves accepted}
+           (let [[child offset] (first remaining)
+                 r (pcps/await (run-tree child t (+ base offset) context))]
+             (recur (:trace r) (next remaining)
+                    (+ moves (:moves r)) (+ accepted (:accepted-moves r)))))))
+     (let [opts (::options tree)
+           local (swap! (::local-counter tree) inc)
+           opts (cond-> opts
+                  (= :block-gibbs (k/transition-id tree))
+                  (update :select (fn [select] (fn [t _] (select t local)))))
+           r (pcps/await ((get opts :step itrace/mh-step)
+                          current (assoc (merge opts context)
+                                         :iteration base :adaptation-iteration local)))
+           result (assoc r :moves (:moves r 1)
+                         :accepted-moves (:accepted-moves r (if (:accepted? r) 1 0)))]
+       (when-let [visit (:on-visit context)] (visit result))
+       result))))
+
+(defn- run-tree [tree current base context]
+  (pcps/async
+   (loop [t current i 0 moves 0 accepted 0]
+     (if (= i (:num-iterations tree))
+       {:trace t :moves moves :accepted-moves accepted}
+       (let [r (pcps/await (iteration-of tree t (+ base (* i (::span tree))) context))]
+         (recur (:trace r) (inc i) (+ moves (:moves r)) (+ accepted (:accepted-moves r))))))))
+
+(defn- reserve-span! [current size]
+  ;; Share mh-chain's allocator: distinct prepared descriptors can move the
+  ;; same world after rejection without replaying an earlier random stream.
+  (- (rtp/swap-state! (:trace/world current)
+                      [:inference :org.replikativ.foerster.trace/chain-moves]
+                      #(+ (or % 0) size)) size))
+
+(defn step
+  "Run a prepared descriptor's configured iterations. Context is the target
+  (:temperature, :policy-options, :constraints), replay frontier (:until,
+  :anchor?), and ownership (:keep-old?, :shared-anchors?). :on-visit sees each
+  leaf result, including intermediate states. :first-iteration optionally
+  supplies an already reserved RNG base. Returns CPS {:trace :moves
+  :accepted :accepted-moves}. Call sequentially on a prepared interpreter."
+  [prepared current context]
+  (validate-context! prepared context)
+  (let [tree (::tree prepared)
+        size (* (:num-iterations tree) (::span tree))
+        base (or (:first-iteration context) (reserve-span! current size))]
+    (pcps/async
+     (let [r (pcps/await (run-tree tree current base (select-keys context tc/keys)))]
+       (assoc r :accepted (:accepted-moves r))))))
+
+(defn options
+  "Compile a Markov descriptor once per chain, using the same interpreter
+  as population `prepare`/`step`. The chain driver collects outer iterations."
+  [kernel]
+  (let [prepared (prepare kernel)
+        tree (::tree prepared)]
+    {:iterations (:num-iterations kernel)
+     :iteration-stride (::span tree)
+     :step (fn [current context]
+             (validate-context! prepared context)
+             (iteration-of tree current (:iteration context)
+                           (select-keys context tc/keys)))}))
 
 (defn- project-posterior-context
   "A parentless immutable context holding what the posterior needs of

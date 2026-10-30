@@ -75,7 +75,7 @@
             slope (dot p g)
             [step theta' [fx' g']]
             (loop [a 1.0]
-              (let [theta' (axpy a p theta) [fx' g' :as r] (f theta')]
+              (let [theta' (axpy a p theta) [fx' _ :as r] (f theta')]
                 (if (or (and (not (NaN? fx')) (not (infinite? fx')) (<= fx' (+ fx (* 1e-4 a slope)))) (< a 1e-20))
                   [a theta' r]
                   (recur (* 0.5 a)))))]
@@ -104,7 +104,7 @@
   [d & [{:keys [init jacobian?] :as opts}]]
   (let [b (:block d)
         theta0 (or init (dist/draw d))
-        {:keys [theta f grad iterations converged?]} (lbfgs (objective d jacobian?) theta0 opts)]
+        {:keys [theta grad iterations converged?]} (lbfgs (objective d jacobian?) theta0 opts)]
     {:theta theta
      :latents (latents-of b (block/constrain b theta))
      :log-density (first (block/value+grad d theta))

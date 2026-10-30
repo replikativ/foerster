@@ -10,7 +10,8 @@
   and a valid particle Gibbs kernel must leave the exact posterior
   invariant: πK = π to rounding. Statistical tests cannot see biases of
   1e-4..1e-3 in total variation; this can."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.particle-mcmc :as pmcmc]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
@@ -135,7 +136,7 @@
                                    i (random/with-stream* [7 8] ::pick
                                        #(m/sample-categorical
                                          (m/normalize-log-weights (mapv second ps))))
-                                   choices (smc/retained-choices (m/get-trace (first (nth ps i))))]
+                                   choices (pmcmc/retained-choices (m/get-trace (first (nth ps i))))]
                                (resolve (mapv choices addresses))))
                            reject)))))))]
     (if-let [rejuvenate (:rejuvenate opts)]
