@@ -21,7 +21,11 @@ it is not a second acceptance or ownership algorithm.
 
 Name each site's address with its key. The keyed combinator comes from
 =org.replikativ.spindel.spin.keyed=; normal Clojure loops retain their ordinary
-execution semantics. Only complete traces use the incremental path: streaming
+execution semantics. Keys are an explicit independence/re-execution contract:
+body effects must be valid when repeated. Forking a completed world does not
+retract earlier accumulating writes. Use ordinary replay-based models for such
+stateful code; keyed execution does not automatically prove effect safety.
+Only complete traces use the incremental path: streaming
 frontiers and SMC rejuvenation of partial keyed traces are not supported.
 
 Once execution enters a keyed region, new site anchors are suppressed, including
