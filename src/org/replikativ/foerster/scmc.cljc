@@ -28,7 +28,8 @@
   Metropolis."
   (:require [org.replikativ.foerster.population :as pop]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.random :as random]))
+            [org.replikativ.foerster.random :as random]
+            [org.replikativ.foerster.weights :as weights]))
 
 ;; =============================================================================
 ;; GIGA
@@ -118,79 +119,95 @@
         w (giga cols target m)]
     (into [] (keep (fn [[wj [_ u]]] (when (pos? wj) [wj u]))) (map vector w coreset))))
 
-(defn scmc
-  "SCMC of the model given by
-    :prior-sample        (fn []) θ ~ p₀, a vector
-    :prior-log-density   (fn [θ]) log p₀(θ)
-    :log-lik             (fn [θ datum]) log p(datum | θ)
-    :batches             the data, a sequence of batches (sequences of data),
-                         consumed lazily: a stream of batches runs in memory
-                         bounded by the core-set and the population
-  with options `:particles` (1000), `:memory` M (100), `:scale` (2.38, the
-  random walk in population standard deviations), `:seed`.
-
-  Returns an EmpiricalMeasure of equally weighted Samples containing θ
-  vectors. `m/log-marginal` reports the evidence estimate: its increments are
-  exact, its moves approximate. Metadata includes :inference-contract,
-  :coreset [[w datum] …] (at most M), :steps, :max-coreset-size (the largest
-  core-set the moves used, before recompression: at most M plus a batch),
-  :moves and :accepted. This optimized numeric API returns synchronously.
-  Throws `::zero-evidence` when a batch has zero likelihood under every
-  particle."
-  [{:keys [prior-sample prior-log-density log-lik batches]}
-   & [{:keys [particles memory scale seed] :or {particles 1000 memory 100 scale 2.38}}]]
+(defn start
+  "Initialize resumable numeric SCMC. model provides :prior-sample,
+  :prior-log-density and :log-lik. State is a persistent in-memory value,
+  including model functions; it is not a serialized inference artifact.
+  opts: :particles (1000), :memory (100), :scale (2.38), :seed."
+  [{:keys [prior-sample] :as model}
+   & [{:keys [particles memory scale seed]
+       :or {particles 1000 memory 100 scale 2.38}}]]
   (when-not (pos-int? particles)
     (throw (ex-info ":particles is a positive count" {:type ::invalid-particles :particles particles})))
   (when-not (pos-int? memory)
     (throw (ex-info ":memory is a positive count" {:type ::invalid-memory :memory memory})))
-  (let [seed (or seed (random/fresh-seed))
-        ;; consumed one batch at a time, never holding the sequence's head:
-        ;; a stream of batches runs in bounded memory
-        remaining (atom (seq batches))
-        compressed? (atom false)
-        stats (atom {:moves 0 :accepted 0})
-        ;; [steps, the largest expanded core-set]: bounded, unlike a history
-        sizes (atom [0 0])
-        qs0 (mapv (fn [i] (random/with-stream* seed [::init i] #(vec (prior-sample)))) (range particles))
-        path {:start {:t 0 :coreset []}
-              :done? (fn [_] (nil? @remaining))
-              :advance (fn [qs lw {:keys [t coreset]}]
-                         ;; lw: the population's normalized log weights
-                         (let [coreset (if (> (count coreset) memory)
-                                         (do (reset! compressed? true)
-                                             (recompress qs lw coreset log-lik memory))
-                                         coreset)
-                               batch (first @remaining)
-                               _ (swap! remaining next)
-                               expanded (into coreset (map (fn [x] [1.0 x])) batch)]
-                           (swap! sizes (fn [[k top]] [(inc k) (max top (count expanded))]))
-                           (let [incr (mapv (fn [q] (reduce + 0.0 (map #(log-lik q %) batch))) qs)]
-                             (when (every? #(or (= ##-Inf %) (NaN? %)) incr)
-                               (throw (ex-info "Every particle has zero likelihood for a batch: no posterior population"
-                                               {:type ::zero-evidence :batch t})))
-                             {:pos {:t (inc t) :coreset expanded} :log-incr incr})))
-              :density (fn [{:keys [coreset]}]
-                         (fn [q]
-                           (let [lp (prior-log-density q)]
-                             (if (= ##-Inf lp)
-                               lp
-                               (+ lp (reduce + 0.0 (map (fn [[w u]] (* w (log-lik q u))) coreset)))))))
-              :exhausted (fn [pos] (ex-info "SCMC ran out of steps" {:type ::exhausted :t (:t pos)}))}
-        {:keys [qs log-z positions]} (pop/theta-smc qs0 path {:n particles :scale scale :seed seed
-                                                              :max-steps #?(:clj Long/MAX_VALUE :cljs js/Number.MAX_SAFE_INTEGER)
-                                                              :positions? false
-                                                              :stats stats
-                                                              :keys {:resample ::resample :move ::move}})
-        final (:coreset (peek positions))
-        uniform (vec (repeat (count qs) (- (Math/log (count qs)))))]
-    (assoc (m/empirical (mapv (fn [q] [(m/sample-particle q {}) 0.0]) qs))
-           :inference-contract {:semantics (if @compressed? :approximate-population :weighted-population)
-                                :normalizer {:status :unverified}
-                                :adaptation :population
-                                :approximation (when @compressed? :coreset-rejuvenation)}
-           :log-normalizer log-z
-           :coreset (if (> (count final) memory) (recompress qs uniform final log-lik memory) final)
-           :steps (first @sizes)
-           :max-coreset-size (second @sizes)
-           :moves (:moves @stats)
-           :accepted (:accepted @stats))))
+  (let [seed (or seed (random/fresh-seed))]
+    {:model (select-keys model [:prior-sample :prior-log-density :log-lik])
+     :particles (mapv (fn [i] (random/with-stream* seed [::init i] #(vec (prior-sample))))
+                      (range particles))
+     :memory memory :scale scale :seed seed :coreset [] :steps 0
+     :compressed? false :approximate? false :log-normalizer 0.0
+     :max-coreset-size 0 :moves 0 :accepted 0}))
+
+(defn append-batch
+  "Advance a persistent SCMC state by one non-empty batch. The old state
+  remains reusable. Retains only the population and a bounded coreset; the
+  caller owns any observation history needed for replay or correction.
+  :last-update reports ESS before resampling, not convergence or accuracy.
+  Historical replacement/retraction is not an append operation."
+  [{:keys [particles memory scale seed coreset steps model compressed?] :as state} batch]
+  (let [batch (vec batch)]
+    (when (empty? batch)
+      (throw (ex-info "An SCMC update requires a non-empty batch" {:type ::empty-batch})))
+    (let [{:keys [prior-log-density log-lik]} model
+          n (count particles)
+          expanded (into coreset (map (fn [x] [1.0 x])) batch)
+          increments (mapv (fn [q] (reduce + 0.0 (map #(log-lik q %) batch))) particles)
+          mass (weights/from-log increments)
+          _ (when (= :zero-mass (:status mass))
+              (throw (ex-info "Every particle has zero likelihood for a batch: no posterior population"
+                              {:type ::zero-evidence :batch steps})))
+          ess (m/compute-ess (weights/selection mass))
+          stats (atom {:moves 0 :accepted 0})
+          path {:start 0 :done? pos?
+                :advance (fn [_ _ _] {:pos 1 :log-incr increments})
+                :density (fn [_]
+                           (fn [q]
+                             (let [lp (prior-log-density q)]
+                               (if (= ##-Inf lp) lp
+                                   (+ lp (reduce + 0.0
+                                                 (map (fn [[w u]] (* w (log-lik q u))) expanded)))))))
+                :exhausted (fn [_] (ex-info "SCMC single update exhausted" {:type ::exhausted}))}
+          {:keys [qs log-z]} (pop/theta-smc particles path
+                                            {:n n :scale scale :seed seed :max-steps 1 :step-offset steps
+                                             :positions? false :stats stats
+                                             :keys {:resample ::resample :move ::move}})
+          compress? (> (count expanded) memory)
+          coreset (if compress?
+                    (recompress qs (vec (repeat n (- (Math/log n)))) expanded log-lik memory)
+                    expanded)]
+      (-> state
+          (assoc :particles qs :coreset coreset :steps (inc steps)
+                 :compressed? (or compressed? compress?)
+                 :approximate? (or (:approximate? state) compressed?)
+                 :last-update {:ess ess :ess-fraction (/ ess n) :batch-size (count batch)
+                               :compressed? compress?})
+          (update :log-normalizer + log-z)
+          (update :max-coreset-size max (count expanded))
+          (update :moves + (:moves @stats))
+          (update :accepted + (:accepted @stats))))))
+
+(defn result
+  "Project an SCMC snapshot to the common settled measure API. Projection
+  does not consume the snapshot. Coreset moves and population adaptation do
+  not certify an unbiased normalizer or posterior convergence."
+  [{:keys [particles approximate?] :as state}]
+  (merge (m/empirical (mapv (fn [q] [(m/sample-particle q {}) 0.0]) particles))
+         (select-keys state [:coreset :steps :max-coreset-size :moves :accepted
+                             :log-normalizer :last-update])
+         {:inference-contract {:semantics (if approximate? :approximate-population :weighted-population)
+                               :normalizer {:status :unverified}
+                               :adaptation :population
+                               :approximation (when approximate? :coreset-rejuvenation)}}))
+
+(defn scmc
+  "Run numeric SCMC over :batches using start, append-batch and result.
+  model: :prior-sample (fn [] theta-vector), :prior-log-density (fn [theta]),
+  :log-lik (fn [theta datum]), :batches (lazy sequence of non-empty batches).
+  opts: :particles (1000), :memory (100), :scale (2.38), :seed.
+  Returns an EmpiricalMeasure with :coreset, :steps, :max-coreset-size,
+  :moves, :accepted, :last-update and :log-normalizer. Streaming memory is
+  bounded by population, coreset and batch; no history of updates is retained.
+  To pause between batches, retain the state returned by append-batch."
+  [{:keys [batches] :as model} & [opts]]
+  (result (reduce append-batch (start model opts) batches)))
