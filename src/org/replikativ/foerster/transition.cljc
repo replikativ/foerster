@@ -60,6 +60,8 @@
 (defn- leaf-options [kernel]
   (case (k/transition-id kernel)
     :single-site-mh {}
+    :finite-gibbs {:step (fn [current opts]
+                           (itrace/update-gibbs current (:address kernel) opts))}
     :random-walk-mh {:step (block-mh/within-gibbs {:step-size (:step-size kernel)
                                                    :burn (:burn kernel 0)})}
     :delayed-acceptance {:step (block-mh/delayed-acceptance
@@ -101,13 +103,13 @@
      :adaptation? (boolean (some #(and (#{:nuts :random-walk-mh} (k/transition-id %))
                                        (pos? (:burn % 0))) (leaves tree)))
      :capabilities {:retention #{:keep-old? :shared-anchors?}
-                    :tempering? (every? #(#{:single-site-mh :block-gibbs}
+                    :tempering? (every? #(#{:single-site-mh :block-gibbs :finite-gibbs}
                                           (k/transition-id %)) (leaves tree))}}))
 
 (defn adaptation? [prepared] (:adaptation? prepared))
 
 (defn- validate-context! [prepared context]
-  (let [beta (get context :temperature 1.0)]
+  (let [beta (itrace/target-temperature context)]
     (when-not (and (number? beta) (<= 0.0 beta 1.0))
       (throw (ex-info "Transition temperature must be between zero and one"
                       {:type ::invalid-temperature :temperature beta})))

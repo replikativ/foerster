@@ -184,9 +184,10 @@
       (fn [_ reject]
         (reject (ex-info "update: the trace has no sample site to replay from"
                          {:type ::nothing-to-replay})))
-      (then (trace/replay trace from
-                          (itrace/policy {:keep? true :constraints constraints})
-                          {:anchor? itrace/anchor?})
+      (then (itrace/reexecute trace (let [existing (filter #(contains? (entry-map trace) %) (keys constraints))]
+                                      (if (seq existing) (set existing) #{from}))
+                              (itrace/policy {:keep? true :constraints constraints})
+                              {:anchor? itrace/anchor?})
             (fn [t']
               (let [new-by (entry-map t')
                     discard (into {}
@@ -221,12 +222,12 @@
         from (trace/earliest trace targets)]
     (if-not from
       (fn [resolve _] (resolve {:trace trace :weight 0.0}))
-      (then (trace/replay trace from
-                          (itrace/policy {:keep? true
-                                          :draw (fn [sp old-entry]
-                                                  (when (contains? targets (:savepoint/address sp))
-                                                    (itrace/prior-proposal sp old-entry)))})
-                          {:anchor? itrace/anchor?})
+      (then (itrace/reexecute trace targets
+                              (itrace/policy {:keep? true
+                                              :draw (fn [sp old-entry]
+                                                      (when (contains? targets (:savepoint/address sp))
+                                                        (itrace/prior-proposal sp old-entry)))})
+                              {:anchor? itrace/anchor?})
             (fn [t'] {:trace t' :weight (itrace/mh-log-ratio trace t' (constantly 0.0))})))))
 
 (defn mh

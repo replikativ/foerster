@@ -603,3 +603,12 @@ each sweep, so a model with zero likelihood everywhere comes back as a
 uniform posterior rather than an error, and a sandboxed caller could not
 tell. Tempering, parallel tempering and enumeration are left out because
 their sizes do not bound their cost.
+
+## Incremental trace moves
+
+Complete keyed regions use incremental re-execution through the same public MH
+and kernel paths. `(k/finite-gibbs-kernel iterations address opts)` composes
+fixed-address finite-support Gibbs with other Markov descriptors. It requires
+fixed site structure and unchanged auxiliary choices. See the
+[incremental inference guide](incremental-inference.org) for prefix fallback,
+unsupported dynamic structures, resource ownership and complexity limits.

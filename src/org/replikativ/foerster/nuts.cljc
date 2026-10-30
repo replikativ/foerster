@@ -287,7 +287,7 @@
           (let [move (tc/policy context (fn [sp _]
                                           (when (= address (:savepoint/address sp))
                                             {:value q :symmetric? true})))]
-            ((trace/replay trace address move (tc/replay-options context trace [::move address iteration]))
+            ((itrace/reexecute trace #{address} move (tc/replay-options context trace [::move address iteration]))
              (fn [proposed]
                (try
                  (when (or (:trace/error proposed) (not (tc/at-frontier? context proposed)))

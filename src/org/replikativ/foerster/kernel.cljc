@@ -93,6 +93,21 @@
   {:pre [(pos-int? num-iterations)]}
   (chain-output (->SingleSiteMHKernel num-iterations) opts))
 
+(defrecord FiniteGibbsKernel [num-iterations address]
+  PMarkovKernel
+  (transition-id [_] :finite-gibbs))
+
+(defn finite-gibbs-kernel
+  "Exact conditional draws at one fixed finite-support sample address.
+  Other latent values and the scored site structure must remain unchanged
+  across candidates; unsupported structure/support changes are refused.
+  Keyed sites update their key; other sites replay from a valid anchor.
+  Output options are :samples and :burn, as for single-site-mh-kernel.
+  Compose fixed addresses with cycle/mixture for multiple-site sweeps."
+  [num-iterations address & [opts]]
+  {:pre [(pos-int? num-iterations) (some? address)]}
+  (chain-output (->FiniteGibbsKernel num-iterations address) opts))
+
 ;; =============================================================================
 ;; RandomWalkMHKernel
 ;; =============================================================================

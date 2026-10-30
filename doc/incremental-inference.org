@@ -1,0 +1,106 @@
+#+title: Incremental trace inference
+
+* Supported execution path
+
+Ordinary =:mh= and the shared Markov interpreter use one trace re-execution
+operation. A complete trace can update an independent keyed region by re-running
+its selected child computations. Otherwise the operation replays from a valid
+preceding anchor. =trace/update-step= delegates to the same MH implementation;
+it is not a second acceptance or ownership algorithm.
+
+#+begin_src clojure
+(spin
+  (await (keyed :points (range n)
+           (fn [i]
+             (spin
+               (let [z (sample (dist/flip 0.3) :id [:z i])]
+                 (observe (dist/normal (if z 1.0 -1.0) 1.0)
+                          (nth data i) :id [:y i])
+                 z))))))
+#+end_src
+
+Name each site's address with its key. The keyed combinator comes from
+=org.replikativ.spindel.spin.keyed=; normal Clojure loops retain their ordinary
+execution semantics. Only complete traces use the incremental path: streaming
+frontiers and SMC rejuvenation of partial keyed traces are not supported.
+
+Once execution enters a keyed region, new site anchors are suppressed, including
+in nested child spins. A checkpoint taken while other keyed children are active
+cannot safely resume the whole computation. Existing upstream anchors remain
+available for fallback. Complete population copies fork the settled end-world;
+they do not replay effects or require an anchor at the first latent site.
+
+The admitted incremental region is conservative. Probability effects in a resumed
+parent or another subsequent keyed collection require prefix replay. The released
+Spindel runtime cannot reliably retire sites skipped by a resumed parent's branch.
+When no valid preceding anchor exists, the operation reports
+=::trace/no-replay-origin= instead of returning a potentially stale trace.
+Nested keyed collection layouts can therefore require replay even when a more
+precise dependency analysis could prove them independent. Newly encountered
+nonlocal effects also trigger fallback or refusal.
+
+* Finite-support Gibbs
+
+#+begin_src clojure
+(k/cycle 1000
+  [(k/finite-gibbs-kernel 1 [:z 0])
+   (k/single-site-mh-kernel 2)]
+  {:samples :all :burn 100})
+#+end_src
+
+=finite-gibbs-kernel= is a fixed-address Markov descriptor, usable in the common
+chain interpreter and frozen-tuning population moves. It enumerates finite
+support and samples using conditional target scores at the requested temperature.
+The site must be unconstrained, the current target score finite, the site
+structure fixed, and every other latent value retained without auxiliary
+redraws. Violations are errors, not an approximate Gibbs transition. Parent-side
+control restrictions apply before enumeration as well.
+
+Rejected/unused candidates are reclaimed against every retained source and
+chosen trace. The program scope protects all live populations and their forks.
+Selection, copy and move streams remain independently keyed.
+
+* Scores, weights and evidence
+
+Incremental scoring includes rewritten, added and removed entries. The fallback
+for released Spindel versions scans old/new address sets so deaths inside nested
+spins are included. Observation/factor notes retain their untempered likelihoods;
+requested temperature scores also work on traces initially recorded at beta one.
+The policy-weight ledger replaces rewritten contributions rather than counting
+observations repeatedly. This bookkeeping does not certify a Markov state's
+importance weight or evidence. Settled Markov measures still have no normalizer;
+custom weighted-program normalizers remain unverified.
+
+Spindel 0.1.140 is the minimum dependency for this path. The earlier local
+=perf/trace-index= runtime optimization was not part of a released dependency
+when this integration was prepared. Thus only selected keys are recomputed,
+but trace/ownership bookkeeping can still scan the whole trace. No end-to-end
+constant-time scaling or new performance measurements are claimed here.
+
+=clojure -M:incremental 64 256= runs the original regression/mixture fixtures
+through flat, child-spin and keyed shapes. It is an experiment harness; timings
+on a shared development machine are not publication evidence. Differential tests
+compare values, densities and results against from-scratch execution; separate
+checks cover temperature, ledger replacement, nested deaths and public APIs.
+
+* Proposed reactive inference boundary
+
+Incremental proposals above keep one posterior target fixed. Reacting to changed
+data is a separate, not yet implemented controller. An initial design should
+admit only statically validated fixed plates with observation replacement, or
+append-only sequential observations with stable state/support. Runtime checks
+would verify that actual site identities and structure follow the admitted plan.
+Opaque dependencies, untracked effects and unsupported control changes fall back
+to ordinary re-inference.
+
+A controller would snapshot a data revision, retain compatible population state,
+recompute affected factors, reweight, and then resample/rejuvenate as required.
+Results must be tagged with their target revision; pending work must be cancelled
+or coalesced when newer revisions arrive. Population coverage, adaptation and
+convergence remain statistical obligations, not consequences of change
+propagation. Retractions and support expansion need their own admission rules.
+
+SCMC is a useful bounded backend to explore: append observations to a coreset,
+or invalidate replaced contributions before recompression. Its compressed target
+remains approximate. Such a controller and a static update-plan validator are
+future work, not functionality claimed by this incremental trace implementation.

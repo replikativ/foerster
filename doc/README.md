@@ -45,3 +45,5 @@ Each runs as it renders, in CI on every pull request.
 
 The API reference is on [cljdoc](https://cljdoc.org/d/org.replikativ/foerster),
 generated from the docstrings.
+
+- [Incremental trace inference](incremental-inference.org): keyed execution, finite Gibbs, ownership restrictions and the proposed reactive-data boundary.

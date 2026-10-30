@@ -1,7 +1,7 @@
 (ns org.replikativ.foerster.incremental-test
   "Differential checks for trace updates: a trace moved by an update must be
   the trace a from-scratch run gives for the same choices — every entry's
-  value and score, the log-weight and the result. An incremental update is
+  value and score, the log-joint and the result. An incremental update is
   only allowed to be faster than that, never different; these checks are
   what keeps it honest (Zaiser et al., PLDI 2026, on soundness bugs in
   ad-hoc incrementalization).
@@ -9,7 +9,7 @@
   `consistent` compares two traces; the tests run it on today's update
   (`mh-step`, a replay from the target's anchor) so the check itself is
   known to hold where it must."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.gfi :as gfi]

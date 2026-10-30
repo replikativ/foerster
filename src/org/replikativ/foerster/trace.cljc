@@ -25,15 +25,19 @@
   `log p - log q` of what a proposal drew. A policy writes it to the world it
   is about to resume, so the weight of a fork starts from the weight at its
   site."
-  (:require [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.spin.keyed :as keyed]
+  (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.trace-owner :as owner]
+            [org.replikativ.spindel.engine.impl.simple :as engine]
+            [org.replikativ.spindel.spin.core :as spin-core]
+            [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.foerster.mechanism :as mech]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.dist :as dist]))
+            [org.replikativ.foerster.dist :as dist])
+  #?(:cljs (:require-macros [is.simm.partial-cps.async :as pcps])))
 
 (def choose-site :inference/choose)
 (def factor-site :inference/factor)
@@ -144,16 +148,29 @@
         (zero? temperature) 0.0
         :else (* temperature log-lik)))
 
+(defn target-temperature
+  "Effective target beta: explicit context, then policy options, then one."
+  [opts]
+  (let [beta (or (:temperature opts) (get-in opts [:policy-options :temperature]) 1.0)]
+    (when-not (and (number? beta) (<= 0.0 beta 1.0))
+      (throw (ex-info "Target temperature must be in [0,1]" {:type ::invalid-temperature :temperature beta})))
+    beta))
+
 (defn tempered-score
   "The log target of a trace entry at temperature `beta`, for entries recorded
   under any temperature: observations and factors by their `:log-lik`, a
   site drawn from its own draw density (a block's :sample) by that density
   plus β times the rest of its target (see `decide-choose`)."
   [beta]
-  (fn [{:keys [note]}]
+  (fn [{:keys [note value]}]
     (if-let [l (:log-lik note)]
       (+ (:log-base note 0.0) (cond (zero? beta) 0.0 :else (* beta l)))
-      (:log-prob note))))
+      (if (and (not= 1.0 (double beta)) (:dist note)
+               (not (some note [:observed? :constrained? :intervened? :counterfactual? :simulated?])))
+        (if-let [base (dist/-draw-logpdf (:dist note) value)]
+          (+ base (if (zero? beta) 0.0 (* beta (- (:log-prob note) base))))
+          (:log-prob note))
+        (:log-prob note)))))
 
 (declare decide-choose*)
 
@@ -166,12 +183,12 @@
   β = 0 the site is its draw density, at β = 1 its target."
   [{:keys [temperature]} world {:keys [value note] :as decision}]
   (let [{:keys [dist log-prob observed?]} note]
-    (if (or (nil? temperature) observed? (nil? dist)
+    (if (or (nil? temperature) (= 1.0 (double temperature)) observed? (nil? dist)
             (some note [:constrained? :intervened? :counterfactual? :simulated? :log-lik]))
       decision
       (if-let [base (dist/-draw-logpdf dist value)]
         (let [rest (- log-prob base)
-              tempered-rest (if (zero? temperature) 0.0 (* temperature rest))]
+              tempered-rest (cond (nil? temperature) rest (zero? temperature) 0.0 :else (* temperature rest))]
           ;; a draw or a non-symmetric proposal weighed the full rest
           (when (and (contains? note :log-proposal) (not (:symmetric? note)))
             (add-weight! world (- tempered-rest rest)))
@@ -229,8 +246,7 @@
       (let [lp (dist/logpdf dist value)
             tp (tempered opts lp)]
         (add-weight! world tp)
-        {:value value :note (cond-> {:dist dist :log-prob tp :observed? true}
-                              (:temperature opts) (assoc :log-lik lp))})
+        {:value value :note {:dist dist :log-prob tp :log-lik lp :observed? true}})
 
       (contains? constraints address)
       (let [v (get constraints address)
@@ -363,9 +379,8 @@
              (let [w (:log-weight (:savepoint/payload sp))
                    tw (tempered opts w)]
                (add-weight! (:savepoint/world sp) tw)
-               {:value nil :note (cond-> {:log-prob tw :factor? true
-                                          :barrier (count-barrier! sp)}
-                                   (:temperature opts) (assoc :log-lik w))})
+               {:value nil :note {:log-prob tw :log-lik w :factor? true
+                                  :barrier (count-barrier! sp)}})
 
              :else (fallback sp old-entry))))
        {::options opts}))))
@@ -386,14 +401,15 @@
 (defn anchor?
   "Whether a site is worth an anchor: only a site a move can start from. An
   observe or a factor is never replayed from, and an anchor is a forked
-  world. A site inside one key of a `spindel.spin.keyed` loop takes none:
-  a move there re-runs that key (`update-step`), and a fork taken while the
-  loop's other keys are in flight cannot be continued (spindel
-  savepoints.md). Pass as `:anchor?` to `trace/run` and `trace/replay`."
+  world. Once a keyed region has been entered, sites take no anchors:
+  children can still be in flight, and old downstream checkpoints would be
+  invalidated by later key updates. Independent keys use reexecute; a broader
+  change needs a valid upstream anchor. This also covers nested child spins.
+  Pass as :anchor? to trace/run and trace/replay."
   [sp]
   (and (= choose-site (:savepoint/site sp))
        (not (:observed? (:savepoint/payload sp)))
-       (nil? (keyed/spin-of (:savepoint/world sp) (:spin-id (::sp/k sp))))))
+       (empty? (rtp/get-state (:savepoint/world sp) [:keyed/spins]))))
 
 (defn latent?
   "Whether a trace entry is a sample site inference may move: not observed,
@@ -559,19 +575,12 @@
           (- (log-selection new) (log-selection old)))))))
 
 (defn changed-addresses
-  "The addresses `new`, an update of `old` (`spindel.trace/update`), rewrote,
-  added or removed: the entries it decided, and the entries of the spins it
-  re-ran that it no longer holds."
+  "Addresses rewritten, added or removed. Released Spindel 0.1.140 does not
+  report :trace/removed, so deletion accounting conservatively scans keys."
   [old new]
-  (let [updated (:trace/updated new)]
-    (if-let [removed (:trace/removed new)]
-      (into (set updated) removed)
-      (let [rerun (into #{} (keep #(get-in new [:trace/entries % :spin])) updated)]
-        (into (set updated)
-              (keep (fn [[a e]] (when (and (contains? rerun (:spin e))
-                                           (not (contains? (:trace/entries new) a)))
-                                  a)))
-              (:trace/entries old))))))
+  (into (set (:trace/updated new))
+        (or (:trace/removed new)
+            (remove #(contains? (:trace/entries new) %) (keys (:trace/entries old))))))
 
 (defn uniform-site
   "Select one latent site uniformly. A selection is
@@ -598,259 +607,245 @@
        :symmetric? true}
       (prior-proposal sp old-entry))))
 
+(defn- subtree [world ids]
+  (loop [todo (vec ids) seen #{}]
+    (if-let [id (peek todo)]
+      (if (contains? seen id)
+        (recur (pop todo) seen)
+        (recur (into (pop todo) (engine/live-children (rtp/get-state world [:nodes id])))
+               (conj seen id)))
+      seen)))
+
+(defn- keyed-layout [t]
+  (let [world (:trace/world t)
+        trees (into {} (map (fn [id] [id (subtree world [id])]))
+                    (keys (rtp/get-state world [:keyed/spins])))
+        ;; Prefer the nearest key. Re-running an outer key alone can adopt an
+        ;; unchanged inner key and never visit the requested inner site.
+        owners (reduce (fn [owners [id nodes]]
+                         (reduce (fn [m child] (if (contains? m child) m (assoc m child id))) owners nodes))
+                       {} (sort-by (fn [[id nodes]] [(count nodes) (pr-str id)]) trees))
+        collections (into {} (mapcat (fn [[collection state]]
+                                       (map (fn [child] [(spin-core/spin-id child) collection])
+                                            (vals (:children state)))))
+                          (rtp/get-state world [:keyed]))]
+    {:owners owners :trees trees :collections collections}))
+
+(defn- replay-origin [t targets]
+  (let [first-target (if (= 1 (count targets)) (first targets) (trace/earliest t targets))
+        pending? (fn [address] (when-let [anchor (get-in t [:trace/entries address :savepoint])]
+                                 (sp/pending? anchor)))]
+    (if (pending? first-target) first-target
+        (last (filter pending? (take-while #(not= first-target %) (:trace/order t)))))))
+
+(defn copy-complete
+  "Fork a settled end-world without re-running its effects. The caller owns
+  shared anchors and must keep every live population reachable until release."
+  [t opts]
+  (pcps/async
+   (when (or (not (contains? t :trace/result)) (:trace/pending t) (:trace/error t))
+     (throw (ex-info "Only complete successful traces can be copied"
+                     {:type ::incomplete-copy})))
+   (let [copy (pcps/await (trace/update t [] (policy {:keep? true}) opts))]
+     (assoc copy ::latent (latent-index t)))))
+
+(defn- policy-contribution [entry]
+  (let [{:keys [log-prob log-proposal observed? constrained? factor? symmetric?]} (:note entry)]
+    (cond
+      (or observed? constrained? factor?) log-prob
+      (and (number? log-proposal) (not symmetric?)) (- log-prob log-proposal)
+      :else 0.0)))
+
+(defn- update-ledger! [old next changed]
+  ;; trace/update starts at the end-world, not a prefix checkpoint. Replace
+  ;; rewritten policy contributions instead of accumulating them twice.
+  ;; This is bookkeeping, not an evidence certificate for a Markov state.
+  (let [sum (fn [t addresses]
+              (transduce (map #(policy-contribution (get-in t [:trace/entries %]))) + 0.0 addresses))
+        weight (+ (log-weight old) (- (sum old changed)) (sum next changed))
+        weight (if (#?(:clj Double/isNaN :cljs js/isNaN) weight)
+                 (sum next (keys (:trace/entries next))) weight)]
+    (rtp/swap-state! (:trace/world next) [:inference :log-weight] (constantly weight))))
+
+(defn reexecute
+  "Rewrite selected sites through one execution interface. Complete independent
+  keyed regions re-run their owning keys; other moves replay from the latest
+  valid preceding anchor. Incremental parent-side inference effects and keyed
+  streaming frontiers are refused unless safe prefix replay is available.
+  Result metadata ::changed / ::restart describes the score delta to compare."
+  [t targets move opts]
+  (pcps/async
+   (when-let [missing (seq (remove #(contains? (:trace/entries t) %) targets))]
+     (throw (ex-info "A rewrite targets absent sites" {:type ::unknown-target :addresses (vec missing)})))
+   (let [world (:trace/world t)
+         {:keys [owners trees collections]} (keyed-layout t)
+         ids (mapv #(get owners (get-in t [:trace/entries % :spin])) targets)
+         keyed? (and (seq ids) (every? some? ids))
+         _ (when (and (seq owners) (or (:until opts) (:trace/pending t)))
+             (throw (ex-info "Incremental keyed moves require complete traces"
+                             {:type ::incremental-frontier})))
+         groups (when keyed? (set (map collections ids)))
+         overlap? (when keyed?
+                    (some (fn [id] (some #(and (not= id %) (contains? (get trees %) id)) ids)) ids))
+         selected (when keyed? (subtree world ids))
+         region (when (and (= 1 (count groups)) (not (contains? groups nil)))
+                  (into #{} (mapcat (fn [[id group]] (when (contains? groups group) (get trees id)))) collections))
+         touched (when keyed? (into #{} (keep (fn [[a e]] (when (contains? selected (:spin e)) a)))
+                                    (:trace/entries t)))
+         suffix (when keyed? (drop-while #(not (contains? touched %)) (:trace/order t)))
+         ;; Only siblings of the SAME keyed collection are independent here.
+         ;; A resumed parent can drop a whole later keyed collection, whose
+         ;; dead sites the released runtime would otherwise retain.
+         local? (and keyed? region (not overlap?)
+                     (not-any? #(not (contains? region (get-in t [:trace/entries % :spin]))) suffix))
+         replay (fn []
+                  (let [from (replay-origin t targets)]
+                    (when-not from
+                      (throw (ex-info "No safe replay anchor precedes the requested sites; use self-contained keyed regions or an anchored prefix"
+                                      {:type ::no-replay-origin :targets (vec targets)})))
+                    (fn [deliver fail]
+                      ;; A replay beginning before a key must visit that key,
+                      ;; even when its captured inputs are unchanged.
+                      ((trace/replay (if (= #{from} (set targets)) t (dissoc t :trace/world))
+                                     from move (assoc opts :anchor? (or (:anchor? opts) anchor?)))
+                       #(deliver (assoc % ::restart from)) fail))))]
+     (if-not local?
+       (pcps/await (replay))
+       (let [next (pcps/await (trace/update t (vec (distinct ids)) move (select-keys opts [:seed])))
+             allowed (subtree (:trace/world next) ids)
+             updated (set (:trace/updated next))
+             unvisited? (some #(and (contains? (:trace/entries next) %) (not (contains? updated %))) targets)
+             outside? (some #(not (contains? allowed (get-in next [:trace/entries % :spin]))) updated)]
+         (if (and (or outside? unvisited?) (not (:trace/error next)))
+           (do (owner/reclaim! [next] [t])
+               (pcps/await (replay)))
+           (let [changed (changed-addresses t next)]
+             (update-ledger! t next changed)
+             (assoc next ::changed changed ::latent (patch-latent (latent-index t) next changed)))))))))
+
 (defn mh-step
-  "One Metropolis-Hastings move on `trace`.
-
-  Options:
-    :select    (fn [trace iteration]) -> {:targets #{address}
-               :log-selection (fn [trace])}, the sites to move together and
-               the log probability of selecting them in a given trace
-               (default: `uniform-site`)
-    :propose   (fn [sp old-entry]) -> {:value v :log-proposal lq} or
-               {:value v :symmetric? true}, for each target (default:
-               `prior-proposal`). The reverse move is scored under the prior,
-               so a proposal must be the prior or symmetric.
-    :constraints as for `policy`; the conditioning of the chain, which
-               every move must repeat
-    :policy-options the options of the policy the trace was made with
-               (interventions, …), which every move repeats; `:keep?`,
-               `:draw` and `:constraints` are the move's own
-    :iteration passed to :select
-    :until, :anchor? passed to the replay (`spindel.trace/run`): a move of
-               a partial trace stops where the trace did
-    :temperature β: the move targets p(x)·L(x)^β, whatever temperature the
-               trace was recorded at (see `policy`)
-    :keep-old? an accepted move releases nothing of the old trace: its
-               caller releases what no one refers to
-    :shared-anchors? the trace's anchors may be shared with other traces
-               (SMC particles of one ancestor): an accepted move releases
-               the old trace's world only, and the caller its anchors
-
-  The computation is replayed from the earliest target; every other site
-  keeps its value and is rescored under its distribution as it is now. The
-  loser's worlds are released. Returns a CPS operation resolving
-  {:trace t :accepted? boolean :log-ratio r}; a trace with nothing to move
-  resolves unchanged."
-  ([trace] (mh-step trace nil))
-  ([trace {:keys [select propose iteration constraints policy-options until shared-anchors?
-                  temperature keep-old?]
-           :or {select uniform-site propose prior-proposal iteration 0}
-           anchor-pred :anchor?}]
-   (fn [resolve reject]
-     (let [{:keys [targets log-selection]}
-           (when (or until (seq (latent-addresses trace)))
-             (random/in-world-stream (:trace/world trace) [::select iteration]
-                                     #(select trace iteration)))
-           from (if (= 1 (count targets)) (first targets) (trace/earliest trace targets))]
-       (if-not from
-         (resolve {:trace trace :accepted? false :log-ratio 0.0})
-         (let [move (policy (cond-> (assoc policy-options
-                                           :keep? true
-                                           :constraints (merge (:constraints policy-options) constraints)
-                                           :draw (fn [sp old-entry]
-                                                   (when (contains? targets (:savepoint/address sp))
-                                                     (propose sp old-entry))))
-                              temperature (assoc :temperature temperature)))]
-           ((trace/replay trace from move (cond-> {:anchor? (or anchor-pred anchor?)}
-                                            until (assoc :until until)
-                                            ;; the replay's seed from the moving trace's
-                                            ;; world and the move index, not from a
-                                            ;; shared anchor's fork counter
-                                            (sp/seed (:trace/world trace))
-                                            (assoc :seed (sp/derive-seed (sp/seed (:trace/world trace))
-                                                                         ::move iteration))))
-            (fn [proposed]
-              (try
-                (let [ratio (if (or (:trace/error proposed)
-                                    ;; a partial move must end where the trace did
-                                    (and until (not (:trace/pending proposed))))
-                              ##-Inf
-                              (mh-log-ratio trace proposed log-selection from
-                                            (when temperature (tempered-score temperature))))
-                      accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
-                                   (or (>= ratio 0.0)
-                                       (random/in-world-stream
-                                        (:trace/world proposed) ::accept
-                                        #(random/accept-log? ratio))))]
-                  (cond
-                    (not accept?) (trace/release! proposed trace)
-                    keep-old? nil
-                    shared-anchors? (do ;; the displaced trace is parked there
-                                      (when-let [p (:trace/pending trace)]
-                                        (when (sp/pending? p) (sp/abandon p)))
-                                      (sp/release-world! (:trace/session trace) (:trace/world trace)))
-                    :else (trace/release! trace proposed))
-                  (resolve {:trace (if accept? proposed trace)
-                            :accepted? accept?
-                            :log-ratio ratio}))
-                (catch #?(:clj Throwable :cljs :default) error
-                  (reject error))))
-            reject)))))))
-
-(defn- owner
-  "The re-runnable spin that reached `address` in `trace` (a `keyed` child),
-  or nil."
-  [trace address]
-  (let [id (get-in trace [:trace/entries address :spin])]
-    (when (and id (keyed/spin-of (:trace/world trace) id)) id)))
+  "One MH move using keyed re-execution for complete independent regions and
+  anchored replay otherwise. :select / :propose / :constraints / :temperature
+  retain their usual meaning. :keep-old? and :shared-anchors? are ownership
+  policies; :until denotes an anchored replay frontier."
+  ([t] (mh-step t nil))
+  ([t {:keys [select propose iteration constraints policy-options temperature keep-old? shared-anchors? until]
+       :or {select uniform-site propose prior-proposal iteration 0} :as opts}]
+   (pcps/async
+    (let [{:keys [targets log-selection]}
+          (when (or until (pos? (latent-count t)))
+            (random/in-world-stream (:trace/world t) [::select iteration] #(select t iteration)))]
+      (if-not (seq targets)
+        {:trace t :accepted? false :log-ratio 0.0}
+        (let [move (policy (cond-> (assoc policy-options :keep? true
+                                          :constraints (merge (:constraints policy-options) constraints)
+                                          :draw (fn [site old-entry]
+                                                  (when (contains? targets (:savepoint/address site))
+                                                    (propose site old-entry))))
+                             (some? temperature) (assoc :temperature temperature)))
+              proposed (pcps/await
+                        (reexecute t targets move
+                                   (cond-> (select-keys opts [:until :anchor?])
+                                     (sp/seed (:trace/world t))
+                                     (assoc :seed (sp/derive-seed (sp/seed (:trace/world t)) ::move iteration)))))]
+          (try
+            (let [ratio (if (or (:trace/error proposed) (and until (not (:trace/pending proposed))))
+                          ##-Inf
+                          (mh-log-ratio t proposed log-selection (::restart proposed)
+                                        (tempered-score (target-temperature opts))
+                                        (::changed proposed)))
+                  accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
+                               (or (>= ratio 0.0)
+                                   (< (Math/log (random/in-world-stream (:trace/world proposed) ::accept m/uniform01)) ratio)))]
+              (cond
+                (not accept?) (trace/release! proposed t)
+                keep-old? nil
+                shared-anchors? (do (when-let [pending (:trace/pending t)]
+                                      (when (sp/pending? pending) (sp/abandon pending)))
+                                    (sp/release-world! (:trace/session t) (:trace/world t)))
+                :else (trace/release! t proposed))
+              {:trace (if accept? proposed t) :accepted? accept? :log-ratio ratio})
+            (catch #?(:clj Throwable :cljs :default) error
+              (owner/reclaim! [proposed] [t])
+              (throw error)))))))))
 
 (defn update-step
-  "One Metropolis-Hastings move, made incrementally where it can be: options
-  and result as for `mh-step`.
+  "Incremental-aware MH, also used by the ordinary shared transition path."
+  ([t] (mh-step t))
+  ([t opts] (mh-step t opts)))
 
-  When every target was reached by a re-runnable spin (one key of a
-  `spindel.spin.keyed` loop), the move re-runs only those spins in a fork of
-  the world the trace ended in (`spindel.trace/update`) and compares only
-  the entries it rewrote, added or removed — its cost is the moved keys',
-  not the program's. Otherwise it is `mh-step`, a replay from the earliest
-  target."
-  ([trace] (update-step trace nil))
-  ([trace {:keys [select propose iteration constraints policy-options temperature keep-old?]
-           :or {select uniform-site propose prior-proposal iteration 0}
-           :as opts}]
-   (fn [resolve reject]
-     (let [index (latent-index trace)
-           ;; carried along, so the selection and the next move need no scan
-           trace (assoc trace ::latent index)
-           {:keys [targets log-selection]}
-           (when (seq (:addresses index))
-             (random/in-world-stream (:trace/world trace) [::select iteration]
-                                     #(select trace iteration)))
-           owners (when (seq targets) (mapv #(owner trace %) targets))]
-       (cond
-         (empty? targets)
-         (resolve {:trace trace :accepted? false :log-ratio 0.0})
-
-         (some nil? owners)
-         ((mh-step trace opts) resolve reject)
-
-         :else
-         (let [move (policy (cond-> (assoc policy-options
-                                           :keep? true
-                                           :constraints (merge (:constraints policy-options) constraints)
-                                           :draw (fn [sp old-entry]
-                                                   (when (contains? targets (:savepoint/address sp))
-                                                     (propose sp old-entry))))
-                              temperature (assoc :temperature temperature)))]
-           ((trace/update trace (vec (distinct owners)) move
-                          {:seed (sp/derive-seed (sp/seed (:trace/world trace)) ::move iteration)})
-            (fn [proposed]
-              (try
-                (let [changed (changed-addresses trace proposed)
-                      proposed (assoc proposed ::latent (patch-latent index proposed changed))
-                      ratio (if (:trace/error proposed)
-                              ##-Inf
-                              (mh-log-ratio trace proposed log-selection nil
-                                            (when temperature (tempered-score temperature))
-                                            changed))
-                      accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
-                                   (or (>= ratio 0.0)
-                                       (< (Math/log (random/in-world-stream
-                                                     (:trace/world proposed) ::accept
-                                                     m/uniform01))
-                                          ratio)))]
-                  (cond
-                    (not accept?) (trace/release! proposed trace)
-                    keep-old? nil
-                    :else (trace/release! trace proposed))
-                  (resolve {:trace (if accept? proposed trace)
-                            :accepted? accept?
-                            :log-ratio ratio}))
-                (catch #?(:clj Throwable :cljs :default) error
-                  (reject error))))
-            reject)))))))
-
-(defn- changed-log-joint
-  "log p(new) - log p(old) over the entries `changed` (the rest are the same
-  in both and cancel)."
-  [old new changed]
-  (let [lp (fn [t] (transduce (keep (fn [a]
-                                      (let [e (get-in t [:trace/entries a])]
-                                        (when (#{choose-site factor-site} (:site e))
-                                          (:log-prob (:note e))))))
-                              + 0.0 changed))]
-    (- (lp new) (lp old))))
+(defn- gibbs-shape [t]
+  (into {} (map (fn [[a e]] [a [(:site e) (select-keys (:note e)
+                                                       [:observed? :constrained? :intervened? :deterministic?])]]))
+        (:trace/entries t)))
 
 (defn update-gibbs
-  "A Gibbs update of the sample site at `address`, whose distribution has
-  finite support (`dist/support`): every other value is tried, each in its
-  own update of the trace, and one is drawn with probability proportional to
-  its joint density. Returns a CPS operation resolving {:trace t :value v
-  :log-weights {value Δ log p}}, with `trace` itself when the value stays.
-
-  Where the site belongs to one key of a `spindel.spin.keyed` loop, each
-  candidate re-runs only that key (`spindel.trace/update`) and its weight is
-  taken over the entries it changed: the update costs K times the key, not
-  the program. Otherwise each candidate replays from the site's anchor.
-  Sites a candidate reaches for the first time are drawn from their prior and
-  weigh in with their density, so the update is exact when a value of the
-  site does not change which sites run below it.
-
-  Options: `:iteration` (the update's number, for its random draws),
-  `:constraints`, `:policy-options` and `:keep-old?` (release nothing of
-  `trace` when another value is drawn) as for `mh-step`."
-  ([trace address] (update-gibbs trace address nil))
-  ([trace address {:keys [iteration constraints policy-options keep-old?] :or {iteration 0}}]
-   (fn [resolve reject]
-     (try
-       (let [entry (get-in trace [:trace/entries address])
-             current (:value entry)
-             values (dist/support (:dist (:note entry)))
-             _ (when-not (seq values)
-                 (throw (ex-info "A Gibbs update needs a site with finite support"
-                                 {:type ::infinite-support :address address})))
-             spin-id (owner trace address)
-             index (latent-index trace)
-             trace (assoc trace ::latent index)
-             world (:trace/world trace)
-             candidate
-             (fn [i value]
-               (let [move (policy (assoc policy-options
-                                         :keep? true
-                                         :constraints (merge (:constraints policy-options) constraints)
-                                         :draw (fn [sp _]
-                                                 (when (= address (:savepoint/address sp))
-                                                   {:value value :symmetric? true}))))
-                     seed (sp/derive-seed (sp/seed world) [::gibbs iteration] i)]
-                 (if spin-id
-                   (trace/update trace [spin-id] move {:seed seed})
-                   (trace/replay trace address move {:anchor? anchor? :seed seed}))))
-             others (vec (keep-indexed (fn [i v] (when (not= v current) [i v])) values))]
-         (letfn [(collect [[[i v] & more] acc]
-                   (if (nil? i)
-                     (choose acc)
-                     ((candidate i v)
-                      (fn [t]
-                        (let [changed (if spin-id
-                                        (changed-addresses trace t)
-                                        (distinct (concat (drop-while #(not= address %) (:trace/order trace))
-                                                          (drop-while #(not= address %) (:trace/order t)))))]
-                          (collect more (conj acc [v
-                                                   (assoc t ::latent (patch-latent index t changed))
-                                                   (if (:trace/error t)
-                                                     ##-Inf
-                                                     (changed-log-joint trace t changed))]))))
-                      (fn [error]
-                        (doseq [[_ t _] acc] (trace/release! t trace))
-                        (reject error)))))
-                 (choose [acc]
-                   (let [options (into [[current trace 0.0]] acc)
-                         top (apply max (map #(nth % 2) options))
-                         ws (mapv #(Math/exp (- (nth % 2) top)) options)
-                         u (* (reduce + ws)
-                              (random/in-world-stream world [::gibbs iteration] m/uniform01))
-                         pick (loop [k 0 acc 0.0]
-                                (let [acc (+ acc (nth ws k))]
-                                  (if (or (< u acc) (= k (dec (count ws)))) k (recur (inc k) acc))))
-                         [value chosen _] (nth options pick)]
-                     (doseq [[_ t _] options :when (and (not (identical? t chosen))
-                                                        (not (and keep-old? (identical? t trace))))]
-                       (trace/release! t chosen))
-                     (resolve {:trace chosen :value value
-                               :log-weights (into {} (map (fn [[v _ w]] [v w])) options)})))]
-           (collect others [])))
-       (catch #?(:clj Throwable :cljs :default) error
-         (reject error))))))
+  "Exact finite-support Gibbs on complete traces with fixed site structure.
+  Every other latent must stay fixed with no auxiliary redraws. Candidates
+  violating this contract are refused; they are not an approximate Gibbs move.
+  :temperature, target policy and ownership follow mh-step."
+  ([t address] (update-gibbs t address nil))
+  ([t address {:keys [iteration constraints policy-options keep-old?] :as opts
+               :or {iteration 0}}]
+   (pcps/async
+    (let [temperature (target-temperature opts)
+          entry (get-in t [:trace/entries address])
+          current (:value entry)
+          _ (when-not (latent? entry)
+              (throw (ex-info "Gibbs targets an unconstrained latent site"
+                              {:type ::gibbs-fixed-site :address address})))
+          _ (when-not (and (number? temperature) (<= 0.0 temperature 1.0))
+              (throw (ex-info "Gibbs temperature must be in [0,1]" {:type ::gibbs-invalid-score})))
+          values (vec (dist/support (get-in entry [:note :dist])))
+          score (tempered-score temperature)
+          total (fn [x] (transduce (map score) + 0.0 (entries x)))
+          old-total (total t)
+          shape (gibbs-shape t)
+          others (dissoc (into {} (map (juxt :address :value)) (filter latent? (entries t))) address)
+          candidates (atom [])]
+      (when (or (:trace/pending t) (:trace/error t) (not (contains? t :trace/result)))
+        (throw (ex-info "Gibbs requires a complete successful trace" {:type ::gibbs-frontier})))
+      (when-not (and (latent? entry) (not (contains? (merge (:constraints policy-options) constraints) address)))
+        (throw (ex-info "Gibbs targets an unconstrained latent site" {:type ::gibbs-fixed-site :address address})))
+      (when-not (and (seq values) (some #(= current %) values))
+        (throw (ex-info "Gibbs needs finite support containing the current value" {:type ::infinite-support :address address})))
+      (when-not (and (number? temperature) (<= 0.0 temperature 1.0) (finite? old-total))
+        (throw (ex-info "Gibbs requires a finite current target score and temperature in [0,1]"
+                        {:type ::gibbs-invalid-score :temperature temperature})))
+      (try
+        (loop [remaining (seq (map-indexed vector values))]
+          (when-let [[i value] (first remaining)]
+            (when-not (= value current)
+              (let [move (policy (assoc policy-options :keep? true :temperature temperature
+                                        :constraints (merge (:constraints policy-options) constraints)
+                                        :draw (fn [site _]
+                                                (when (= address (:savepoint/address site))
+                                                  {:value value :symmetric? true}))))
+                    next (pcps/await (reexecute t #{address} move
+                                                {:seed (sp/derive-seed (sp/seed (:trace/world t)) [::gibbs iteration] i)}))]
+                (swap! candidates conj [value next])
+                (when (or (:trace/error next) (not= value (get-in next [:trace/entries address :value]))
+                          (not= shape (gibbs-shape next))
+                          (some (fn [[a v]] (or (not= v (get-in next [:trace/entries a :value]))
+                                                (get-in next [:trace/entries a :note :redrawn?]))) others))
+                  (throw (ex-info "Gibbs requires fixed site structure and unchanged auxiliary choices"
+                                  {:type ::gibbs-structure :address address})))))
+            (recur (next remaining))))
+        (let [options (into [[current t]] @candidates)
+              increments (mapv (fn [[_ x]] (- (total x) old-total)) options)
+              _ (when-not (every? #(and (number? %) (not (#?(:clj Double/isNaN :cljs js/isNaN) %)) (not= ##Inf %)) increments)
+                  (throw (ex-info "Gibbs candidate scores are invalid" {:type ::gibbs-invalid-score})))
+              selected (random/in-world-stream (:trace/world t) [::gibbs iteration]
+                                               #(m/sample-categorical (m/normalize-log-weights increments)))
+              [value chosen] (nth options selected)
+              live (cond-> [chosen] keep-old? (conj t))]
+          (rtp/swap-state! (:trace/world chosen) [:engine/reuse-source] (constantly nil))
+          (owner/reclaim! (mapv second options) live)
+          {:trace chosen :value value :log-weights (zipmap (map first options) increments)
+           :accepted? true :moves 1 :accepted-moves 1})
+        (catch #?(:clj Throwable :cljs :default) error
+          (owner/reclaim! (mapv second @candidates) [t])
+          (throw error)))))))
 
 (defn mh-chain
   "`n` Metropolis-Hastings moves from `trace`; `opts` as for `mh-step`.

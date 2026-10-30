@@ -64,7 +64,7 @@
     (let [context (cond-> context (some? beta) (assoc :temperature beta))
           move (tc/policy context (fn [sp _] (when (= address (:savepoint/address sp))
                                                {:value q :symmetric? true})))]
-      ((trace/replay trace address move (tc/replay-options context trace [::move address (:key context)]))
+      ((itrace/reexecute trace #{address} move (tc/replay-options context trace [::move address (:key context)]))
        (fn [proposed]
          (try
            (when (or (:trace/error proposed) (not (tc/at-frontier? context proposed)))
@@ -143,17 +143,17 @@
           (let [move (tc/policy context (fn [s _]
                                           (when (= address (:savepoint/address s))
                                             {:value q :symmetric? true})))]
-            ((trace/replay trace address move
-                           (cond-> (tc/replay-options context)
-                             (sp/seed (:trace/world trace))
-                             (assoc :seed (sp/derive-seed (sp/seed (:trace/world trace)) ::da-move [address key]))))
+            ((itrace/reexecute trace #{address} move
+                               (cond-> (tc/replay-options context)
+                                 (sp/seed (:trace/world trace))
+                                 (assoc :seed (sp/derive-seed (sp/seed (:trace/world trace)) ::da-move [address key]))))
              (fn [proposed]
                (try
                  (let [ratio (if (or (:trace/error proposed)
                                      ;; a partial move must end where the trace did
                                      (and until (not (:trace/pending proposed))))
                                ##-Inf
-                               (- (itrace/mh-log-ratio trace proposed (constantly 0.0) address (tc/entry-score context))
+                               (- (itrace/mh-log-ratio trace proposed (constantly 0.0) (::itrace/restart proposed) (tc/entry-score context) (::itrace/changed proposed))
                                   (- (coarse q) (coarse q0))))
                        accept? (and (== ratio ratio)
                                     (or (>= ratio 0.0)
