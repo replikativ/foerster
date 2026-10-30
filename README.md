@@ -91,6 +91,23 @@ Inside another spin, `await` it instead of dereferencing
 
 ## Documentation
 
+- **Causal inference** — [queries and identifiability](doc/causal.md):
+  native mechanism fitting and held-out checks, shared-noise counterfactual
+  worlds, graphical ID/IDC, attribution and finite actual-cause search.
+  [From data to repairs](notebooks/foerster/causal_workflow.clj) runs the
+  workflow against known truth, including bootstrap uncertainty and a
+  misspecified model.
+
+- **GSDM research experiment** — [native amortized abduction](experiments/gsdm.md):
+  Raster graph attention, DDPM training and counterfactual replay, checked
+  against an analytic posterior; CPU numerical and checkpoint checks for
+  future backend qualification.
+
+- **Amortized inference** — [simulator-to-artifact integration](doc/amortized.md):
+  derive RV schemas and attention masks from simulator source, train conditional
+  samplers, and reconstruct causal noise. Includes finite RVs, observation
+  encoders and data checkpoints; current Raster backend is CPU/JVM.
+
 - **Tutorials** — runnable notebooks, rendered at
   [replikativ.github.io/foerster](https://replikativ.github.io/foerster/):
   getting started, choosing an algorithm, every inference method with its

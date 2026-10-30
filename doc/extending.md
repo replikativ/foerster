@@ -28,6 +28,7 @@ whose guide decides the latent sites):
 | `:draw` `(fn [savepoint old-entry])` | a custom proposal for latent sites: return `nil` (not my site), `{:value v :log-proposal lq}`, or `{:value v :symmetric? true}`; the weight gets `log p(v) − lq` |
 | `:keep?` | reuse the values of the replayed trace, rescored |
 | `:noise` `{address u}` | counterfactual noise for mechanisms |
+| `:strict?` `true` with `:noise` | refuse a counterfactual site without compatible factual noise |
 | `:init?` | start sites at their `:init` option (a chain's first state) |
 
 ```clojure

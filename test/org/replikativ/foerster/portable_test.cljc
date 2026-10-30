@@ -5,6 +5,7 @@
                :cljs [cljs.test :refer-macros [deftest is async]])
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.core :as infer]
+            [org.replikativ.foerster.counterfactual :as cf]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -45,3 +46,25 @@
     (is (= [0.25 0.75] (mapv #(/ (Math/round (* 100 %)) 100.0)
                              (m/normalize-log-weights (mapv second (m/get-particles measure))))))
     (is (< (Math/abs (- (m/effective-sample-size measure) 1.6)) 1e-9))))
+
+(defn- causal-model []
+  (spin
+   (let [x (sample (dist/normal 0 1) :id :x)
+         y (sample (dist/normal (* 2 x) 1) :id :y)]
+     {:x x :y y})))
+
+(defn- check-twins [population]
+  (is (= 1 (count population)))
+  (is (= :complete (:status (first population))))
+  (is (= {:x 2.0 :y 5.0} (get-in population [0 :worlds :shifted])))
+  (is (= {:x 3.0 :y 7.0} (get-in population [0 :worlds :nested]))))
+
+(deftest counterfactual-world-composition-is-portable
+  (let [task #(cf/query (causal-model)
+                        {:evidence {:x 1.0 :y 3.0}
+                         :worlds [[:shifted {:x {:shift 1.0}}]
+                                  [:nested (fn [worlds] {:x {:do (inc (get-in worlds [:shifted :x]))}})]]})]
+    #?(:clj (let [p (promise)]
+              (run-spin task #(deliver p %) (fn []))
+              (check-twins (deref p 30000 ::timeout)))
+       :cljs (async done (run-spin task check-twins done)))))
