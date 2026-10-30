@@ -1,7 +1,9 @@
 (ns org.replikativ.foerster.learn-test
   "Training data from a steered SMC run: the coin process of steer-test,
   whose tilted law is Binomial(5, e^λ/(1+e^λ))."
-  (:require [clojure.test :refer [deftest is]]
+  (:require [org.replikativ.foerster.dist :as dist]
+            [org.replikativ.foerster.effects :refer [sample observe]]
+            [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.learn :as learn]
             [org.replikativ.foerster.random :as random]
@@ -53,11 +55,11 @@
   "mu ~ N(0, 1), y ~ N(mu, σ) with σ = exp(:log-sigma) a parameter."
   [{:keys [log-sigma]}]
   (spin
-   (let [mu (org.replikativ.foerster.effects/sample (org.replikativ.foerster.dist/normal 0.0 1.0) :id :mu)
+   (let [mu (sample (dist/normal 0.0 1.0) :id :mu)
          s (Math/exp log-sigma)]
      (loop [[y & more] [0.5 2.1 -0.3 1.7 1.2 0.9 2.6 -0.8] i 0]
        (when y
-         (org.replikativ.foerster.effects/observe (org.replikativ.foerster.dist/normal mu s) y :id [:y i])
+         (observe (dist/normal mu s) y :id [:y i])
          (recur more (inc i))))
      mu)))
 

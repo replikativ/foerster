@@ -3,7 +3,8 @@
   random-walk proposals and the program decides. The chain must target the
   program's exact posterior whatever the coarse density is; a poor one only
   lowers acceptance."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.measure :as m]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.core :as infer]
@@ -91,8 +92,8 @@
                                                     (k/delayed-acceptance-kernel 200 {:x coarse :y coarse}
                                                                                  {:scales 1.0 :samples :all})
                                                     2))]
-    (is (some neg? (map (comp org.replikativ.foerster.measure/get-value first)
-                        (org.replikativ.foerster.measure/get-particles measure)))
+    (is (some neg? (map (comp m/get-value first)
+                        (m/get-particles measure)))
         "x crossed zero, so :y came and went")))
 
 (deftest invalid-step-counts-are-refused
@@ -114,8 +115,8 @@
                                                     (k/delayed-acceptance-kernel 20000 {:x coarse :y coarse}
                                                                                  {:scales 1.2 :samples :all :burn 500})
                                                     4))
-        vs (map (comp org.replikativ.foerster.measure/get-value first)
-                (org.replikativ.foerster.measure/get-particles measure))
+        vs (map (comp m/get-value first)
+                (m/get-particles measure))
         n (double (count vs))
         ys (keep :y0 vs)
         p (/ (count (filter #(pos? (:x0 %)) vs)) n)

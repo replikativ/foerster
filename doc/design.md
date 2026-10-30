@@ -142,6 +142,44 @@ run a program under a policy.
   structural equation of exogenous noise (`foerster.mechanism`): abduction
   infers the noise, action intervenes, prediction replays.
 
+## Programmable inference and settled results
+
+`foerster.program` composes initialization, target advancement, resampling,
+Markov moves and scored transport with ordinary `spin` / `await` and Clojure
+control flow. Value populations and complete-trace populations share normalized
+selection weights and total-mass accounting. Markov transitions are compiled by
+`foerster.transition`; proposals and weighted transport have separate contracts.
+The [inference-program guide](inference-programs.org) describes those contracts
+and their current limits.
+
+`program/finish` returns a `PMeasure` directly, enriched with target, mass,
+history and inference-contract metadata. `program/run` settles resource cleanup
+before delivering it. Callers pass this result directly to `core/query`,
+`core/predict` and measure utilities. There is no separate `InferenceResult`
+record or `:measure` wrapper for a finished program. Streaming steps do contain
+`:measure`: their cursor also carries the operations needed to continue a live
+filter.
+
+A trace population version can be consumed by one operation at a time; reuse of
+a stale or in-flight version fails. `program/fork` makes an independent live
+population and preserves the source. Reclamation follows the traces reachable
+from every live population, including forks. Numerical value snapshots remain
+persistent, with explicit copying for mutable values.
+
+Online SMC and SMC² share `foerster.cursor`: a push consumes its step, an
+independent fork has its own cursor, and stale, concurrent or closed pushes fail
+before replacing a waiting continuation. Await `:close-operation` to join
+cleanup; closing is idempotent across all versions of one cursor. `:close` is a
+convenience that initiates cleanup without awaiting its completion.
+
+SMC² currently requires parameter sites to precede every inner latent site.
+Parameters may depend on earlier parameters within this prefix. This makes the
+prior draws used to initialize the outer population valid; a parameter with an
+inner latent ancestor is refused. Active inner filters must be independently
+forkable, so `:anchors`, `:retained` and copied worlds are refused before the
+model executes. Canonical worlds remain available to the built-in particle
+methods that support their stronger ownership contract.
+
 ## Canonical worlds
 
 With `:world-policy :fork` the model runs in a frozen fork of the caller's

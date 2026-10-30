@@ -43,21 +43,21 @@
                          (catch Throwable t
                            {:status :threw
                             :message (ex-message t)
-                            :cause-message (some-> t ex-cause ex-message)})))]
+                            :cause-message (some-> t ex-cause ex-message)})))
 
         ;; Bounded wall-clock: a regression that re-introduces the hang
         ;; would block on the inference forever. 5s is generous — the
         ;; expected path is "fail fast, the moment any particle throws"
         ;; (well under 1s with 3 particles).
-            (let [result (deref outer 5000 ::timed-out)]
-              (is (not= ::timed-out result)
-                  "smc-infer must NOT hang when particles fail")
-              (when (not= ::timed-out result)
-                (is (= :threw (:status result))
-                    (str "outer spin must propagate the inference failure, got: "
-                         (pr-str result)))
-                (is (re-find #"Inference failed" (str (:message result)))
-                    "thrown error message identifies it as an inference failure")
-                (is (re-find #"boom" (str (:cause-message result)))
-                    "the original model error is preserved as the cause")))))
+                result (deref outer 5000 ::timed-out)]
+            (is (not= ::timed-out result)
+                "smc-infer must NOT hang when particles fail")
+            (when (not= ::timed-out result)
+              (is (= :threw (:status result))
+                  (str "outer spin must propagate the inference failure, got: "
+                       (pr-str result)))
+              (is (re-find #"Inference failed" (str (:message result)))
+                  "thrown error message identifies it as an inference failure")
+              (is (re-find #"boom" (str (:cause-message result)))
+                  "the original model error is preserved as the cause"))))
         (finally (ctx/stop-context! context))))))

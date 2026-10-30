@@ -34,6 +34,7 @@ Each runs as it renders, in CI on every pull request.
 | [Posteriors](posteriors.md) | reading a measure: particles, traces, summaries, ESS, evidence, training data |
 | [Checking a Model and its Inference](workflow.md) | prior predictive simulation, several methods, R-hat/ESS/MCSE and SMC diagnostics, posterior predictive checks, model comparison, simulation-based calibration |
 | [Coming from Other PPLs](coming-from.md) | Stan, PyMC, Turing, Gen, Anglican and WebPPL concepts in foerster, and what foerster does not have yet |
+| [Inference Programs](inference-programs.org) | scoped custom population programs, targets, weight accounting and Markov transitions |
 | [Extending](extending.md) | your own distributions, policies, proposals, MH moves and kernels; learned twists and proposals |
 | [Worlds](worlds.md) | canonical worlds, their lifecycle, failure and recovery, resources |
 | [Distributions and Reproducibility](distributions.md) | `foerster.dist`, writing a distribution, seeds and streams |

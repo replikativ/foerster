@@ -3,6 +3,7 @@
   conjugate regression against its exact posterior and evidence."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.dist :as dist]
+            [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.scmc :as scmc]))
 
@@ -78,13 +79,13 @@
   (let [data (regression 2000 2)
         {:keys [a b a-sd b-sd log-z]} (exact data)
         r (scmc/scmc (model data 20) {:particles 500 :memory 50 :seed [1 50]})
-        [am asd] (moments (:particles r) 0)
-        [bm bsd] (moments (:particles r) 1)]
+        [am asd] (moments (mapv (comp m/get-value first) (m/get-particles r)) 0)
+        [bm bsd] (moments (mapv (comp m/get-value first) (m/get-particles r)) 1)]
     (is (< (Math/abs (/ (- am a) a-sd)) 0.15))
     (is (< (Math/abs (/ (- bm b) b-sd)) 0.15))
     (is (< (Math/abs (- 1.0 (/ asd a-sd))) 0.1))
     (is (< (Math/abs (- 1.0 (/ bsd b-sd))) 0.1))
-    (is (< (Math/abs (- (:log-z r) log-z)) 0.5))
+    (is (< (Math/abs (- (m/log-marginal r) log-z)) 0.5))
     (testing "the memory bound"
       (is (<= (count (:coreset r)) 50))
       (is (<= (:max-coreset-size r) 70))
@@ -96,7 +97,7 @@
         r (scmc/scmc (model data 20) {:particles 300 :memory 200 :seed [2]})]
     (is (= 200 (count (:coreset r))))
     (is (every? #(= 1.0 (first %)) (:coreset r)))
-    (is (< (Math/abs (- (:log-z r) (:log-z (exact data)))) 0.5))))
+    (is (< (Math/abs (- (m/log-marginal r) (:log-z (exact data)))) 0.5))))
 
 (deftest refusals
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #":memory" (scmc/scmc (model [] 1) {:memory 0})))
@@ -116,7 +117,7 @@
                             :log-lik (fn [q d] (swap! seen conj @realized) (log-lik q d)))
                      {:particles 50 :memory 30 :seed [3]})]
     (is (= 10 @realized))
-    (is (= 50 (count (:particles r))))
+    (is (= 50 (count (mapv (comp m/get-value first) (m/get-particles r)))))
     (testing "the first batch was scored before the last one was realized"
       (is (< (first @seen) 10)))))
 
@@ -126,3 +127,21 @@
                  :log-lik (fn [_ [x _]] (if (> x 100.0) 0.0 ##-Inf)))]
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"zero likelihood"
                           (scmc/scmc m {:particles 20 :memory 10 :seed [4]})))))
+
+(deftest settled-result-uses-the-shared-measure-protocol
+  (let [result (scmc/scmc {:prior-sample (constantly [2.0])
+                           :prior-log-density (constantly 0.0)
+                           :log-lik (constantly 0.0)
+                           :batches []}
+                          {:particles 8 :seed 17})
+        particles (m/get-particles result)]
+    (is (satisfies? m/PMeasure result))
+    (is (= :empirical (m/measure-type result)))
+    (is (= (vec (repeat 8 [2.0])) (mapv (comp m/get-value first) particles)))
+    (is (every? #(= 0.0 (second %)) particles))
+    (is (= 8.0 (m/effective-sample-size result)))
+    (is (= 0.0 (m/log-marginal result)))
+    (is (= 2.0 (:mean (m/measure-stats result (comp first m/get-value)))))
+    (is (= :weighted-population (get-in result [:inference-contract :semantics])))
+    (is (= [] (:coreset result)))
+    (is (not (contains? result :log-z)))))

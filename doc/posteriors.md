@@ -79,7 +79,9 @@ population degenerated and to trace lineages.
 **Evidence** — `(m/log-marginal measure)` estimates log p(data), the
 normalizer of the posterior, for importance sampling and the SMC methods
 (tempered and batched SMC, the cascade, SMC²): compare models by it. For
-pooled particle-MCMC output it is not an evidence estimate.
+Markov-chain and pooled particle-MCMC output it returns `nil`: sample weights
+are not evidence estimates. Results carry an `:inference-contract` describing
+their semantics and normalizer status.
 
 **Surviving histories** — `(diagnostics/distinct-count measure [:x 0])`:
 how many distinct values an early site still takes after SMC resampled —

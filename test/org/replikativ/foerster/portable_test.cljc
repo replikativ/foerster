@@ -5,6 +5,8 @@
                :cljs [cljs.test :refer-macros [deftest is async]])
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.core :as infer]
+            [org.replikativ.foerster.program :as ip]
+            [org.replikativ.foerster.kernel :as k]
             [org.replikativ.foerster.counterfactual :as cf]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.foerster.measure :as m]
@@ -68,3 +70,23 @@
               (run-spin task #(deliver p %) (fn []))
               (check-twins (deref p 30000 ::timeout)))
        :cljs (async done (run-spin task check-twins done)))))
+
+(defn- custom-inference []
+  (ip/run {:seed 731}
+          (fn [scope]
+            (spin
+             (let [p (await (ip/initialize scope (ip/trace-target (conjugate-model)) 64))
+                   p (ip/advance scope p (ip/temperature (:target p) 1.0))
+                   p (await (ip/resample scope p))
+                   p (await (ip/move scope p (k/single-site-mh-kernel 2)))]
+               (ip/finish scope p))))))
+
+(deftest programmable-populations-are-portable
+  (let [check (fn [result]
+                (is (= 64 (count (m/get-particles result))))
+                (is (= [:advance :resample :move] (mapv :operation (:history result))))
+                (is (< (Math/abs (- (:log-mass result) (m/log-marginal result))) 1e-10)))]
+    #?(:clj (let [p (promise)]
+              (run-spin custom-inference #(deliver p %) (fn []))
+              (check (deref p 30000 ::timeout)))
+       :cljs (async done (run-spin custom-inference check done)))))

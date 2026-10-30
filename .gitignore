@@ -25,7 +25,6 @@ pom.xml.asc
 # LSP / clj-kondo
 .lsp/
 .clj-kondo/.cache/
-.clj-kondo/
 
 # REPL logs (and rotated/compressed variants like foo.log.1, foo.log-2025-…gz)
 *.log

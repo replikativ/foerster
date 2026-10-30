@@ -1,0 +1,198 @@
+#+title: Programmable inference
+
+Inference programs combine weighted-population operations using ordinary
+Clojure functions, loops and Spindel =spin= / =await=. The numerical and trace
+engines share mass accounting; Markov transitions are a separate interface.
+
+* A custom resample-move program
+
+#+begin_src clojure
+(require '[org.replikativ.foerster.program :as ip]
+         '[org.replikativ.foerster.kernel :as k]
+         '[org.replikativ.spindel.spin.cps :refer [spin]]
+         '[org.replikativ.spindel.effects.await :refer [await]])
+
+(defn anneal [model]
+  (ip/run {:seed 42}
+    (fn [scope]
+      (spin
+        (loop [p (await (ip/initialize scope (ip/trace-target model) 256))
+               betas [0.25 0.5 0.75 1.0]]
+          (if-not (seq betas)
+            (ip/finish scope p)
+            (let [target (ip/temperature (:target p) (first betas))
+                  p (ip/advance scope p target)
+                  p (if (< (ip/ess p) 128)
+                      (await (ip/resample scope p)) p)
+                  p (await (ip/move scope p (k/single-site-mh-kernel 2)))]
+              (recur p (next betas)))))))))
+#+end_src
+
+=trace-target= initially targets the prior, beta=0. Each temperature changes the
+weight of observations/factors without changing the trace's state space.
+=advance= returns updated immutable bookkeeping; =initialize=, =resample= and
+=move= return awaitable computations. =finish= returns a =PMeasure=, the same
+empirical measure used by built-in inference, enriched with =:target=,
+=:log-mass=, =:inference-contract= and =:history=. The result goes directly to
+=infer/query=, =infer/predict= and diagnostics; there is no =:measure= wrapper.
+For example, inside a caller's =spin=, =(infer/query (await (anneal model)) identity)=
+computes statistics of numeric model results. =run= settles
+all owned sessions before delivering the result, including on cancellation.
+A program must finish rather than return a live population.
+
+These targets are complete traces, not streaming observation prefixes, and
+currently use fresh execution worlds. Trace moves use the shared Markov
+transition interpreter, including =k/cycle= and =k/mixture=. Population moves
+require frozen tuning; warm-up belongs to a separate chain run. At intermediate
+temperatures, only transitions declaring tempered-target support are accepted.
+Unsupported block transitions are refused rather than run at the wrong target.
+
+A trace population is a live, versioned resource: advancing, resampling, moving,
+transporting or finishing consumes that version. Reusing an old version or
+starting concurrent operations on it fails. =(await (ip/fork scope p))= creates
+an independent population while keeping =p= usable; future random streams are
+independent. Value populations remain persistent snapshots, subject to the
+mutable-value copy contract below. Consumed trace state is reclaimed as it
+becomes unreachable from live populations and forks. Final scope cleanup joins
+all remaining resources. Live populations are not serializable checkpoints.
+
+* Persistent numerical values
+
+=value-target= accepts a log target score, proposal draw and proposal log density.
+All must use the same coordinates and reference measure. The proposal must be
+normalized and cover the target's support. =retarget= derives a new target in the
+same state space; the old target must cover it for reweighting alone to suffice.
+Position and optional =:label= are descriptive. Every target derivation gets a
+fresh identity, including two different scores at the same position. Arbitrary
+trace-score retargeting is refused; trace targets use =temperature= only.
+For dimension/support changes use a justified proposal correction, not retargeting.
+
+#+begin_src clojure
+(ip/value-target log-prior draw-prior log-prior
+  {:project identity})
+#+end_src
+
+Values must be persistent data: selecting an ancestor shares its value safely.
+Mutable arrays/objects require an explicit =:copy= function (for example =aclone=)
+in the value-target options, or their own representation. It is applied both
+when selecting ancestors and before a transition may modify a value.
+=invariant-kernel= binds a function =(fn [value] ...)= to its target;
+its author must establish invariance and the conditions on any tuning.
+The same transition law must apply to every offspring slot: systematic
+resampling preserves the population average, not each ordered slot separately.
+Particle-specific RNG streams remain internal. This
+constructor is an extension contract, not an automatic proof. Built-in randomness
+should use =foerster.random= / =foerster.dist= so each particle has a keyed stream.
+
+* Scored transport
+
+=transport-kernel= binds forward and backward proposal laws to source and
+destination target identities. =(await (ip/transport scope p destination kernel))=
+proposes new particles and corrects each weight by the target-score difference,
+minus the forward log density, plus the backward log density and any supplied
+log Jacobian. Value transport may change dimension when these laws justify it.
+Trace transport retains its model representation and updates anchored latent
+choices; observed and constrained sites cannot be changed. Forward/backward
+support and Jacobians are the caller's obligations. This is a weighted proposal,
+not an invariant Markov move. Resample zero-weight source particles before
+transporting them.
+
+* What the outputs mean
+
+Normalized selection weights and total mass are stored separately. Reweighting
+updates both; resampling preserves total mass. A zero-mass population has no
+posterior distribution: it can finish as a zero-mass result but cannot be
+resampled or moved. NaN/infinite mass and mismatched correction lengths fail.
+
+The numerical log mass is not by itself a certificate of unbiased evidence.
+Custom scores, support coverage, target selection and moves each impose
+obligations. Result guarantees conservatively leave the normalizer unverified;
+this layer must not be supplied to PMMH as a certified unbiased likelihood
+estimator. Fixed schedules and valid fixed-tuning moves have a different
+argument from target paths or proposals chosen using the current population.
+
+MCMC outputs from the built-in chain and particle-MCMC drivers are tagged
+=:inference-contract= with =:semantics :markov-chain= and
+=:normalizer {:status :unavailable}=.
+=m/log-marginal= returns nil for them. Their empirical weights combine draws;
+they do not estimate the model's evidence. Weighted SMC and importance outputs
+retain their numerical normalizers.
+
+* Nested inference
+
+=infer/conditional= returns an empirical conditional with =:inference/nesting=
+metadata describing method, particle count and whether exact enumeration was
+used. Other methods are conservatively approximate. It refuses a zero-mass
+inner result. A fixed approximate inner conditional may bias a nonlinear outer
+computation; increasing outer draws or memoizing does not remove that error.
+This metadata describes an API boundary, not whole-program detection of arbitrary
+nested computations. Correct weighted nesting and pseudo-marginal likelihood
+estimation need separate contracts and retained inner state.
+
+* Consolidated implementation
+
+- =weights.cljc= owns stable normalization and normalized-weight / total-mass
+  accounting; measure utilities delegate to it.
+- =population/path.cljc= is the shared population-path interpreter for numerical
+  vector populations and complete-trace tempering. It owns statistical
+  reweighting, ancestor selection, mass retention and retained-chain accounting,
+  including waste-free SMC. Representation backends supply execution, copying,
+  moves and ownership; fused numerical loops remain available through its
+  synchronous entry point.
+- =program.cljc= exposes these population operations to user inference programs.
+  =population.cljc= supplies the numerical backend; =tempering.cljc= supplies
+  complete-trace phases. =scmc.cljc= uses the numerical path engine and returns
+  the same settled =PMeasure= interface, with its numerical diagnostics attached.
+- =particle_mcmc.cljc= owns sweep normalization, PIMH acceptance and conditional
+  SMC chain retention. Fresh-savepoint and canonical-world drivers inject their
+  sweep operations instead of maintaining duplicate statistical chain loops.
+- =PInferenceKernel= describes site proposals; =PMarkovKernel= describes Markov
+  transitions. Existing constructors are unchanged. Use =transition-id= for the
+  latter; they no longer pretend to implement a site =step=.
+- =transition.cljc= is the shared interpreter for built-in chains and population
+  moves. Prepared transitions retain per-particle counters and tuning state;
+  resampling resets that state for new descendants. =transport.cljc= separately
+  scores forward/backward weighted proposals and change-of-variables corrections.
+- =execution.cljc= batches independent CPS operations in index order. It rejects
+  on the first failure; cancellation and joining already-started work remain the
+  owning scope's responsibility. =scope.cljc= settles asynchronous finalization;
+  GFI, tempering and nested SMC² filters register their resources with scopes.
+- =trace_owner.cljc= reclaims trace worlds and anchors unreachable from all live
+  populations. =cursor.cljc= guards streaming SMC and SMC² step versions and
+  controller-wide close. Canonical worlds retain their specialized grade,
+  budget and world-scope authority; conditional filters retain their stronger
+  prefix and retained-trajectory contracts.
+
+* Random streams
+
+Every initialized population gets its own stream derived from the run seed.
+Default population identities follow sequential initialization order. Concurrent
+programs can provide ={:id logical-id}= as the fourth initialization argument;
+ids must be unique in the scope. Particle, copy, resampling and move roles then
+have distinct keys. The seed reproduces numerical draws, not randomly generated
+opaque target/resource identities in diagnostic metadata.
+
+* Migration status and validation
+
+This is the first coherent migration, including the initial programmable
+population interface. It removes the superseded chain interpreter from core,
+duplicated population log-mass calculations and the private multi-session
+cleanup registries in tempering. Specialized conditional/streaming filters and
+canonical worlds retain their existing engines and stronger ownership rules.
+
+SMC² already owns its inner filter lifetimes through the shared scope/cursor
+machinery. Remaining work concerns general certified nesting: adapters that
+establish properly weighted estimates or unbiased-evidence eligibility for
+arbitrary user-defined inner estimators, plus broader tempered-transition
+capabilities. Scored
+transport is available through the population program; specialized SMCP3 and
+streaming drivers retain their own execution engines. Empirical conditionals
+remain distinct from likelihood estimators. Built-in callback contracts still require valid scores, proposal
+support and invariant transitions; metadata does not prove arbitrary user code.
+
+Validation commands are =clojure -M:test=, =bin/lint=, =clojure -M:format= and
+=npx shadow-cljs compile test=. Dedicated checks cover target identities,
+wrong-target transitions, independent population streams, mutable value copies,
+finite importance-weight identities, zero-mass behavior, cursor versions and
+asynchronous failure/cancellation. Scope finalization releases 10,000 synchronous
+resources exactly once without overflowing.

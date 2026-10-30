@@ -139,7 +139,8 @@ SMC's weights carry the information, and its diagnostics are different:
 `(diagnostics/summary smc :mu)` gives the weighted mean, sd and quantiles
 with `:ess`, the weight-based effective sample size. The pooled
 particle-MCMC methods (`:pimh`, `:pgibbs`, `:pgas`, `:ipmcmc`) are MCMC
-estimates; their `m/log-marginal` is not an evidence estimate.
+estimates; their `m/log-marginal` returns `nil`, since they do not provide an
+evidence estimate.
 
 ### Against an exact answer
 

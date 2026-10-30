@@ -23,7 +23,7 @@
 
   The generator is xoshiro128** on 32-bit words, so a seed gives the same
   numbers on the JVM and in JavaScript."
-  (:require [clojure.string :as str]
+  (:require #?(:cljs [clojure.string :as str])
             [clojure.walk :as walk]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.core :as rtc]
@@ -65,9 +65,8 @@
         s3 (rotl s3 11)]
     [out [s0 s1 s2 s3]]))
 
-(defn- parse-hex [s]
-  #?(:clj (Long/parseLong s 16)
-     :cljs (js/parseInt s 16)))
+#?(:cljs (defn- parse-hex [s]
+           (js/parseInt s 16)))
 
 (defn- canonical
   "`x` with its numbers in one form: a JVM long 7 and a JavaScript 7 hash

@@ -2,10 +2,11 @@
   "What a sandbox gets: posteriors as plain data with their chain structure,
   the host's limits and defaults, background jobs that stop when cancelled,
   and host-side log densities equal to the distributions'."
+  (:refer-clojure :exclude [run!])
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.walk :as walk]
-            [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.diagnostics :as diag]
+            [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.foerster.sandbox :as sb]
@@ -69,7 +70,7 @@
 
 (deftest the-host-world-policy-is-for-particle-methods
   (let [seen (atom [])]
-    (with-redefs [org.replikativ.foerster.core/infer (fn [_ opts] (swap! seen conj opts) (spin nil))]
+    (with-redefs [infer/infer (fn [_ opts] (swap! seen conj opts) (spin nil))]
       (let [nss (sb/namespaces {:world-policy :fork})]
         (in-context #(do ((get-in nss ['infer 'run]) (conjugate) {:method :smc :particles 10})
                          ((get-in nss ['infer 'run]) (conjugate) {:method :nuts :iterations 10 :chains 1})))))

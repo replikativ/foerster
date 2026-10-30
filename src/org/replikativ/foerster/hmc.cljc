@@ -18,7 +18,8 @@
   dependent site) mixes worse, and the step says so: `:incomplete-target?`
   is true when the replay changed the log probability of anything outside the
   block."
-  (:require [org.replikativ.spindel.trace :as trace]
+  (:require [org.replikativ.foerster.transition-context :as tc]
+            [org.replikativ.spindel.trace :as trace]
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.measure :as m]
@@ -49,19 +50,17 @@
   [trace address]
   (block/block-dist? (get-in trace [:trace/entries address :note :dist])))
 
-(defn- entry-log-prob [trace address]
-  (get-in trace [:trace/entries address :note :log-prob]))
-
 (defn hmc-step
   "One HMC move of the block site at `address` of `trace`.
 
   Options: `:step-size`, `:steps` (leapfrog steps), `:iteration`,
   `:constraints` (the chain's conditioning, as for `mh-step`). Returns a CPS
   operation resolving {:trace :accepted? :log-ratio :incomplete-target?}."
-  [trace {:keys [address step-size steps iteration constraints]
-          :or {step-size 0.1 steps 10 iteration 0}}]
+  [trace {:keys [address step-size steps iteration]
+          :or {step-size 0.1 steps 10 iteration 0} :as context}]
   (fn [resolve reject]
     (try
+      (tc/require-untempered! context :hmc)
       (let [{q0 :value {dist :dist} :note} (get-in trace [:trace/entries address])
             _ (when-not (block/block-dist? dist)
                 (throw (ex-info "HMC moves block sites only"
@@ -72,26 +71,24 @@
             [q1 p1] (leapfrog dist q0 p0 step-size steps)]
         (if-not (finite-vector? q1)
           (resolve {:trace trace :accepted? false :log-ratio ##-Inf :incomplete-target? false})
-          (let [move (itrace/policy
-                      {:keep? true
-                       :constraints constraints
-                       :draw (fn [sp _]
-                               (when (= address (:savepoint/address sp))
-                                 {:value q1 :symmetric? true}))})]
-            ((trace/replay trace address move {:anchor? itrace/anchor?})
+          (let [move (tc/policy context (fn [sp _]
+                                          (when (= address (:savepoint/address sp))
+                                            {:value q1 :symmetric? true})))]
+            ((trace/replay trace address move (tc/replay-options context trace [::move address iteration]))
              (fn [proposed]
                (try
-                 (let [joint-delta (if (:trace/error proposed)
+                 (let [joint-delta (if (or (:trace/error proposed) (not (tc/at-frontier? context proposed)))
                                      ##-Inf
-                                     (- (itrace/log-joint proposed) (itrace/log-joint trace)))
-                       block-delta (- (or (entry-log-prob proposed address) ##-Inf)
-                                      (entry-log-prob trace address))
+                                     (- (tc/score context proposed) (tc/score context trace)))
+                       block-delta (- (if-let [entry (get-in proposed [:trace/entries address])]
+                                        ((tc/entry-score context) entry) ##-Inf)
+                                      ((tc/entry-score context) (get-in trace [:trace/entries address])))
                        ;; the full MH ratio of the replay — sites it drew
                        ;; afresh or dropped enter as in single-site MH — plus
                        ;; the kinetic energy of the leapfrog endpoint
-                       ratio (if (:trace/error proposed)
+                       ratio (if (or (:trace/error proposed) (not (tc/at-frontier? context proposed)))
                                ##-Inf
-                               (+ (itrace/mh-log-ratio trace proposed (constantly 0.0) address)
+                               (+ (itrace/mh-log-ratio trace proposed (constantly 0.0) address (tc/entry-score context))
                                   (- (kinetic p0) (kinetic p1))))
                        accept? (and (not (NaN? ratio))
                                     (or (>= ratio 0.0)
@@ -99,9 +96,7 @@
                                                       (:trace/world proposed) ::accept
                                                       m/uniform01))
                                            ratio)))]
-                   (if accept?
-                     (trace/release! trace proposed)
-                     (trace/release! proposed trace))
+                   (tc/settle! context trace proposed accept?)
                    (resolve {:trace (if accept? proposed trace)
                              :accepted? accept?
                              :log-ratio ratio
@@ -128,8 +123,10 @@
                     (if address
                       ((hmc-step t (merge chain-opts opts {:address address :iteration iteration
                                                            :step-size step-size :steps steps}))
-                       (fn [r] (go (:trace r) more (inc moves) (if (:accepted? r) (inc accepted) accepted)
-                                   (or incomplete? (:incomplete-target? r))))
+                       (fn [r]
+                         (when-let [visit (:on-visit chain-opts)] (visit r))
+                         (go (:trace r) more (inc moves) (if (:accepted? r) (inc accepted) accepted)
+                             (or incomplete? (:incomplete-target? r))))
                        reject)
                       (let [done (fn [t moves accepted]
                                    (resolve {:trace t :accepted? (pos? accepted)
@@ -140,7 +137,9 @@
                                                     :select (fn [t' _]
                                                               {:targets #{(m/pick-uniformly (others t'))}
                                                                :log-selection #(- (Math/log (double (count (others %)))))})))
-                           (fn [r] (done (:trace r) (inc moves) (if (:accepted? r) (inc accepted) accepted)))
+                           (fn [r]
+                             (when-let [visit (:on-visit chain-opts)] (visit r))
+                             (done (:trace r) (inc moves) (if (:accepted? r) (inc accepted) accepted)))
                            reject)
                           (done t moves accepted)))))]
           (go trace blocks 0 0 false))))))

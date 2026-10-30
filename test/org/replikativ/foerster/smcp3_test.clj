@@ -3,7 +3,8 @@
   static parameter, a kernel that revises the previous state of a random
   walk (checked against the Kalman filter), and a data-driven independent
   proposal equal to the posterior, whose weights stay equal."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.random :as random]
+            [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
@@ -128,7 +129,7 @@
   ;; K stays with probability .9, else walks; L stays with probability .5.
   ;; A stay is a move with densities of its own, which weigh too.
   {:forward (fn [{mu :mu} _]
-              (if (< (org.replikativ.foerster.random/uniform01) 0.9)
+              (if (< (random/uniform01) 0.9)
                 {:updates {} :log-q (Math/log 0.9) :reverse :stay}
                 (let [u (dist/draw step)]
                   {:updates {:mu (+ mu u)} :log-q (+ (Math/log 0.1) (dist/logpdf step u)) :reverse (- u)})))

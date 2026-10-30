@@ -46,7 +46,7 @@
           ss (reduce + (map #(* % %) ys))
           exact (- (* -0.5 n (Math/log (* 2 Math/PI s s)))
                    (* 0.5 (Math/log (+ 1 (/ (* n s0 s0) (* s s))))))
-          exact (- exact (* 0.5 (/ ss (* s s))) (* -0.5 (* post-mean post-mean prec)))]
+          exact (- exact (* 0.5 (/ ss (* s s))) (* -0.5 post-mean post-mean prec))]
       (is (close? ll exact 1e-10))
       (is (close? (dist/mean (conj/posterior c)) post-mean 1e-12))))
   (testing "dirichlet-discrete: the Dirichlet-multinomial"

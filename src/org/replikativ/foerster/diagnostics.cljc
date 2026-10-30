@@ -195,9 +195,10 @@
   (let [split (split-chains cs)
         z (rank-normalize split)
         med (median (apply concat split))
-        folded (rank-normalize (mapv (fn [c] (mapv #(Math/abs (- % med)) c)) split))]
+        folded (rank-normalize (mapv (fn [c] (mapv #(Math/abs (- % med)) c)) split))
+        bulk (rhat* z) tail (rhat* folded)]
     ;; as Python's max(bulk, tail): a NaN tail leaves the bulk
-    (let [bulk (rhat* z) tail (rhat* folded)] (if (> tail bulk) tail bulk))))
+    (if (> tail bulk) tail bulk)))
 
 (defn ess-bulk
   "The bulk effective sample size of `cs` (draws by chain): of the

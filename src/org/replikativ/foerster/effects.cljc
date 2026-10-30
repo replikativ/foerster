@@ -13,7 +13,6 @@
             [org.replikativ.spindel.engine.effects :as eff]
             [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.effects.savepoint :as sp]
-            [is.simm.partial-cps.async :as pcps-async]
             [org.replikativ.foerster.dist :as dist])
   ;; the spin macro knows sample/observe/factor only once this namespace has
   ;; registered them on the JVM, where ClojureScript's macros expand

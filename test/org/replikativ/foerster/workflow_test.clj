@@ -3,7 +3,8 @@
   chains kept apart by kernel-infer, posterior predictive draws, pointwise
   log-likelihoods, one call shape for every method, and the distributions
   standard models need."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.kernel :as k]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.arviz :as arviz]
             [org.replikativ.foerster.block :as block]
@@ -88,7 +89,7 @@
                                     (spin (let [mu (sample (dist/normal 0.0 1.0) :id :mu :init 8.0)]
                                             (observe (dist/normal mu 0.5) 1.0 :id :y1)
                                             mu))
-                                    (org.replikativ.foerster.kernel/random-walk-mh-kernel 40 {:samples :all :step-size 0.05})
+                                    (k/random-walk-mh-kernel 40 {:samples :all :step-size 0.05})
                                     4))]
         (is (> (:rhat (d/summary short :mu)) 1.01))))))
 

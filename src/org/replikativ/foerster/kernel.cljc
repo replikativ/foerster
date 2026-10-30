@@ -4,9 +4,8 @@
   A `PInferenceKernel` decides a particle's latent sites during execution:
   `inference/kernel-infer` runs savepoint SMC whose sample sites take the
   value the kernel's `step` gives, which makes importance sampling vs SMC a
-  choice of kernel, not of engine. The Markov-chain kernels (single-site and
-  random-walk MH, block Gibbs, HMC) are descriptions that `kernel-infer` runs
-  as replay plus accept over traces."
+  choice of proposal policy, not of engine. `PMarkovKernel` describes
+  transitions that `foerster.transition` compiles and runs over traces."
   (:refer-clojure :exclude [cycle])
   (:require [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.dist :as dist]))
@@ -22,13 +21,11 @@
   `inference/kernel-infer` asks its `step` at every sample site of savepoint
   SMC.
 
-  Markov-chain kernels (`single-site-mh-kernel`, `random-walk-mh-kernel`,
-  `block-gibbs-kernel`, `hmc-kernel`) implement `kernel-id` only: they are
-  descriptions that `inference/kernel-infer` runs as replay plus accept over
-  traces (`foerster.trace`)."
+  Site kernels choose and correct proposals; they are distinct from
+  target-invariant Markov transitions described by `PMarkovKernel`."
 
   (kernel-id [this]
-    "Unique identifier for this kernel type (e.g., :prior, :single-site-mh).")
+    "Identifier for this site-proposal policy (e.g., :prior).")
 
   (step [this ctx checkpoint trace]
     "Decide a latent site of the particle whose world is `ctx`: `checkpoint`
@@ -39,6 +36,15 @@
     what the value adds to the particle's weight (default 0: a draw from the
     site's distribution)."))
 
+(defprotocol PMarkovKernel
+  "Descriptions of Markov transitions, distinct from site proposal policies.
+  Fixed-tuning transitions preserve their target under the individual kernel's
+  assumptions; warm-up is not an evidence-estimating inference algorithm."
+  (transition-id [this] "The transition family compiled by foerster.transition."))
+
+(defn markov-kernel? [kernel]
+  (satisfies? PMarkovKernel kernel))
+
 ;; =============================================================================
 ;; PriorKernel - Simple Forward Sampling (Importance Sampling)
 ;; =============================================================================
@@ -48,7 +54,7 @@
 
   (kernel-id [_] :prior)
 
-  (step [_ ctx checkpoint trace]
+  (step [_ _ctx checkpoint _trace]
     (let [{:keys [source options]} checkpoint
           {:keys [observe init]} options
           value (cond
@@ -67,8 +73,8 @@
 ;; =============================================================================
 
 (defrecord SingleSiteMHKernel [num-iterations]
-  PInferenceKernel
-  (kernel-id [_] :single-site-mh))
+  PMarkovKernel
+  (transition-id [_] :single-site-mh))
 
 (defn- chain-output
   "Attach a Markov-chain kernel's output options (extra record keys)."
@@ -96,8 +102,8 @@
   (+ current-value (* step-size (dist/draw (dist/normal 0 1)))))
 
 (defrecord RandomWalkMHKernel [num-iterations step-size]
-  PInferenceKernel
-  (kernel-id [_] :random-walk-mh))
+  PMarkovKernel
+  (transition-id [_] :random-walk-mh))
 
 (defn random-walk-mh-kernel
   "Create RandomWalkMHKernel for continuous variables.
@@ -121,8 +127,8 @@
 ;; =============================================================================
 
 (defrecord DelayedAcceptanceKernel [num-iterations coarse scales steps step-size]
-  PInferenceKernel
-  (kernel-id [_] :delayed-acceptance))
+  PMarkovKernel
+  (transition-id [_] :delayed-acceptance))
 
 (defn delayed-acceptance-kernel
   "Two-stage delayed acceptance on block sites (`foerster.block-mh/da-move`):
@@ -146,8 +152,8 @@
 ;; =============================================================================
 
 (defrecord HMCKernel [num-iterations step-size steps]
-  PInferenceKernel
-  (kernel-id [_] :hmc))
+  PMarkovKernel
+  (transition-id [_] :hmc))
 
 (defn hmc-kernel
   "Hamiltonian Monte Carlo on the block sites of a program
@@ -223,8 +229,8 @@
 
 (defrecord BlockGibbsKernel
            [num-iterations block-selector block-kernels address-classifier]
-  PInferenceKernel
-  (kernel-id [_] :block-gibbs))
+  PMarkovKernel
+  (transition-id [_] :block-gibbs))
 
 (defn block-gibbs-kernel
   "Create a BlockGibbsKernel for block Gibbs sampling.
@@ -242,8 +248,8 @@
                 opts))
 
 (defrecord NUTSKernel [num-iterations target-accept max-depth metric]
-  PInferenceKernel
-  (kernel-id [_] :nuts))
+  PMarkovKernel
+  (transition-id [_] :nuts))
 
 (defn nuts-kernel
   "The No-U-Turn sampler on block sites (`foerster.nuts`), within Gibbs: the
@@ -261,17 +267,14 @@
 ;; Composing Markov-chain kernels
 ;; =============================================================================
 
-(def ^:private chain-kernel-ids
-  #{:single-site-mh :random-walk-mh :delayed-acceptance :block-gibbs :hmc :nuts :cycle :mixture})
-
 (defn- check-chain-kernels! [kernels]
-  (when-let [bad (seq (remove #(and (satisfies? PInferenceKernel %) (chain-kernel-ids (kernel-id %))) kernels))]
+  (when-let [bad (seq (remove markov-kernel? kernels))]
     (throw (ex-info "Only Markov-chain kernels compose"
-                    {:type ::not-a-chain-kernel :kernels (mapv #(when (satisfies? PInferenceKernel %) (kernel-id %)) bad)}))))
+                    {:type ::not-a-chain-kernel :kernels (vec bad)}))))
 
 (defrecord CycleKernel [num-iterations kernels]
-  PInferenceKernel
-  (kernel-id [_] :cycle))
+  PMarkovKernel
+  (transition-id [_] :cycle))
 
 (defn cycle
   "A Markov-chain kernel that, `num-iterations` times, runs each of `kernels`
@@ -285,8 +288,8 @@
   (chain-output (->CycleKernel num-iterations (vec kernels)) opts))
 
 (defrecord MixtureKernel [num-iterations weights kernels]
-  PInferenceKernel
-  (kernel-id [_] :mixture))
+  PMarkovKernel
+  (transition-id [_] :mixture))
 
 (defn mixture
   "A Markov-chain kernel that, `num-iterations` times, picks one of the
