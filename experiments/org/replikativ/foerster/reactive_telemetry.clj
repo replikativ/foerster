@@ -173,7 +173,7 @@
                        :summary (particle-summary (:particles state))
                        :minimum-ess-fraction (:minimum-ess advanced)
                        :batch-splits (:splits advanced)
-                         :weight-health :adequate
+                       :weight-health :adequate
                        :posterior-accuracy :not-assessed
                        :coreset-size (count (:coreset state)) :last-update (:last-update state)
                        :inference-contract (:inference-contract (scmc/result state))}]
