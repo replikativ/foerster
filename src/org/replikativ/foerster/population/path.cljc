@@ -60,9 +60,11 @@
   :exhausted. backend :move [starts position step moves] returns CPS resolving
   {:chains [states-per-parent] :seen [...]}; optional :select [particles indices]
   and :reclaim [old seen live] are CPS batch operations. opts controls :n,
-  :waste-free, :seed, :keys {:resample role}, :max-steps and :positions?."
-  [initial path backend {:keys [n waste-free seed keys max-steps positions?]
-                         :or {max-steps 1000 positions? true}}]
+  :waste-free, :seed, :keys {:resample role}, :max-steps and :positions?.
+  :step-offset continues global RNG step indices across resumed segments;
+  :max-steps still bounds the number of steps in this invocation."
+  [initial path backend {:keys [n waste-free seed keys max-steps positions? step-offset]
+                         :or {max-steps 1000 positions? true step-offset 0}}]
   (let [n (or n (count (:particles initial)))
         chains (if waste-free (quot n waste-free) n)
         moves (if waste-free (dec waste-free) 1)
@@ -77,7 +79,7 @@
          (>= (:steps state) max-steps) (throw (exhausted (:position state)))
          :else
          (let [old (:particles state)
-               k (:steps state)
+               k (+ step-offset (:steps state))
                {next-position :pos increments :log-incr}
                (advance old (get-in state [:mass :log-weights]) (:position state))
                state (assoc (reweight state increments) :position next-position)

@@ -90,7 +90,8 @@ checks cover temperature, ledger replacement, nested deaths and public APIs.
 * Proposed reactive inference boundary
 
 Incremental proposals above keep one posterior target fixed. Reacting to changed
-data is a separate, not yet implemented controller. An initial design should
+data requires a separate controller. A general controller is not yet implemented;
+the reviewed SCMC fixture below exercises the narrow runtime boundary. A design should
 admit only statically validated fixed plates with observation replacement, or
 append-only sequential observations with stable state/support. Runtime checks
 would verify that actual site identities and structure follow the admitted plan.
@@ -104,7 +105,29 @@ or coalesced when newer revisions arrive. Population coverage, adaptation and
 convergence remain statistical obligations, not consequences of change
 propagation. Retractions and support expansion need their own admission rules.
 
-SCMC is a useful bounded backend to explore: append observations to a coreset,
-or invalidate replaced contributions before recompression. Its compressed target
-remains approximate. Such a controller and a static update-plan validator are
-future work, not functionality claimed by this incremental trace implementation.
+SCMC supports appending observations to a bounded coreset. Replacement cannot
+generally delete one coreset representative: its weight can summarize other
+observations. Retained exact factors, sufficient statistics, or replay are needed.
+Its compressed target remains approximate. A general controller and a static
+update-plan validator remain future work.
+
+* Resumable SCMC and a reactive fixture
+
+=org.replikativ.foerster.scmc/start= initializes persistent numeric inference
+state; =append-batch= advances it; =result= projects a snapshot to the common
+measure API without consuming it. The batch-to-completion =scmc= entry point
+uses these same operations and the shared population-path engine. Snapshots
+include model functions and are in-memory values, not serialized artifacts.
+The caller owns the audit log needed for historical correction.
+
+The [[../experiments/reactive-telemetry.org][reactive telemetry experiment]] uses a world-local runtime atom and one
+tracked consumer to append observation batches, replay corrected history, and
+perform speculative inference in a fork. Receipts carry revisions and explicit
+approximation status. Low ESS causes smaller batch retries; an individual
+observation that still collapses the weights requests recovery without committing
+the candidate revision. These checks do not validate posterior accuracy.
+
+The fixed binomial-logistic fixture is checked against independent quadrature,
+including examples of small-coreset bias despite high ESS. Its scorer and update
+boundary are reviewed manually. It does not implement automatic static admission
+or a general concurrent live-inference service.

@@ -116,8 +116,9 @@
   `:max-steps`, `:seed`, `:stats` (an atom counting `:moves` and
   `:accepted`), `:keys` {:resample k :move k}, the stream keys of step
   k's resampling ([k-resample k]) and chain i's moves ([k-move k i]), and
-  `:positions?` (true): false keeps only the last position in `:positions`."
-  [qs path {:keys [n waste-free scale max-steps seed stats keys positions?] :or {positions? true}}]
+  `:positions?` (true): false keeps only the last position in `:positions`.
+  `:step-offset` (0) continues RNG step indices across resumed segments."
+  [qs path {:keys [n waste-free scale max-steps seed stats keys positions? step-offset] :or {positions? true}}]
   (let [dim (count (first qs))
         backend {:move
                  (fn [starts position k steps]
@@ -140,5 +141,5 @@
         result (path/run-sync
                 (path/run {:particles (vec qs) :mass (weights/uniform (count qs)) :position (:start path)}
                           path backend {:n n :waste-free waste-free :seed seed :keys keys
-                                        :max-steps max-steps :positions? positions?}))]
+                                        :max-steps max-steps :positions? positions? :step-offset (or step-offset 0)}))]
     {:qs (:particles result) :log-z (get-in result [:mass :log-mass]) :positions (:positions result)}))

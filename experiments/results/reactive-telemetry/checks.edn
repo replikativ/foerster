@@ -1,0 +1,11 @@
+{:jvm {:tests 409 :assertions 4771 :failures 0 :errors 0 :heap-mib 1024}
+ :cljs-node {:tests 67 :assertions 1021 :failures 0 :errors 0}
+ :telemetry {:tests 4 :assertions 72 :failures 0 :errors 0 :heap-mib 384}
+ :focused-jvm {:tests 27 :assertions 118 :failures 0 :errors 0 :heap-mib 512}
+ :lint {:errors 0 :warnings 0}
+ :format :passed
+ :legacy-parity {:same-particles? true :same-coreset? true
+                 :normalizer-difference 0.0 :same-move-counts? true}
+ :baseline-commit "e9b55fd982beaa30b27bc5994b5739565462b91e"
+ :spindel-version "0.1.140"
+ :note "The full JVM suite exhausted 512 MiB in an existing benchmark; retry at 1 GiB passed."}

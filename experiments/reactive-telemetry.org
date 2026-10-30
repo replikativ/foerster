@@ -1,0 +1,165 @@
+#+TITLE: Reactive telemetry with resumable SCMC
+
+* Purpose
+
+This example updates an application-owned posterior when telemetry arrives,
+rebuilds it after a historical correction, and runs a speculative update in
+a fork without changing the parent. It uses a reviewed fixed-shape numeric
+model. It does not claim automatic static admission of arbitrary simulators.
+The paper and its frozen measurements are unchanged.
+
+* Model and data
+
+For each observation window i, with measured standardized load x_i:
+
+  alpha ~ Normal(-2, 1.5)
+  beta  ~ Normal(0, 1.5)
+  failures_i ~ Binomial(requests_i, logistic(alpha + beta*x_i))
+
+The simulator uses alpha=-2 and beta=2. There are 300 windows with eight
+requests each, at 21 possible load values. The first 60 cover low loads,
+the next 120 cover intermediate loads, and the final 120 cover high loads.
+The posterior is nonconjugate. Its parameter correlation changes from about
++0.70 to -0.65 as the load coverage changes, while beta's posterior SD falls
+by more than a factor of four. Predictions beyond early load coverage are
+uncertain. These are conditional predictions, not causal effects of load.
+
+An independent rectangular quadrature computes the reference posterior.
+It aggregates binomial counts at each load, a sufficient statistic, while
+the SCMC implementation scores individual windows. The grid covers
+alpha in [-6,1] and beta in [-3,6]. Spacings 0.1 and 0.05 agree to within
+0.005 posterior SDs in means and 0.5% in SDs; boundary mass is below 1e-7.
+Binomial constants cancel only in the normalized reference calculation;
+the SCMC likelihood includes them.
+
+* Runtime path
+
+The source signal contains a revision, base revision, scorer identity, and
+an immutable vector of observations with unique IDs. A tracked Spin owns
+one synchronous consumer; a Spindel runtime atom stores its inference state
+inside the current world. Inference runs before resetting that atom, never
+inside a retryable swap callback. The fixture awaits the reactive drain
+before reading a published result and closes its contexts afterward.
+
+The library now exposes scmc/start, scmc/append-batch and scmc/result.
+The existing scmc/scmc entry point delegates to these operations. Numeric
+movement and resampling still use the shared population engine. A global
+step offset preserves the existing RNG keys when pausing and resuming.
+Direct comparison with the pre-refactor SCMC implementation on the nonlinear
+fixture produced identical particles, coreset, normalizer and move counts.
+Snapshots contain persistent vectors and pure model functions; they are
+in-memory values, not serialized model artifacts.
+
+Append updates retain the population and coreset. A replacement replays
+the corrected observation log from the prior. A weighted representative
+cannot generally be deleted as though it represented just one original
+window. The application deliberately retains its audit log for replay;
+only the inference state's memory is bounded by population and coreset.
+The fixture's snapshot-prefix checks can scan the observation log; it makes
+no end-to-end O(delta) runtime claim.
+
+The fixture rejects stale revisions, conflicting duplicate revisions,
+duplicate observation IDs, invalid observations, and scorer changes. It
+accepts identical duplicate publications as no-ops. A fork receives a
+separate speculative update; the parent's revision, particles and published
+result remain unchanged.
+
+* Weight health and recovery
+
+The fixture tries batches of 15 windows. If a candidate update's pre-resample
+ESS is below 10% of the population, it discards that candidate and retries
+smaller batches from the persistent parent state. It publishes the minimum
+accepted ESS fraction and the number of splits. This is adaptive scheduling,
+not an unbiased-evidence or convergence guarantee.
+
+Repairing undercounted failures in ten old windows requires five splits in
+the demonstration. An extreme single observation (10,000 requests with no
+failures at high load) produces :needs-recovery with :reason :low-ess; it
+does not commit a candidate revision. Tempered assimilation or a different
+proposal is future recovery work. Refusal does not imply the posterior is
+undefined.
+
+Every accepted receipt explicitly reports posterior accuracy as
+:not-assessed. ESS measures weight degeneracy, not posterior fit. Offline
+validation adds separately computed reference errors. A nine-probe full-log
+coreset audit reports centered log-likelihood error, removing irrelevant
+additive constants. That audit requires retained data and is not a bounded
+streaming diagnostic or a general convergence certificate.
+
+* Accuracy and cost
+
+The sweep uses 800 particles, budgets 8, 32, 64, 128 and 300, and three
+inference seeds. Budget is the maximum retained number of representatives
+and the GIGA iteration budget; fewer distinct representatives may result.
+
+On the original stream, budget 128 gives final mean errors below 0.11
+posterior SDs and SD errors below 5%. It retains 54-55 windows at the final
+revision and uses about 3.93-3.96 million likelihood evaluations, versus
+7.8 million for the uncompressed budget-300 runs. These counts include
+compression fitting but exclude the independent audit and quadrature.
+They are not a cross-system speed benchmark.
+
+Budgets 8 and 32 show systematic bias after the load coverage changes.
+Budget 8 has roughly one posterior SD of mean error despite final ESS
+above 70% of population. Budget 32 reaches about 0.64 SD. This failure case
+is retained in the validation; it should not be hidden by a favorable
+prediction metric or by high ESS. The nine-probe audit's centered RMS error
+is about 0.43-0.46 log units at budget 8, versus 0.037-0.049 at budget 128.
+
+The selected budget also passes posterior checks on two independently
+simulated streams. These checks establish behavior on this fixture, not
+reliability for arbitrary nonlinear simulators or language-model factors.
+The normalizer remains explicitly unverified, and compressed SCMC results
+are labeled approximate populations.
+
+* Reproduction
+
+All exploration ran in the existing 384 MiB CPU REPL on port 42731. No
+Raster, Python bridge, language model or GPU is needed by this example.
+
+With src and experiments on the classpath:
+
+#+begin_src clojure
+(require '[org.replikativ.foerster.reactive-telemetry :as telemetry])
+
+;; Append, correction replay, fork isolation and recovery refusal.
+(telemetry/reactive-demo {:particles 800 :memory 128 :seed 31})
+
+;; Full budget sweep, references and machine-readable receipts.
+(telemetry/-main "/tmp/reactive-telemetry.edn")
+
+;; Numerical and lifecycle validation, including independent streams.
+(require '[org.replikativ.foerster.reactive-telemetry-test])
+(clojure.test/run-tests
+ 'org.replikativ.foerster.reactive-telemetry-test)
+#+end_src
+
+The portable library tests live in test/.../scmc_stream_test.cljc.
+The longer numerical checks live beside the experiment and are run
+explicitly. Receipts and validation logs are under
+experiments/results/reactive-telemetry/.
+
+The main entry point also writes .fits.tsv and .updates.tsv beside its EDN
+output. A standalone figure can be regenerated using matplotlib:
+
+#+begin_src sh
+python3 experiments/plot_reactive_telemetry.py experiments/results/reactive-telemetry/results.edn
+#+end_src
+
+The saved figure shows predictive means, parameter mean errors against
+quadrature, and inference likelihood-evaluation counts. It does not show
+credible intervals or assert convergence from the plotted means alone.
+
+Validation of the implementation: the experiment passes 4 tests / 72
+assertions; the full JVM suite passes 409 tests / 4,771 assertions; the
+directly affected JVM namespaces pass 27 tests / 118 assertions; Node passes
+67 tests / 1,021 assertions. Lint and formatting are clean. The
+inference REPL uses 384 MiB. The full JVM suite required a larger test heap
+after the existing benchmark exhausted 512 MiB; the successful suite used
+1 GiB. This is separate from the
+experiment's heap requirement.
+
+Production follow-up remains the ObservationUpdatePlan compiler: retain
+observation-value expressions and input/effect footprints, prove row-local
+factorization and fixed latent support, and derive the factor evaluator.
+This fixture does not substitute runtime checks for those missing proofs.
