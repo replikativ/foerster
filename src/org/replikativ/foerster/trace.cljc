@@ -53,9 +53,7 @@
 (defn- shifted
   "`dist` moved by `delta`: x = x₀ + δ, x₀ ~ dist."
   [dist delta]
-  (reify dist/Distribution
-    (-draw [_] (+ (dist/draw dist) delta))
-    (-logpdf [_ v] (dist/logpdf dist (- v delta)))))
+  (mech/shifted dist delta))
 
 (defn- intervention-pairs
   "`interventions` as [selector transform] pairs. A key that is not a
@@ -90,7 +88,7 @@
   (f sees the choices made so far) and score nothing: the site is no longer
   random. `{:dist d}` and `{:shift δ}` replace the site's mechanism and decide
   it as a site of the new distribution."
-  [opts sp old-entry {:keys [policy dist shift] :as transform}]
+  [opts sp old-entry {:keys [policy dist shift coupling] :as transform}]
   (let [payload (:savepoint/payload sp)
         world (:savepoint/world sp)]
     (cond
@@ -104,9 +102,15 @@
 
       :else
       (let [new-dist (or dist (shifted (:dist payload) shift))
-            decision (decide-choose (assoc opts ::no-interventions true)
-                                    (assoc sp :savepoint/payload (assoc payload :dist new-dist))
-                                    old-entry)]
+            _ (when-not (contains? #{nil :preserve :fresh} coupling)
+                (throw (ex-info "Mechanism coupling must be :preserve or :fresh"
+                                {:type ::invalid-intervention :coupling coupling})))
+            decision (if (= :fresh coupling)
+                       (let [v (dist/draw new-dist)]
+                         {:value v :note {:dist new-dist :log-prob (dist/logpdf new-dist v) :fresh-noise? true}})
+                       (decide-choose (assoc opts ::no-interventions true)
+                                      (assoc sp :savepoint/payload (assoc payload :dist new-dist))
+                                      old-entry))]
         (assoc-in decision [:note :intervened?] true)))))
 
 (defn barrier-site?
@@ -203,6 +207,17 @@
       (let [v (mech/push dist (get (:noise opts) address))]
         {:value v :note {:dist dist :log-prob (dist/logpdf dist v) :counterfactual? true}})
 
+      ;; A twin predicts even an observed site. Leaving the original data
+      ;; clamped would silently combine factual and hypothetical worlds.
+      (some? (:noise opts))
+      (if (:strict? opts)
+        (throw (ex-info "Counterfactual site has no compatible factual noise"
+                        {:type ::incomplete-coupling :address address
+                         :reason (if (contains? (:noise opts) address)
+                                   :unsupported-mechanism :missing-noise)}))
+        (let [v (dist/draw dist)]
+          {:value v :note {:dist dist :log-prob (dist/logpdf dist v) :unaligned? true}}))
+
       ;; a predictive run: the observed site draws a fresh value from its
       ;; law instead of scoring the data, and adds nothing to the weight
       (and observed? (:simulate-observed? opts))
@@ -288,10 +303,14 @@
                  mechanism) or `{:shift δ}` (the old one moved by δ). A key
                  that is not a selector (`spindel.select`) is an address; the
                  world's `[:inference :interventions]` (`intervene!`) apply too
+                 Mechanism replacements preserve factual noise by default;
+                 :coupling :fresh explicitly introduces independent noise.
     :noise       {address u}: the site takes its mechanism's value for u
                  (`foerster.mechanism`), observed sites included — a
                  counterfactual world. Sites without noise are marked
                  `:unaligned?`
+    :strict?     with :noise, refuse a site without compatible factual noise;
+                 otherwise draw fresh, including observed sites
     :simulate-observed? true: observed sites draw a fresh value from their
                  distribution instead of scoring the data (predictive runs:
                  with `:constraints` holding a posterior draw's latents)
@@ -330,7 +349,14 @@
                (update :note (fn [n] (if (:intervened? n) n (assoc n :unaligned? true)))))
 
              (= deterministic-site site)
-             {:value (:value (:savepoint/payload sp)) :note {:deterministic? true}}
+             (let [intervention (intervention-for prepared sp)]
+               (if intervention
+                 (if (or (contains? intervention :do) (:policy intervention))
+                   (update (decide-intervened prepared sp old-entry intervention)
+                           :note assoc :deterministic? true)
+                   (throw (ex-info "A deterministic intervention needs :do or :policy"
+                                   {:type ::invalid-intervention :intervention intervention})))
+                 {:value (:value (:savepoint/payload sp)) :note {:deterministic? true}}))
 
              (= factor-site site)
              (let [w (:log-weight (:savepoint/payload sp))

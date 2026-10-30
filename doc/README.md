@@ -18,6 +18,7 @@ Each runs as it renders, in CI on every pull request.
 | [Streaming SMC](../notebooks/foerster/streaming.clj) | online filtering against the Kalman filter |
 | [Programmable Inference](../notebooks/foerster/programmable.clj) | the generative function interface, MH by selection, involutive MCMC |
 | [Interventions and Counterfactuals](../notebooks/foerster/counterfactuals.clj) | seeing and doing, interventions by selector, twin-world counterfactuals |
+| [From Data to Counterfactual Repairs](../notebooks/foerster/causal_workflow.clj) | native mechanism fitting, held-out checks, bootstrap effect/attribution uncertainty and incident repairs against known truth |
 | [From the PyMC Gallery](../notebooks/foerster/pymc_gallery.clj) | golf putting (logistic and geometric models compared by LOO) and radon (partial pooling, NUTS on 89 parameters), each against an exact posterior; stochastic volatility (a non-centred path by NUTS, checked by a particle filter) |
 | [Marketing Mix Modeling](../notebooks/foerster/mmm.clj) | adstock and saturation fit by NUTS on a block, ROAS by counterfactual and in the twin world, a lift test, budget splits by expected response and CVaR — against a known truth |
 | [Steering a Process](../notebooks/foerster/steering.clj) | SMC over scored steps of a process without a density, value estimates as twists, trajectories as training data |
@@ -26,6 +27,8 @@ Each runs as it renders, in CI on every pull request.
 
 | Guide | |
 |---|---|
+| [Causal Queries and Identifiability](causal.md) | reusable abduction, nested worlds, ID/IDC, attribution, repairs and actual causality |
+| [Amortized Inference](amortized.md) | automatic RV schemas and masks, conditional sampling artifacts, causal reconstruction and intervention inference |
 | [Language](language.md) | sites and their options, addresses, selectors, the rules of the spin macro |
 | [Algorithms](algorithms.md) | every inference entry point and its options; foerster in an interpreter sandbox |
 | [Posteriors](posteriors.md) | reading a measure: particles, traces, summaries, ESS, evidence, training data |

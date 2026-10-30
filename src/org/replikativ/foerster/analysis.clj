@@ -49,9 +49,12 @@
 
 (def ^:private site-fns
   '{org.replikativ.foerster.effects/sample :latent
+    org.replikativ.foerster.core/sample :latent
     org.replikativ.foerster.effects/observe :observed
+    org.replikativ.foerster.core/observe :observed
     org.replikativ.foerster.effects/choose :choose
-    org.replikativ.foerster.effects/factor :factor})
+    org.replikativ.foerster.effects/factor :factor
+    org.replikativ.foerster.core/factor :factor})
 
 (def ^:private spin-macros
   '#{org.replikativ.spindel.spin.cps/spin})

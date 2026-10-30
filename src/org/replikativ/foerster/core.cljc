@@ -689,7 +689,10 @@
    (loop [[[particle _] & more] (m/sample-measure measure n) out []]
      (if-not particle
        out
-       (let [latents (into {} (keep (fn [[address {:keys [value observed? deterministic?]}]]
+       (let [_ (when (nil? (m/get-trace particle))
+                 (throw (ex-info "Posterior predictive replay needs traces; use amortized/predictive with an explicit forward binding for learned draws"
+                                 {:type ::missing-predictive-trace})))
+             latents (into {} (keep (fn [[address {:keys [value observed? deterministic?]}]]
                                       (when-not (or observed? deterministic?) [address value])))
                            (m/get-trace particle))
              t (await (gfi/run-policy model (itrace/policy {:constraints latents
