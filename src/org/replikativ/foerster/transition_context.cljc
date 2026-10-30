@@ -10,7 +10,7 @@
     :keep-old? :shared-anchors? :on-visit})
 
 (defn require-untempered! [context family]
-  (when (and (some? (:temperature context)) (not= 1.0 (double (:temperature context))))
+  (when (not= 1.0 (double (it/target-temperature context)))
     (throw (ex-info "This numerical transition currently requires temperature one"
                     {:type ::unsupported-temperature :kernel family :temperature (:temperature context)}))))
 
@@ -35,7 +35,7 @@
 
 (defn entry-score [context]
   ;; Old entries may have been recorded under an earlier SMC temperature.
-  (it/tempered-score (get context :temperature 1.0)))
+  (it/tempered-score (it/target-temperature context)))
 
 (defn score [context t]
   (transduce (map (entry-score context)) + 0.0 (it/entries t)))

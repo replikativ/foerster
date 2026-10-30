@@ -21,7 +21,7 @@ src/org/replikativ/foerster/
 ├── scope.cljc cursor.cljc trace_owner.cljc # lifetime, linear handles, reclamation
 ├── execution.cljc     # independent CPS batch execution
 ├── smc.cljc smc2.cljc # savepoint/streaming/conditional and nested filters
-├── trace.cljc         # trace policies, MH over traces, legacy trace shape
+├── trace.cljc         # policies, shared re-execution, keyed MH / finite Gibbs
 ├── effects.cljc       # sample / observe / factor sites
 ├── measure.cljc       # EmpiricalMeasure, Sample, world-descriptors
 ├── kernel.cljc        # kernels (prior, MH descriptions, PInferenceKernel / PMarkovKernel)
@@ -47,3 +47,6 @@ src/org/replikativ/foerster/
 - Lint: `bin/lint` checks source and tests using the checked-in macro hooks.
   See `doc/inference-programs.org` for inference contracts and module boundaries.
 - Formatting: `clojure -M:ffix` before committing (CI checks it).
+
+Incremental execution restrictions and future reactive-inference admission
+contracts are documented in `doc/incremental-inference.org`.

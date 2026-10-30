@@ -19,7 +19,6 @@
   is true when the replay changed the log probability of anything outside the
   block."
   (:require [org.replikativ.foerster.transition-context :as tc]
-            [org.replikativ.spindel.trace :as trace]
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.measure :as m]
@@ -74,7 +73,7 @@
           (let [move (tc/policy context (fn [sp _]
                                           (when (= address (:savepoint/address sp))
                                             {:value q1 :symmetric? true})))]
-            ((trace/replay trace address move (tc/replay-options context trace [::move address iteration]))
+            ((itrace/reexecute trace #{address} move (tc/replay-options context trace [::move address iteration]))
              (fn [proposed]
                (try
                  (let [joint-delta (if (or (:trace/error proposed) (not (tc/at-frontier? context proposed)))
@@ -88,7 +87,7 @@
                        ;; the kinetic energy of the leapfrog endpoint
                        ratio (if (or (:trace/error proposed) (not (tc/at-frontier? context proposed)))
                                ##-Inf
-                               (+ (itrace/mh-log-ratio trace proposed (constantly 0.0) address (tc/entry-score context))
+                               (+ (itrace/mh-log-ratio trace proposed (constantly 0.0) (::itrace/restart proposed) (tc/entry-score context) (::itrace/changed proposed))
                                   (- (kinetic p0) (kinetic p1))))
                        accept? (and (not (NaN? ratio))
                                     (or (>= ratio 0.0)

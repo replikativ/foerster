@@ -14,7 +14,6 @@
             [org.replikativ.foerster.transport :as transport]
             [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.foerster.trace :as it]
-            [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -119,19 +118,12 @@
                                                                  executor (assoc :executor executor))))]
                     (fn [resolve reject]
                       (operation #(resolve {:particle % :log-weight (it/log-weight %)}) reject))))))
-  (copy-particles [_ _ target particles ancestors {:keys [seed step]}]
+  (copy-particles [_ _ _target particles ancestors {:keys [seed step]}]
     (sequential (map-indexed vector ancestors)
                 (fn [[i a]]
-                  (let [t (nth particles a)
-                        from (first (it/latent-addresses t))]
-                    (if-not from
-                      (fn [resolve _] (resolve t))
-                      (fn [resolve reject]
-                        ((trace/replay t from (it/policy {:keep? true :temperature (:position target)})
-                                       {:anchor? it/anchor? :seed (sp/derive-seed seed ::copy [step i])})
-                         (fn [copy]
-                           (if-let [e (:trace/error copy)] (reject e) (resolve copy)))
-                         reject)))))))
+                  (let [t (nth particles a)]
+                    (it/copy-complete t {:seed (sp/derive-seed seed ::copy [step i])})))))
+
   (move-particles [_ _ target particles _ {:keys [prepared on-visit]}]
     (sequential (map-indexed vector particles)
                 (fn [[i t]]

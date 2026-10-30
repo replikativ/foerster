@@ -47,12 +47,9 @@
                           (or (:observed? note) (:constrained? note))) (keys updates))]
      (when (seq fixed)
        (throw (ex-info "Transport cannot update observed or constrained sites" {:type ::fixed-site :addresses (vec fixed)})))
-     (let [from (or (trace/earliest old (keys updates)) (first (it/latent-addresses old)))
-           _ (when (and (seq updates) (not (get-in old [:trace/entries from :savepoint])))
-               (throw (ex-info "Trace transport needs an anchored update" {:type ::no-anchor})))
-           next (if (empty? updates) old
+     (let [next (if (empty? updates) old
                     (pcps/await
-                     (trace/replay old from
+                     (it/reexecute old (set (keys updates))
                                    (it/policy {:keep? true :temperature (:position destination)
                                                :draw (fn [site _]
                                                        (let [address (:savepoint/address site)]
@@ -65,8 +62,8 @@
            ;; change at the old state, including factors upstream of replay.
            ratio (cond failed? ##-Inf
                        (identical? next old) (- ((:score destination) old) ((:score source) old))
-                       :else (+ (it/mh-log-ratio old next (constantly 0.0) from
-                                                 (it/tempered-score (:position destination)))
+                       :else (+ (it/mh-log-ratio old next (constantly 0.0) (::it/restart next)
+                                                 (it/tempered-score (:position destination)) (::it/changed next))
                                 (- ((:score destination) old) ((:score source) old))))
            increment (if failed? ##-Inf
                          (correction ratio log-q ((:backward kernel) (it/choices next) reverse) log-jacobian))]

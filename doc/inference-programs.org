@@ -45,6 +45,8 @@ currently use fresh execution worlds. Trace moves use the shared Markov
 transition interpreter, including =k/cycle= and =k/mixture=. Population moves
 require frozen tuning; warm-up belongs to a separate chain run. At intermediate
 temperatures, only transitions declaring tempered-target support are accepted.
+Fixed-address =finite-gibbs-kernel= enumerates finite support under a checked
+fixed-structure contract; see [[file:incremental-inference.org][incremental trace inference]].
 Unsupported block transitions are refused rather than run at the wrong target.
 
 A trace population is a live, versioned resource: advancing, resampling, moving,
