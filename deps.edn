@@ -15,7 +15,10 @@
         ;; no longer pays the size of the world at every spin it records.
         ;; 0.1.140: keyed loops, world quiescence and trace/update, which
         ;; update-step moves by.
-        org.replikativ/spindel {:mvn/version "0.1.140"}
+        ;; 0.1.191 uses native iteration macros and explicit callback scopes,
+        ;; with Partial-CPS 0.1.72 diagnosing unsupported visible suspension.
+        ;; Frozen await prefixes retain delivery evidence for resample-move.
+        org.replikativ/spindel {:mvn/version "0.1.191"}
         org.replikativ/logging {:mvn/version "0.1.3"}}
 
  :aliases
