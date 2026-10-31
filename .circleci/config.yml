@@ -17,7 +17,7 @@ workflows:
       - tools/format:
           context: docker-deploy
           requires:
-            - tools/setup
+            - tools/build
       - tools/unittest:
           context: docker-deploy
           requires:
