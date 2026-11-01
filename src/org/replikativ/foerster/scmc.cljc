@@ -162,55 +162,67 @@
       (dotimes [i (alength r)] (aset r i (- (aget r i) (* (double wj) (aget l i))))))
     (norm r)))
 
-(defn- least-squares
-  "The least-squares coefficients of `b` on the columns `cs` (double arrays
-  of b's length), by Householder QR; nil when a column is numerically
-  dependent on those before it."
-  [cs ^doubles b]
-  (let [p (count cs) r (alength b)
-        a (object-array (map aclone cs))
-        y (aclone b)
-        diag (double-array p)
-        sum-from (fn [k ^doubles x ^doubles z]
-                   (loop [i k s 0.0] (if (< i r) (recur (inc i) (+ s (* (aget x i) (aget z i)))) s)))]
-    (loop [k 0]
-      (if (< k p)
-        (let [^doubles col (aget a k)
-              sigma (Math/sqrt (sum-from k col col))]
-          (if (or (>= k r) (<= sigma (* 100.0 eps (norm (nth cs k)))))
-            nil
-            (let [alpha (if (pos? (aget col k)) (- sigma) sigma)
-                  _ (aset col k (- (aget col k) alpha))
-                  vv (sum-from k col col)
-                  reflect! (fn [^doubles x]
-                             (let [f (/ (* 2.0 (sum-from k col x)) vv)]
-                               (loop [i k] (when (< i r) (aset x i (- (aget x i) (* f (aget col i)))) (recur (inc i))))))]
-              (loop [j (inc k)] (when (< j p) (reflect! (aget a j)) (recur (inc j))))
-              (reflect! y)
-              (aset diag k alpha)
-              (recur (inc k)))))
-        (let [s (double-array p)]
-          (loop [k (dec p)]
-            (when (>= k 0)
-              (let [acc (loop [j (inc k) acc (aget y k)]
-                          (if (< j p) (recur (inc j) (- acc (* (aget ^doubles (aget a j) k) (aget s j)))) acc))]
-                (aset s k (/ acc (aget diag k)))
-                (recur (dec k)))))
-          s)))))
+(defn- qr-add
+  "The Householder QR of the passive columns `qr` (from `qr-empty`) with the
+  column `col` appended, or nil when `col` is numerically dependent on
+  them. The column is reflected by the existing reflectors in order and
+  then by its own, exactly as a factorization from scratch would; the
+  argument is not modified. A QR holds per column its reflector v (from
+  its diagonal down, with R's entries above it), vᵀv and R's diagonal, and
+  Qᵀb."
+  [{:keys [vs vvs diag ^doubles y] :as qr} ^doubles col]
+  (let [r (alength y)
+        k (count vs)
+        sum-from (fn ^double [^long k ^doubles x ^doubles z]
+                   (loop [i k s 0.0] (if (< i r) (recur (inc i) (+ s (* (aget x i) (aget z i)))) s)))
+        reflect! (fn [^long k ^doubles v ^double vv ^doubles x]
+                   (let [f (/ (* 2.0 (sum-from k v x)) vv)]
+                     (loop [i k] (when (< i r) (aset x i (- (aget x i) (* f (aget v i)))) (recur (inc i))))))
+        x (aclone col)]
+    (dotimes [j k] (reflect! j (nth vs j) (nth vvs j) x))
+    (let [sigma (Math/sqrt (sum-from k x x))]
+      (when-not (or (>= k r) (<= sigma (* 100.0 eps (norm col))))
+        (let [alpha (if (pos? (aget x k)) (- sigma) sigma)
+              _ (aset x k (- (aget x k) alpha))
+              vv (sum-from k x x)
+              y (aclone y)]
+          (reflect! k x vv y)
+          (assoc qr :vs (conj vs x) :vvs (conj vvs vv) :diag (conj diag alpha) :y y))))))
+
+(defn- qr-empty [^doubles b] {:vs [] :vvs [] :diag [] :y (aclone b)})
+
+(defn- qr-solve
+  "The least-squares coefficients of b on the QR's columns, in order."
+  [{:keys [vs diag ^doubles y]}]
+  (let [p (count vs) s (double-array p)]
+    (loop [k (dec p)]
+      (when (>= k 0)
+        (let [acc (loop [j (inc k) acc (aget y k)]
+                    (if (< j p) (recur (inc j) (- acc (* (aget ^doubles (nth vs j) k) (aget s j)))) acc))]
+          (aset s k (/ acc (double (nth diag k))))
+          (recur (dec k)))))
+    s))
+
+(defn- qr-of
+  "The QR of the columns `ls` at indices `ps`, in order, or nil when one is
+  numerically dependent on those before it."
+  [ls ps b]
+  (reduce (fn [qr j] (or (qr-add qr (nth ls j)) (reduced nil))) (qr-empty b) ps))
 
 (defn nnls
   "Nonnegative least squares (Lawson & Hanson 1974, ch. 23): weights x ≥ 0
   over the vectors `ls` (double arrays of one length) minimizing
   ‖Σ_j x_j·ls_j − target‖, by the active-set method SciPy's `nnls`
   implements. A vector numerically dependent on the passive ones, or one
-  that would enter with a nonpositive coefficient, is not added. Returns the
-  weights as a vector."
+  that would enter with a nonpositive coefficient, is not added. The
+  passive set's Householder QR is extended by one reflection per entering
+  vector and refactorized only when vectors leave. Returns the weights as a
+  vector."
   [ls target]
   (let [n (count ls)
         ^doubles target target
         tol (* 10.0 eps (max 1 (alength target))
                (reduce max 0.0 (map (fn [^doubles l] (areduce l i s 0.0 (+ s (Math/abs (aget l i))))) ls)))
-        solve (fn [ps] (least-squares (mapv #(nth ls %) ps) target))
         dual (fn [x]
                (let [r (aclone target)]
                  (doseq [j (range n) :let [xj (double (nth x j))] :when (pos? xj)]
@@ -218,7 +230,7 @@
                      (dotimes [i (alength r)] (aset r i (- (aget r i) (* xj (aget l i)))))))
                  (mapv #(dot (nth ls %) r) (range n))))
         max-iterations (+ 100 (* 30 n))]
-    (loop [x (vec (repeat n 0.0)) passive [] iterations 0]
+    (loop [x (vec (repeat n 0.0)) passive [] qr (qr-empty target) iterations 0]
       (let [w (dual x)
             in-passive (set passive)
             ;; the most improving vector that keeps the passive columns
@@ -228,17 +240,17 @@
                           (filter #(> (nth w %) tol))
                           (sort-by #(- (nth w %)))
                           (some (fn [t]
-                                  (let [ps (conj passive t)
-                                        s (solve ps)]
-                                    (when (and s (pos? (aget ^doubles s (dec (count ps)))))
-                                      [ps s])))))]
+                                  (when-let [qr (when qr (qr-add qr (nth ls t)))]
+                                    (let [s (qr-solve qr)]
+                                      (when (pos? (aget s (dec (alength s))))
+                                        [(conj passive t) s qr]))))))]
         (if (or (nil? entering) (>= iterations max-iterations))
           x
-          (let [[ps s] entering
-                [x ps]
-                (loop [x x ps ps ^doubles s s inner 0]
+          (let [[ps s qr] entering
+                [x ps qr]
+                (loop [x x ps ps ^doubles s s qr qr inner 0]
                   (if (or (every? pos? s) (>= inner max-iterations))
-                    [(reduce (fn [x [j sj]] (assoc x j sj)) x (map vector ps s)) ps]
+                    [(reduce (fn [x [j sj]] (assoc x j sj)) x (map vector ps s)) ps qr]
                     ;; step from x towards s until a passive weight reaches 0,
                     ;; and drop the weights that did
                     (let [alpha (reduce min 1.0 (keep (fn [[j sj]]
@@ -252,9 +264,10 @@
                           x (reduce #(assoc %1 %2 0.0) x leaving)
                           ps (filterv (complement leaving) ps)]
                       (if (empty? ps)
-                        [x ps]
-                        (recur x ps (solve ps) (inc inner))))))]
-            (recur x ps (inc iterations))))))))
+                        [x ps (qr-empty target)]
+                        (let [qr (qr-of ls ps target)]
+                          (recur x ps (some-> qr qr-solve) qr (inc inner)))))))]
+            (recur x ps qr (inc iterations))))))))
 
 (defn nnls-refit
   "GIGA's weights `w` refitted by nonnegative least squares on their
