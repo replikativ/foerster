@@ -144,8 +144,10 @@
 ;; bound.
 
 (def ^:private particle-methods
-  "The methods whose particles can run in canonical forks (`:world-policy`)."
-  #{:importance :smc :pimh :pgibbs :pgas :ipmcmc})
+  "The sandbox's methods that can run in canonical forks: the host's
+  `:world-policy` is their default. (`:bbvi` can too, but is not a sandbox
+  method; the Markov chains run in fresh worlds only.)"
+  #{:importance :smc :pimh :pgibbs :pgas :ipmcmc :enumerate})
 
 (def ^:private run-options
   "Options a sandbox may pass: data only, no functions, kernels or worlds."
