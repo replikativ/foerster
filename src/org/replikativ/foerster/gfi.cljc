@@ -27,6 +27,7 @@
   (:require [org.replikativ.foerster.scope :as scope]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.foerster.trace :as itrace]
@@ -188,9 +189,9 @@
 (defn- assess-visiting
   "As `assess`, resolving also `:visited`, the addresses of the sample sites
   the run reached; `choices` may hold others, which it ignores."
-  [model choices]
+  [model choices opts]
   (fn [resolve reject]
-    ((run model (itrace/policy {:constraints choices}) nil)
+    ((run model (itrace/policy {:constraints choices}) opts)
      (fn [t]
        (let [free (itrace/latent-addresses t)
              out {:weight (itrace/log-joint t)
@@ -336,10 +337,14 @@
     log α = w(update) + log q(c | t') − log q(c' | t).
   The proposal must be able to propose the reverse move (it reaches the same
   addresses from t'). The loser's worlds are given back. Resolves
-  {:trace t :accepted? b}."
+  {:trace t :accepted? b}. The proposal's own runs are seeded from the
+  trace's world, so a chain seeded by `:seed` reproduces its moves."
   [trace proposal & args]
   (fn [resolve reject]
-    ((simulate (apply proposal (itrace/choices trace) args))
+    (let [world (:trace/world trace)
+          move (rtp/swap-state! world [:inference ::proposals] (fnil inc 0))
+          seed-of (fn [role] (sp/derive-seed (sp/seed world) ::proposal [move role]))]
+    ((simulate (apply proposal (itrace/choices trace) args) {:seed (seed-of :forward)})
      (fn [fwd]
        (let [proposed (itrace/choices fwd)
              fwd-score (itrace/log-joint fwd)]
@@ -347,7 +352,7 @@
           (fn [_]
             ((update trace proposed)
              (fn [{t' :trace w :weight discard :discard}]
-               ((assess-visiting (apply proposal (itrace/choices t') args) discard)
+               ((assess-visiting (apply proposal (itrace/choices t') args) discard {:seed (seed-of :reverse)})
                 (fn [{bwd-score :weight visited :visited}]
                   ;; a discarded site the reverse proposal does not propose
                   ;; would be drawn afresh by the reverse update, as a replay
@@ -368,4 +373,4 @@
                 (fn [e] (trace/release! t' trace) (reject e))))
              reject))
           reject)))
-     reject)))
+     reject))))

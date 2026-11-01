@@ -300,3 +300,20 @@
       (is (= ::inv/observed-site
              (:type (ex-data (try (await-cps (inv/step t move)) (catch Exception e e))))))
       (await-cps (gfi/close! t)))))
+
+(deftest mh-proposal-is-reproducible-from-the-trace-world
+  ;; two runs from the same seeded trace propose the same moves, whatever the
+  ;; process generator has drawn in between
+  (with-root [root]
+    (let [proposal (fn [_] (binding [ec/*execution-context* root]
+                             (spin (sample (dist/normal 0.0 1.0) :id :x))))
+          run (fn [noise]
+                (let [{t :trace} (await-cps (gfi/generate (hierarchical root) {} {:seed 9}))]
+                  (dotimes [_ noise] (random/fresh-seed))
+                  (let [xs (loop [t t i 0 acc []]
+                             (if (= i 20) acc
+                                 (let [{t' :trace} (await-cps (gfi/mh-proposal t proposal))]
+                                   (recur t' (inc i) (conj acc (get (itrace/choices t') :x))))))]
+                    (await-cps (gfi/close! t))
+                    xs)))]
+      (is (= (run 0) (run 3))))))
