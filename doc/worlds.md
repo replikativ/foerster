@@ -108,12 +108,12 @@ expected spend per particle.
 
 ## Cost
 
-A canonical particle is a copy of the caller's world, so `:fork` costs more
-than fresh worlds, but by a constant factor: since spindel 0.1.112 the
-worlds an inference retires are released without scanning the others, and
-SMC with 1000 particles under `:fork` takes about three times as long as in
-fresh worlds (1.6 s against 164 s before, when release grew quadratically
-with the number of worlds).
+Canonical particles import managed caller state, whereas fresh worlds start
+without it. Cost depends on the attached systems, retained state, mutations,
+particle count and runtime revision. Forking, copying, trace retention and
+retirement all contribute. There is no universal slowdown ratio; measure the
+application and dependency versions you intend to use. Earlier measurements
+on Spindel 0.1.112 are historical and do not characterize the current engine.
 
 ## ClojureScript
 

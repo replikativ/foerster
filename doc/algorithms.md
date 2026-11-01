@@ -414,12 +414,17 @@ score each datum under the posterior predictive, update the posterior in
 closed form, and draw the parameter only if it is needed:
 
 ```clojure
-(spin (loop [c (conjugate/beta-bernoulli 1 1) [y & more] ys]
-        (if y
-          (do (observe (conjugate/predictive c) y)
-              (recur (conjugate/update c y) more))
+(spin (loop [c (conjugate/beta-bernoulli 1 1) remaining (seq ys)]
+        (if remaining
+          (let [y (first remaining)]
+            (observe (conjugate/predictive c) y)
+            (recur (conjugate/update c y) (next remaining)))
           (sample (conjugate/posterior c) :id :p))))
 ```
+
+Here `ys` contains numeric `0`/`1` Bernoulli observations. The conjugate
+helper uses that convention; `dist/flip` instead produces booleans. The loop
+tests sequence exhaustion separately from the observation value.
 
 That is exact marginalization (Rao-Blackwellization; the conjugate case of
 delayed sampling, Murray et al. 2018): under SMC the parameter never

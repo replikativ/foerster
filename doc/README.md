@@ -1,6 +1,7 @@
 # Documentation
 
-For an overview see the [README](../README.md).
+Start with the [README](../README.md) or choose a path in
+[Concepts and Reading Paths](concepts.md).
 
 ## Tutorials
 
@@ -11,14 +12,16 @@ Each runs as it renders, in CI on every pull request.
 | Notebook | Topics |
 |---|---|
 | [Getting Started](../notebooks/foerster/getting_started.clj) | a first model, `sample` and `observe`, SMC, the posterior and the evidence |
+| [Inference in a Running Application](../notebooks/foerster/queue.clj) | a live queue, speculative application state, SMC checked against enumeration |
 | [Choosing an Inference Algorithm](../notebooks/foerster/algorithms.clj) | importance sampling, SMC, particle MCMC, MCMC and BBVI on known posteriors; which to use when |
 | [Inference Methods](../notebooks/foerster/methods.clj) | every inference method foerster implements — what it does, when to use it, its options and cost, a run on a model with a known answer, and the papers it comes from |
 | [Models in Worlds](../notebooks/foerster/worlds.clj) | `:world-policy :fork`, systems in the world, budgets, what cannot be copied |
 | [Blocks and HMC](../notebooks/foerster/blocks.clj) | numerical blocks, HMC-within-Gibbs, checking a gradient |
 | [Streaming SMC](../notebooks/foerster/streaming.clj) | online filtering against the Kalman filter |
-| [Programmable Inference](../notebooks/foerster/programmable.clj) | the generative function interface, MH by selection, involutive MCMC |
+| [Trace Programming and Custom Moves](../notebooks/foerster/programmable.clj) | the generative function interface, MH by selection, involutive MCMC |
 | [Interventions and Counterfactuals](../notebooks/foerster/counterfactuals.clj) | seeing and doing, interventions by selector, twin-world counterfactuals |
 | [From Data to Counterfactual Repairs](../notebooks/foerster/causal_workflow.clj) | native mechanism fitting, held-out checks, bootstrap effect/attribution uncertainty and incident repairs against known truth |
+| [A Gallery of Classic Models](../notebooks/foerster/gallery.clj) | small models checked against exact answers, including branching and label switching |
 | [From the PyMC Gallery](../notebooks/foerster/pymc_gallery.clj) | golf putting (logistic and geometric models compared by LOO) and radon (partial pooling, NUTS on 89 parameters), each against an exact posterior; stochastic volatility (a non-centred path by NUTS, checked by a particle filter) |
 | [Marketing Mix Modeling](../notebooks/foerster/mmm.clj) | adstock and saturation fit by NUTS on a block, ROAS by counterfactual and in the twin world, a lift test, budget splits by expected response and CVaR — against a known truth |
 | [Steering a Process](../notebooks/foerster/steering.clj) | SMC over scored steps of a process without a density, value estimates as twists, trajectories as training data |
@@ -27,6 +30,8 @@ Each runs as it renders, in CI on every pull request.
 
 | Guide | |
 |---|---|
+| [Concepts and Reading Paths](concepts.md) | worlds, traces, measures, populations, blocks and their boundaries |
+| [Incremental Trace Inference](incremental-inference.org) | complete keyed traces, finite Gibbs, resumable SCMC and the proposed reactive boundary |
 | [Causal Queries and Identifiability](causal.md) | reusable abduction, nested worlds, ID/IDC, attribution, repairs and actual causality |
 | [Amortized Inference](amortized.md) | automatic RV schemas and masks, conditional sampling artifacts, causal reconstruction and intervention inference |
 | [Language](language.md) | sites and their options, addresses, selectors, the rules of the spin macro |
@@ -38,7 +43,7 @@ Each runs as it renders, in CI on every pull request.
 | [Extending](extending.md) | your own distributions, policies, proposals, MH moves and kernels; learned twists and proposals |
 | [Worlds](worlds.md) | canonical worlds, their lifecycle, failure and recovery, resources |
 | [Distributions and Reproducibility](distributions.md) | `foerster.dist`, writing a distribution, seeds and streams |
-| [Design](design.md) | inference as handlers of spindel savepoints; how each algorithm works |
+| [Design](design.md) | savepoint-based traces, numerical capabilities and the shared inference engines |
 | [Literature](literature.md) | the systems and papers foerster builds on, by method |
 
 ## Reference

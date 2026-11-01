@@ -5,10 +5,11 @@
   holds its posterior as a value, scores each datum under the posterior
   predictive and updates the posterior in closed form —
 
-    (loop [c (conjugate/beta-bernoulli 1 1) [y & more] ys]
-      (if y
-        (do (observe (conjugate/predictive c) y)
-            (recur (conjugate/update c y) more))
+    (loop [c (conjugate/beta-bernoulli 1 1) remaining (seq ys)]
+      (if remaining
+        (let [y (first remaining)]
+          (observe (conjugate/predictive c) y)
+          (recur (conjugate/update c y) (next remaining)))
         (sample (conjugate/posterior c) :id :p)))   ; the parameter, if needed
 
   — which is exact marginalization (Rao-Blackwellization; the conjugate case

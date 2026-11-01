@@ -145,18 +145,28 @@ inference algorithm can suspend it at a site, fork the world it runs in, and
 resume it — any number of times. The transformation only sees code that is
 lexically inside the `spin`:
 
-- **Call sites directly in the spin body, not inside functions passed to
-  `map`, `filter`, `reduce`, or in `for`/`doseq`.** The macro cannot see into
-  them. Loop with `loop`/`recur`:
+- **Keep effects inside an explicit `spin` scope.** Native `doseq` and
+  `loop`/`recur` expand within that scope, including nested `doseq` bindings
+  and modifiers:
 
   ```clojure
-  ;; wrong: the observes are inside a closure
   (spin (doseq [y ys] (observe (dist/normal mu 1.0) y)))
-
-  ;; right
-  (spin (loop [[y & more] ys]
-          (when y (observe (dist/normal mu 1.0) y) (recur more))))
   ```
+
+  Ordinary `map`, `filter`, `reduce` and lazy `for` keep Clojure's function
+  and realization boundaries. They do not acquire suspension semantics.
+  Visible bare effects in unsupported closures are rejected during
+  transformation; an opaque function call cannot be checked this way.
+  A callback that performs effects must return its own `spin`, and its
+  caller must explicitly await the returned spins. For sequential processing:
+
+  ```clojure
+  (defn score [mu y] (spin (observe (dist/normal mu 1.0) y)))
+  (spin (doseq [y ys] (await (score mu y))))
+  ```
+
+  Use `loop`/`recur` when accumulating a result between effectful steps.
+  Pure higher-order functions and lazy sequences retain their host semantics.
 
 - **Use `await` for other spins and `track` for signals, never `@`** inside a
   spin body (spindel's rules apply unchanged).

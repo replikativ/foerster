@@ -9,8 +9,8 @@ Three differences hold for all of them:
 
 - **A model is a program run, not a graph.** Sites are named with `:id` and
   reached by ordinary control flow. There is no vectorized `~` over arrays:
-  observations are sites in a `loop`/`recur` (`:id [:y i]`), and effects
-  inside closures passed to `map` or `for` are not seen by the `spin` macro
+  observations are sites in a `doseq` or `loop`/`recur` (`:id [:y i]`).
+  Effectful callbacks need their own `spin` scopes and explicit consumption
   ([the rules](language.md#the-rules-of-the-spin-macro)).
 - **Inference returns a spin resolving an empirical measure** — weighted
   particles, each with its value and trace ([posteriors](posteriors.md)).
@@ -134,10 +134,11 @@ Not in foerster yet:
 - **Arguments and argdiffs.** A model's arguments are closed over when its
   spin is built; `update` and `regenerate` cannot change them, and there
   are no argdiffs for incremental re-execution.
-- **Combinators** (`Map`, `Unfold`, `Recurse`, `Switch`) and the static
-  modeling language. Replay restarts from the earliest changed site; the
-  design for incremental re-execution through spindel's spin reuse is in
-  [design](design.md#incremental-re-execution-gens-combinators-and-argdiffs).
+- **Gen's combinators** (`Map`, `Unfold`, `Recurse`, `Switch`) and static
+  modeling language. Foerster instead supports conservative keyed-region
+  reuse for complete traces, with prefix replay or refusal outside the
+  admitted region. See [incremental trace inference](incremental-inference.org)
+  for the independence contract and current bookkeeping costs.
 - (Implemented: `mh(tr, proposal, args)` with a proposal program is
   `gfi/mh-proposal`; involutive moves that add or remove sites —
   reversible jump — are `involutive/step` with `:removed`.)
@@ -179,7 +180,8 @@ Not in foerster yet:
   on them by hand). Nested inference is `infer/conditional`.
 - Higher-order functions with sites inside them. Anglican transformed
   `map` and `reduce` inside a query; in foerster an `observe` inside a
-  closure passed to `map` is not seen by the macro — use `loop`/`recur`.
+  closure passed to `map` needs its own `spin` and explicit awaiting.
+  Native `doseq` supports sequential effects within the enclosing scope.
 - `:almh` (adaptive site choice), and an anytime lazy stream of samples.
 
 ## WebPPL
@@ -203,8 +205,10 @@ prior art for foerster's cascade and particle-MCMC methods
 
 `'enumerate'` is `{:method :enumerate}`, `mem` is `process/mem`, and a
 nested `Infer` (a posterior used as a distribution inside another model) is
-`infer/conditional`. Not in foerster yet: rejection sampling, incremental
-MH, and variational inference with guide programs and trainable parameters
+`infer/conditional`. Incremental MH is available for admitted complete keyed
+traces, with replay fallback; it is not general dependency-directed reuse.
+Not in foerster yet: rejection sampling and variational inference with guide
+programs and trainable parameters
 (`'optimize'`); foerster's BBVI learns a mean-field guide only.
 
 ## What foerster has that these do not all have

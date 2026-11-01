@@ -5,28 +5,107 @@
 [![cljdoc](https://cljdoc.org/badge/org.replikativ/foerster)](https://cljdoc.org/d/org.replikativ/foerster)
 [![Slack](https://img.shields.io/badge/slack-join_chat-brightgreen.svg)](https://clojurians.slack.com/archives/CB7GJAN0L)
 
-> A "bit" of information is definable as a difference that makes a
-> difference. — Gregory Bateson, *Steps to an Ecology of Mind*
+Probabilistic inference in forkable worlds, for Clojure and ClojureScript.
 
-> Act always so as to increase the number of choices. — Heinz von Foerster
+We built Foerster to reuse stochastic Clojure application code for inference.
+A model can call ordinary application functions and inspect managed state
+that already exists. On [Spindel](https://github.com/replikativ/spindel), a
+forkable functional reactive runtime, supported particle methods can explore
+copies of that state without committing their speculative writes to the caller.
 
-Probabilistic inference in forkable worlds, for Clojure.
-
-A *Förster* is a forester: someone who tends a forest, grows branches, prunes
-them, and decides which trees continue. That is what inference over
-[spindel](https://github.com/replikativ/spindel) worlds does. Particles branch
-from a world, resampling prunes the unlikely ones and copies the likely ones,
-and Markov chains walk the tree of worlds. The name also honours
-Heinz von Foerster, whose cybernetics put the observer inside the system it
-observes, as agents inferring inside the worlds they act in are here.
+Foerster follows [Anglican](https://github.com/probprog/anglican)'s tradition
+of interpreting `sample` and `observe` checkpoints. Spindel and Partial-CPS
+supply explicit suspension scopes, rather than a separate modeling language.
+Native Clojure control flow works inside a `spin`; effectful helpers return
+their own spins and callers explicitly await them. Fork isolation covers
+managed runtime state and registered forkable systems, not arbitrary host
+mutation or external I/O.
 
 ## What it does
 
-A probabilistic program is a spindel `spin` with `sample`, `observe` and
-`factor` sites. Every site is a spindel *savepoint*, so an inference algorithm
-is a handler that decides, scores, forks, copies or abandons those savepoints:
+A probabilistic program is a Spindel `spin` with `sample`, `observe` and
+`factor` sites. Inference interprets these sites as savepoints: points where
+execution can be scored, resumed or forked. Numerical methods additionally
+require explicit block densities and, for gradient methods, gradients.
 
-- **one call shape** for every method: `(infer/infer model {:method :smc
+```clojure
+(require '[org.replikativ.foerster.core :as infer :refer [sample observe factor]]
+         '[org.replikativ.foerster.dist :as dist]
+         '[org.replikativ.spindel.core :as sp :refer [spin]])
+
+;; programs run in a spindel world (an execution context)
+(def world (sp/create-execution-context))
+
+(defn model []
+  (spin
+   (let [mu (sample (dist/normal 0.0 1.0) :id :mu)]
+     (observe (dist/normal mu 1.0) 1.0 :id :y)
+     mu)))
+
+;; inference returns a spin; at the REPL, deref it
+(def posterior (sp/with-context world @(infer/infer (model) {:method :smc :particles 1000})))
+
+(:mean (infer/query posterior identity))   ; ≈ 0.5, the posterior is N(0.5, 0.707²)
+```
+
+Inside another spin, `await` it instead of dereferencing
+(`org.replikativ.spindel.effects.await`).
+
+## Where to start
+
+- **New to probabilistic programming:** [Getting Started](notebooks/foerster/getting_started.clj)
+  and [Choosing an Inference Algorithm](notebooks/foerster/algorithms.clj).
+- **Inference inside an application:** [the queue example](notebooks/foerster/queue.clj)
+  reuses a scheduler, conditions on completion reports and checks that the
+  live queue stays unchanged. [Models in Worlds](notebooks/foerster/worlds.clj)
+  adds attached systems and resource rules.
+- **Programmable inference:** [population programs](doc/inference-programs.org)
+  compose weighting, resampling, Markov moves and transport;
+  [trace programming](notebooks/foerster/programmable.clj) covers custom proposals.
+- **Numerical inference:** [Blocks and HMC](notebooks/foerster/blocks.clj),
+  then [models from the PyMC gallery](notebooks/foerster/pymc_gallery.clj).
+
+The [concepts guide](doc/concepts.md) distinguishes worlds, traces, measures,
+populations and numerical blocks. See [checking a model](doc/workflow.md)
+for posterior diagnostics and validation; a successful run alone is not a fit check.
+
+## Documentation
+
+- **Causal inference** — [queries and identifiability](doc/causal.md):
+  native mechanism fitting and held-out checks, shared-noise counterfactual
+  worlds, graphical ID/IDC, attribution and finite actual-cause search.
+  [From data to repairs](notebooks/foerster/causal_workflow.clj) runs the
+  workflow against known truth, including bootstrap uncertainty and a
+  misspecified model.
+
+- **GSDM research experiment** — [native amortized abduction](experiments/gsdm.md):
+  Raster graph attention, DDPM training and counterfactual replay, checked
+  against an analytic posterior; CPU numerical and checkpoint checks for
+  future backend qualification.
+
+- **Amortized inference** — [simulator-to-artifact integration](doc/amortized.md):
+  derive RV schemas and attention masks from simulator source, train conditional
+  samplers, and reconstruct causal noise. Includes finite RVs, observation
+  encoders and data checkpoints; current Raster backend is CPU/JVM.
+
+- **Tutorials** — runnable notebooks, rendered at
+  [replikativ.github.io/foerster](https://replikativ.github.io/foerster/):
+  getting started, choosing an algorithm, every inference method with its
+  papers, models in worlds, blocks and HMC,
+  streaming SMC, trace programming, interventions and counterfactuals,
+  steering a process, a gallery of classic models, models from the PyMC
+  gallery, and marketing mix modeling — each checked against an exact
+  answer or a known truth.
+- **Guides** — [doc/](doc/README.md): the language, the algorithms,
+  posteriors, [checking a model and its inference](doc/workflow.md),
+  [coming from Stan, PyMC, Turing, Gen, Anglican or WebPPL](doc/coming-from.md),
+  extending, worlds, distributions and reproducibility, the design, the
+  literature.
+- **API reference** — [cljdoc](https://cljdoc.org/d/org.replikativ/foerster).
+
+## Inference and capabilities
+
+- **a common entry point** for built-in batch inference methods: `(infer/infer model {:method :smc
   :particles 1000})`
 - **[programmable populations](doc/inference-programs.org)**: scoped initialization,
   target advancement, resampling, invariant moves and scored transport over traces or numerical
@@ -69,63 +148,6 @@ is a handler that decides, scores, forks, copies or abandons those savepoints:
   sandbox such as dvergr's agent sandbox, with plain-data results, work
   limits, per-session seeds and background jobs
 
-```clojure
-(require '[org.replikativ.foerster.core :as infer :refer [sample observe factor]]
-         '[org.replikativ.foerster.dist :as dist]
-         '[org.replikativ.spindel.core :as sp :refer [spin]])
-
-;; programs run in a spindel world (an execution context)
-(def world (sp/create-execution-context))
-
-(defn model []
-  (spin
-   (let [mu (sample (dist/normal 0.0 1.0) :id :mu)]
-     (observe (dist/normal mu 1.0) 1.0 :id :y)
-     mu)))
-
-;; inference returns a spin; at the REPL, deref it
-(def posterior (sp/with-context world @(infer/infer (model) {:method :smc :particles 1000})))
-
-(:mean (infer/query posterior identity))   ; ≈ 0.5, the posterior is N(0.5, 0.707²)
-```
-
-Inside another spin, `await` it instead of dereferencing
-(`org.replikativ.spindel.effects.await`).
-
-## Documentation
-
-- **Causal inference** — [queries and identifiability](doc/causal.md):
-  native mechanism fitting and held-out checks, shared-noise counterfactual
-  worlds, graphical ID/IDC, attribution and finite actual-cause search.
-  [From data to repairs](notebooks/foerster/causal_workflow.clj) runs the
-  workflow against known truth, including bootstrap uncertainty and a
-  misspecified model.
-
-- **GSDM research experiment** — [native amortized abduction](experiments/gsdm.md):
-  Raster graph attention, DDPM training and counterfactual replay, checked
-  against an analytic posterior; CPU numerical and checkpoint checks for
-  future backend qualification.
-
-- **Amortized inference** — [simulator-to-artifact integration](doc/amortized.md):
-  derive RV schemas and attention masks from simulator source, train conditional
-  samplers, and reconstruct causal noise. Includes finite RVs, observation
-  encoders and data checkpoints; current Raster backend is CPU/JVM.
-
-- **Tutorials** — runnable notebooks, rendered at
-  [replikativ.github.io/foerster](https://replikativ.github.io/foerster/):
-  getting started, choosing an algorithm, every inference method with its
-  papers, models in worlds, blocks and HMC,
-  streaming SMC, programmable inference, interventions and counterfactuals,
-  steering a process, a gallery of classic models, models from the PyMC
-  gallery, and marketing mix modeling — each checked against an exact
-  answer or a known truth.
-- **Guides** — [doc/](doc/README.md): the language, the algorithms,
-  posteriors, [checking a model and its inference](doc/workflow.md),
-  [coming from Stan, PyMC, Turing, Gen, Anglican or WebPPL](doc/coming-from.md),
-  extending, worlds, distributions and reproducibility, the design, the
-  literature.
-- **API reference** — [cljdoc](https://cljdoc.org/d/org.replikativ/foerster).
-
 ## Worlds
 
 Pure models run in fresh worlds (`:world-policy :fresh`, the default). The
@@ -134,9 +156,9 @@ particle methods (importance sampling, SMC, particle MCMC, BBVI) also run in
 that read or change the systems of the world they run in (databases,
 repositories, a business book); Markov chains run in fresh worlds only:
 
-- every particle is a frozen copy of the caller's world and runs the whole
-  model, so nothing a particle writes reaches the caller; this costs about
-  three times as much as fresh worlds;
+- every particle starts from a frozen copy of the caller's managed state
+  and runs the whole model; writes to forkable managed systems stay local.
+  Ordinary Clojure atoms and arbitrary external I/O are outside this boundary;
 - on the JVM particles are *copies* of worlds: systems that must not be
   duplicated (live handles, unsettleable linear state) are refused before the
   model runs, and with a resource authority particles split the inference's
@@ -162,6 +184,19 @@ numbers for a seed on both platforms. Copying worlds for canonical particles is
 JVM-only; in ClojureScript canonical particles are forks.
 
 ## History
+
+> A "bit" of information is definable as a difference that makes a
+> difference. — Gregory Bateson, *Steps to an Ecology of Mind*
+
+> Act always so as to increase the number of choices. — Heinz von Foerster
+
+A *Förster* is a forester: someone who tends a forest, grows branches, prunes
+them, and decides which trees continue. That is what inference over
+[spindel](https://github.com/replikativ/spindel) worlds does. Particles branch
+from a world, resampling prunes the unlikely ones and copies the likely ones,
+and Markov chains walk the tree of worlds. The name also honours
+Heinz von Foerster, whose cybernetics put the observer inside the system it
+observes, as agents inferring inside the worlds they act in are here.
 
 Monte Carlo began on ENIAC: Stanisław Ulam's idea (1946), John von Neumann's
 design, Klára Dán von Neumann's code for the first runs (1948), and Nicholas

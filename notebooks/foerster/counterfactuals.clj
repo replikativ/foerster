@@ -1,10 +1,13 @@
 ;; # Interventions and Counterfactuals
 
-;; A probabilistic program is also a causal model: each `sample` site is a
-;; variable computed from the ones before it. That lets us ask three kinds
-;; of question (Pearl's ladder): what we expect having **seen** something,
-;; what would happen if we **did** something, and what **would have**
-;; happened had things been different.
+;; A probabilistic program can represent a causal model when its mechanisms
+;; and their noise coupling have a structural interpretation. Execution order
+;; alone does not establish causality. Under those assumptions we can ask
+;; what we expect having **seen** something, what happens if we **do**
+;; something, and what **would have** happened (Pearl's ladder).
+;; The examples below explicitly assume those structural equations and use
+;; Foerster's documented per-distribution noise couplings: standardized
+;; Gaussian residuals for Normals and threshold noise for binary variables.
 
 (ns foerster.counterfactuals
   (:require [org.replikativ.foerster.core :as infer]
@@ -132,9 +135,10 @@
 ;; told from data, so foerster fixes and documents it
 ;; (`foerster.mechanism`) rather than guessing.
 ;;
-;; A site that exists only in the counterfactual world — reached through a
-;; branch the factual run did not take — has no factual noise; it is drawn
-;; fresh and reported in `:unaligned`.
+;; The lower-level `counterfactual` operation above permits a newly reached
+;; site to draw fresh noise and reports it in `:unaligned`. This weakens the
+;; factual coupling. Prefer the strict `query` interface below for new code:
+;; it refuses unsupported or unaligned mechanisms unless explicitly allowed.
 
 ;; ## Reuse a posterior across worlds
 ;;
@@ -147,7 +151,7 @@
 (def factual-posterior
   (sp/with-context world
     @(infer/importance-sampling (scm) 25
-       {:policy (trace/policy {:constraints {:x 1.0 :y 2.5}})})))
+                                {:policy (trace/policy {:constraints {:x 1.0 :y 2.5}})})))
 
 (def named-worlds
   (let [p (promise)]
@@ -167,8 +171,8 @@
 
 {:treated-y (cf/expectation named-worlds #(get-in % [:worlds :treated :y]))
  :paired-effect (cf/expectation named-worlds
-                               #(- (get-in % [:worlds :treated :y])
-                                   (get-in % [:worlds :untreated :y])))}
+                                #(- (get-in % [:worlds :treated :y])
+                                    (get-in % [:worlds :untreated :y])))}
 
 ;; See the [causal guide](https://github.com/replikativ/foerster/blob/main/doc/causal.md)
 ;; for nested worlds, conditioning on hypothetical events, identification
