@@ -45,9 +45,10 @@ Not in foerster yet:
 - Gradients derived from the model. NUTS (`{:method :nuts}`, with Stan's
   step-size and diagonal-metric adaptation) and HMC run on numerical blocks
   whose gradient is hand-written or compiled by raster; constrained
-  latents (`:positive`, `[:interval a b]`) are transformed automatically
-  when the block is written in natural coordinates, but there is no
-  simplex or correlation-matrix transform yet.
+  latents (`:positive`, `[:lower a]`, `[:upper b]`, `[:interval a b]`,
+  `:ordered`, `:simplex`) are transformed automatically when the block is
+  written in natural coordinates, but there is no correlation-matrix
+  (Cholesky) transform yet.
 - Stan's speed on the models it is built for. A model with all observations
   at the end and smooth continuous latents fits in Stan in seconds; in
   foerster it takes a random walk or a hand-supplied gradient.

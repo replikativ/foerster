@@ -394,3 +394,39 @@
           s (fn [i] (d/summary measure #(nth % i)))]
       (is (< (Math/abs (- (:mean (s 0)) (/ 2.0 3.0))) (* 4 (:mcse (s 0)))) (str (s 0)))
       (is (< (Math/abs (- (:mean (s 1)) (/ 4.0 3.0))) (* 4 (:mcse (s 1)))) (str (s 1))))))
+
+(defn- log-phi [x] (* -0.5 x x))
+
+(deftest nuts-samples-known-laws-through-every-new-transform
+  ;; one block, its latents independent, each a law with known moments:
+  ;; lo = 3 + Exp(2) by [:lower 3]; up = −1 − Exp(1) by [:upper −1];
+  ;; o, the order statistics of two N(0, 1), by :ordered (E = ∓1/√π);
+  ;; p ~ Dirichlet(2, 3, 5) by :simplex (E = αₖ/10)
+  (let [alpha [2.0 3.0 5.0]
+        lp (fn [^doubles x]
+             (let [lo (aget x 0) up (aget x 1) o1 (aget x 2) o2 (aget x 3)]
+               (+ (* -2.0 (- lo 3.0)) (- (- -1.0 up)) (log-phi o1) (log-phi o2)
+                  (reduce + (map (fn [a k] (* (- a 1.0) (Math/log (aget x (+ 4 k))))) alpha (range 3))))))
+        grad (fn [^doubles x]
+               (double-array (concat [-2.0 1.0 (- (aget x 2)) (- (aget x 3))]
+                                     (map (fn [a k] (/ (- a 1.0) (aget x (+ 4 k)))) alpha (range 3)))))
+        b (block/block {:block/id :laws :block/coordinates :constrained :block/target :complete-conditional
+                        :block/latents [{:name :lo :shape [] :support [:lower 3.0]}
+                                        {:name :up :shape [] :support [:upper -1.0]}
+                                        {:name :o :shape [2] :support :ordered}
+                                        {:name :p :shape [3] :support :simplex}]}
+                       {:log-density (fn [x _] (lp x)) :value+grad (fn [x _] [(lp x) (grad x)])})
+        measure (b/run-infer 131 #(infer/infer (spin (sample (block/block-dist b nil) :id :th :init (vec (repeat 6 0.0))))
+                                               {:method :nuts :seed 9 :iterations 1500 :chains 4 :burn 500}))
+        x (fn [i] (d/summary measure #(nth (block/constrain b %) i)))
+        dirichlet-sd (fn [a] (Math/sqrt (/ (* a (- 10.0 a)) (* 100.0 11.0))))
+        expected [[3.5 0.5] [-2.0 1.0] [(- (/ 1.0 (Math/sqrt Math/PI))) nil] [(/ 1.0 (Math/sqrt Math/PI)) nil]
+                  [0.2 (dirichlet-sd 2.0)] [0.3 (dirichlet-sd 3.0)] [0.5 (dirichlet-sd 5.0)]]]
+    ;; a rare divergence in a Dirichlet's tails, not a systematic one
+    (is (< (count (filter (comp :diverging :sampler-stats first) (measure/get-particles measure))) 30))
+    (doseq [[i [mean sd]] (map-indexed vector expected)]
+      (let [s (x i)]
+        (is (< (d/rhat (d/chains measure #(nth (block/constrain b %) i))) 1.01) (str i))
+        (is (< (Math/abs (- (:mean s) mean)) (* 4 (:mcse s))) (str i " " s " vs " mean))
+        (when sd
+          (is (< (Math/abs (- 1.0 (/ (:sd s) sd))) 0.1) (str i " " s " vs sd " sd)))))))
