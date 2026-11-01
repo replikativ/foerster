@@ -5,14 +5,31 @@
   (Hoffman & Gelman 2014; Betancourt 2017), divergences when the energy error
   exceeds 1000, a diagonal metric, and during warm-up dual-averaging step
   size adaptation and windowed variance estimation of the metric (Stan's
-  75/25/50 windows, scaled to short warm-ups).
+  75/25/50 windows, scaled to short warm-ups). Stan's step size heuristic
+  (`init_stepsize`: double or halve until one leapfrog step's acceptance
+  crosses 0.8) runs as warm-up begins and after every metric window, and
+  dual averaging restarts from it, at μ = log 10ε. As warm-up begins this
+  deliberately deviates from Stan, whose first μ is log 10ε of its
+  configured step size (default 1): here it comes from the heuristic's ε,
+  as at every later restart, so the first window does not start from a
+  scale-blind guess.
 
   NUTS samples the block's own density, so the block's target must be the
   complete conditional of its latents (`:block/target
-  :complete-conditional`): a replay that changes the log probability of
-  anything outside the block is refused (`::incomplete-target`) — HMC
-  (`foerster.hmc`), whose fixed trajectory allows a correction on the full
-  trace, handles incomplete targets.
+  :complete-conditional`): every factor they touch inside the block, and no
+  other site depending on them. A replay that changes the log probability
+  of anything outside the block is refused (`::incomplete-target`, its
+  `:changed` the sites whose score moved). Put a hierarchy into one block,
+  or move such a block with HMC (`foerster.hmc`) or delayed acceptance
+  (`foerster.block-mh`), which accept on the full trace (doc/algorithms.md,
+  section NUTS within Gibbs needs complete conditionals).
+
+  Each chain starts at its block sites' `:init` plus U(−2, 2) per
+  coordinate of θ (`jitter`), unless `:jitter false` — also with `:burn
+  0`, where every draw is kept: to resume a frozen chain from a posterior
+  draw, pass that draw as `:init` with `:jitter false`. `:step-size` and
+  `:inverse-metric` set where warm-up starts, or with `:burn 0` the frozen
+  values NUTS runs at; the sampler statistics report them.
 
   The kernel is `(k/nuts-kernel iterations {:burn … :target-accept 0.8
   :max-depth 10})`: the first `:burn` iterations adapt and are dropped."
@@ -65,9 +82,10 @@
 ;; =============================================================================
 
 (defn- point
-  "A phase-space point: position, momentum, log density and gradient."
-  [dist inv-metric q p]
-  (let [[lp g] (block/value+grad! dist q)]
+  "A phase-space point: position, momentum, log density and gradient, the
+  last two given as `start` ([lp g]) or evaluated."
+  [dist inv-metric q p start]
+  (let [[lp g] (or start (block/value+grad! dist q))]
     {:q q :p p :lp lp :g g :p-sharp (emul inv-metric p)}))
 
 (defn- hamiltonian [{:keys [lp p p-sharp]}]
@@ -124,55 +142,101 @@
               {:valid? persist? :z-end (:z-end right) :z-propose z-propose :log-w log-w :rho rho
                :beg (:beg left) :end (:end right) :n n :metro metro})))))))
 
+(defn- momentum
+  "A momentum p ~ N(0, M), M the inverse of `inv-metric`."
+  ^doubles [^doubles inv-metric]
+  (let [n (alength inv-metric) out (double-array n)]
+    (dotimes [i n]
+      (aset out i (* (double (dist/draw (dist/normal 0.0 1.0))) (Math/sqrt (/ 1.0 (aget inv-metric i))))))
+    out))
+
 (defn transition
   "One NUTS transition of `dist` (a block distribution) from position `q0`
   with step size `eps` and diagonal inverse metric `inv-metric`, drawing from
-  the current generator. Returns {:q :g (∇ log density at q) :accept-stat
-  :depth :n-leapfrog :divergent?}."
-  [dist q0 eps inv-metric max-depth]
-  (let [inv-metric (double-array inv-metric)
-        q0 (double-array q0)
-        p0 (let [n (alength inv-metric) out (double-array n)]
-             (dotimes [i n]
-               (aset out i (* (double (dist/draw (dist/normal 0.0 1.0))) (Math/sqrt (/ 1.0 (aget inv-metric i))))))
-             out)
-        z0 (point dist inv-metric q0 p0)
-        h0 (hamiltonian z0)]
-    (loop [depth 0 fwd z0 bck z0 sample z0 log-w 0.0 rho (:p z0) n 0 metro 0.0 divergent? false]
-      (if (>= depth max-depth)
-        {:q (vec (:q sample)) :g (vec (:g sample)) :accept-stat (/ metro (max 1 n)) :depth depth :n-leapfrog n :divergent? divergent?}
-        (let [forward? (> (random/uniform01) 0.5)
-              from (if forward? fwd bck)
-              sub (build-tree dist inv-metric eps (if forward? 1 -1) depth from h0)
-              n (+ n (:n sub)) metro (+ metro (:metro sub))]
-          (if-not (:valid? sub)
-            {:q (vec (:q sample)) :g (vec (:g sample)) :accept-stat (/ metro (max 1 n)) :depth (inc depth) :n-leapfrog n
-             :divergent? (boolean (:divergent? sub))}
-            (let [sample (if (or (> (:log-w sub) log-w)
-                                 (< (random/uniform01) (Math/exp (- (:log-w sub) log-w))))
-                           (:z-propose sub)
-                           sample)
-                  log-w (log-sum-exp log-w (:log-w sub))
-                  [fwd bck] (if forward? [(:end sub) bck] [fwd (:end sub)])
+  the current generator. `start`, when given, is [log density, gradient] at
+  q0 (the previous transition's), which is then not evaluated again.
+  Returns {:q :lp (log density at q) :g (its gradient) :accept-stat :depth
+  :n-leapfrog :divergent?}."
+  ([dist q0 eps inv-metric max-depth] (transition dist q0 eps inv-metric max-depth nil))
+  ([dist q0 eps inv-metric max-depth start]
+   (let [inv-metric (double-array inv-metric)
+         q0 (double-array q0)
+         p0 (momentum inv-metric)
+         z0 (point dist inv-metric q0 p0 (when start [(double (first start)) (double-array (second start))]))
+         h0 (hamiltonian z0)
+         result (fn [sample n metro depth divergent?]
+                  {:q (vec (:q sample)) :lp (:lp sample) :g (vec (:g sample)) :accept-stat (/ metro (max 1 n))
+                   :depth depth :n-leapfrog n :divergent? divergent?})]
+     (loop [depth 0 fwd z0 bck z0 sample z0 log-w 0.0 rho (:p z0) n 0 metro 0.0 divergent? false]
+       (if (>= depth max-depth)
+         (result sample n metro depth divergent?)
+         (let [forward? (> (random/uniform01) 0.5)
+               from (if forward? fwd bck)
+               sub (build-tree dist inv-metric eps (if forward? 1 -1) depth from h0)
+               n (+ n (:n sub)) metro (+ metro (:metro sub))]
+           (if-not (:valid? sub)
+             ;; Stan counts a subtree in the depth only when it is valid
+             (result sample n metro depth (boolean (:divergent? sub)))
+             (let [sample (if (or (> (:log-w sub) log-w)
+                                  (< (random/uniform01) (Math/exp (- (:log-w sub) log-w))))
+                            (:z-propose sub)
+                            sample)
+                   log-w (log-sum-exp log-w (:log-w sub))
+                   [fwd bck] (if forward? [(:end sub) bck] [fwd (:end sub)])
                   ;; the whole trajectory's ends: backward end, forward end
-                  [bck-end fwd-end] [bck fwd]
-                  rho' (v+ rho (:rho sub))
+                   [bck-end fwd-end] [bck fwd]
+                   rho' (v+ rho (:rho sub))
                   ;; sub's first point sits next to the old end it grew from
-                  [old-rho new-rho] [rho (:rho sub)]
-                  persist? (and (criterion (:p-sharp bck-end) (:p-sharp fwd-end) rho')
-                                (if forward?
-                                  (and (criterion (:p-sharp bck-end) (:p-sharp (:beg sub)) (v+ old-rho (:p (:beg sub))))
-                                       (criterion (:p-sharp from) (:p-sharp fwd-end) (v+ new-rho (:p from))))
-                                  (and (criterion (:p-sharp (:beg sub)) (:p-sharp fwd-end) (v+ old-rho (:p (:beg sub))))
-                                       (criterion (:p-sharp bck-end) (:p-sharp from) (v+ new-rho (:p from))))))]
-              (if persist?
-                (recur (inc depth) fwd bck sample log-w rho' n metro divergent?)
-                {:q (vec (:q sample)) :g (vec (:g sample)) :accept-stat (/ metro (max 1 n)) :depth (inc depth) :n-leapfrog n
-                 :divergent? divergent?}))))))))
+                   [old-rho new-rho] [rho (:rho sub)]
+                   persist? (and (criterion (:p-sharp bck-end) (:p-sharp fwd-end) rho')
+                                 (if forward?
+                                   (and (criterion (:p-sharp bck-end) (:p-sharp (:beg sub)) (v+ old-rho (:p (:beg sub))))
+                                        (criterion (:p-sharp from) (:p-sharp fwd-end) (v+ new-rho (:p from))))
+                                   (and (criterion (:p-sharp (:beg sub)) (:p-sharp fwd-end) (v+ old-rho (:p (:beg sub))))
+                                        (criterion (:p-sharp bck-end) (:p-sharp from) (v+ new-rho (:p from))))))]
+               (if persist?
+                 (recur (inc depth) fwd bck sample log-w rho' n metro divergent?)
+                 (result sample n metro (inc depth) divergent?))))))))))
 
 ;; =============================================================================
 ;; Adaptation (Stan's defaults)
 ;; =============================================================================
+
+(def ^:private log-0-8 (Math/log 0.8))
+
+(defn- init-step-size
+  "Stan's `init_stepsize` (base_hmc.hpp): from `eps`, double the step size
+  while one leapfrog step from `q` with fresh momentum is accepted with
+  probability above 0.8, or halve it while it is below, whichever the first
+  step says, until that crosses. `start` is [log density, gradient] at `q`.
+  An extreme `eps` (0, NaN or above 1e7) is returned as it is, and a NaN
+  energy error stops the search."
+  [dist inv-metric q start eps]
+  (let [inv-metric (double-array inv-metric)
+        q (double-array q)
+        start [(double (first start)) (double-array (second start))]
+        delta-h (fn [eps]
+                  (let [z (point dist inv-metric q (momentum inv-metric) start)
+                        h0 (hamiltonian z)
+                        h (let [h (hamiltonian (leapfrog dist inv-metric eps 1 z))] (if (NaN? h) ##Inf h))]
+                    (- h0 h)))]
+    (if (or (NaN? eps) (zero? eps) (> eps 1e7))
+      eps
+      (let [direction (if (> (delta-h eps) log-0-8) 1 -1)]
+        (loop [eps eps]
+          (let [dh (delta-h eps)]
+            ;; a NaN energy error (a NaN log density at q) ends the search, as
+            ;; current Stan's NaN guard does, instead of halving for ever
+            (if (or (NaN? dh) (if (= 1 direction) (not (> dh log-0-8)) (not (< dh log-0-8))))
+              eps
+              (let [eps (if (= 1 direction) (* 2.0 eps) (* 0.5 eps))]
+                (when (> eps 1e7)
+                  (throw (ex-info "Posterior is improper: no step size is too large for it"
+                                  {:type ::improper-posterior :step-size eps})))
+                (when (zero? eps)
+                  (throw (ex-info "No acceptably small step size: is the log density continuous?"
+                                  {:type ::no-step-size})))
+                (recur eps)))))))))
 
 (defn- da-init [eps] {:mu (Math/log (* 10.0 eps)) :s-bar 0.0 :x-bar 0.0 :counter 0})
 
@@ -236,7 +300,8 @@
   `q` with gradient `g` and accept statistic `stat`: the step size by dual
   averaging; within a window the positions (and gradients) are collected,
   and at its end they give the metric — their regularized variance, or the
-  Fisher estimate with `metric` :fisher — and the step size restarts."
+  Fisher estimate with `metric` :fisher — and the step size restarts
+  (`:restart?`: `nuts-move` runs Stan's heuristic from the new metric)."
   [{:keys [da windows draws metric] :as st} i q g stat target]
   (let [[da eps] (da-update da stat target)
         st (assoc st :da da :eps eps)
@@ -249,7 +314,7 @@
              :inv-metric (if (= metric :fisher)
                            (fisher-variance (mapv first draws') (mapv second draws'))
                            (regularized-variance (mapv first draws')))
-             :draws [] :da (da-init eps))
+             :draws [] :restart? true)
       :else (assoc st :draws draws'))))
 
 ;; =============================================================================
@@ -259,10 +324,28 @@
 (defn- block-site? [trace address]
   (block/block-dist? (get-in trace [:trace/entries address :note :dist])))
 
+(defn- initial-state
+  "A chain's adaptation state for the block site at `address` of dimension
+  `dim`, starting from the given `step-size` and `inverse-metric` (each a
+  value or a map {address value}), else ε = 0.1 and the unit metric."
+  [address dim burn metric step-size inverse-metric]
+  (let [for-block #(if (map? %) (get % address) %)
+        eps (double (or (for-block step-size) 0.1))
+        inv-metric (if-let [v (for-block inverse-metric)]
+                     (if (= dim (count v))
+                       (mapv double v)
+                       (throw (ex-info "The inverse metric's length is not the block's dimension"
+                                       {:type ::inverse-metric-dimension :address address
+                                        :dimension dim :length (count v)})))
+                     (vec (repeat dim 1.0)))]
+    {:eps eps :da (da-init eps) :inv-metric inv-metric
+     :windows (windows burn) :draws [] :metric metric}))
+
 (defn- nuts-move
   "Move the block site at `address` by one NUTS transition and replay; the
   chain's adaptation state is in the atom `adaptation`."
-  [trace address iteration {:keys [burn target-accept max-depth metric adaptation-iteration]
+  [trace address iteration {:keys [burn target-accept max-depth metric adaptation-iteration
+                                   step-size inverse-metric]
                             :as context} adaptation]
   (fn [resolve reject]
     (try
@@ -270,40 +353,120 @@
       (let [local-iteration (or adaptation-iteration iteration)
             {q0 :value {dist :dist} :note} (get-in trace [:trace/entries address])
             dim (count q0)
+            world (:trace/world trace)
+            warm-up? (< local-iteration burn)
+            fresh? (nil? (get @adaptation address))
             st (or (get @adaptation address)
-                   {:eps 0.1 :da (da-init 0.1) :inv-metric (vec (repeat dim 1.0))
-                    :windows (windows burn) :draws [] :metric metric})
-            {:keys [q g accept-stat divergent?] :as tr}
-            (random/in-world-stream (:trace/world trace) [::transition address iteration]
-                                    #(transition dist q0 (:eps st) (:inv-metric st) max-depth))
-            st' (if (< local-iteration burn)
-                  (cond-> (adapt st local-iteration q g accept-stat target-accept)
+                   (initial-state address dim burn metric step-size inverse-metric))
+            ;; the previous transition's end, when the chain is still there
+            ;; and the block's inputs have not moved since
+            start (let [{:keys [q lp g] :as end} (:end st)]
+                    (when (and end (identical? (:block dist) (:block end))
+                               (= (:inputs dist) (:inputs end)) (= q q0))
+                      [lp g]))
+            ;; Stan's step size heuristic as warm-up begins; dual averaging
+            ;; then shrinks towards 10 times the step size it found
+            [st start] (if (and fresh? warm-up?)
+                         (let [start (or start (block/value+grad! dist (double-array q0)))
+                               eps (random/in-world-stream world [::step-size address iteration]
+                                                           #(init-step-size dist (:inv-metric st) q0 start (:eps st)))]
+                           [(assoc st :eps eps :da (da-init eps)) start])
+                         [st start])
+            {:keys [q lp g accept-stat divergent?] :as tr}
+            (random/in-world-stream world [::transition address iteration]
+                                    #(transition dist q0 (:eps st) (:inv-metric st) max-depth start))
+            st (assoc st :end {:block (:block dist) :inputs (:inputs dist) :q q :lp lp :g g})
+            st' (if warm-up?
+                  (let [s (adapt st local-iteration q g accept-stat target-accept)
+                        ;; a metric window ended: Stan's heuristic again from
+                        ;; the last step size under the new metric, and dual
+                        ;; averaging restarts from it
+                        s (if (:restart? s)
+                            (let [eps (random/in-world-stream world [::step-size address iteration]
+                                                              #(init-step-size dist (:inv-metric s) q [lp g] (:eps s)))]
+                              (-> s (dissoc :restart?) (assoc :eps eps :da (da-init eps))))
+                            s)]
                     ;; warm-up over: the averaged step size
-                    (= (inc local-iteration) burn) (as-> s (assoc s :eps (Math/exp (:x-bar (:da s))))))
+                    (cond-> s
+                      (= (inc local-iteration) burn) (assoc :eps (Math/exp (:x-bar (:da s))))))
                   st)]
         (swap! adaptation assoc address st')
-        (if (= q q0)
-          (resolve {:trace trace :accepted? false :divergent? divergent? :stat tr})
-          (let [move (tc/policy context (fn [sp _]
-                                          (when (= address (:savepoint/address sp))
-                                            {:value q :symmetric? true})))]
-            ((itrace/reexecute trace #{address} move (tc/replay-options context trace [::move address iteration]))
+        (let [tr (assoc tr :step-size (:eps st) :inverse-metric (:inv-metric st))]
+          (if (= q q0)
+            (resolve {:trace trace :accepted? false :divergent? divergent? :stat tr})
+            (let [move (tc/policy context (fn [sp _]
+                                            ;; the replay scores q by the block's
+                                            ;; :log-density, never by :value+grad's lp:
+                                            ;; that need only be right up to a constant
+                                            ;; in θ, which may depend on the inputs
+                                            (when (= address (:savepoint/address sp))
+                                              {:value q :symmetric? true})))]
+              ((itrace/reexecute trace #{address} move (tc/replay-options context trace [::move address iteration]))
+               (fn [proposed]
+                 (try
+                   (when (or (:trace/error proposed) (not (tc/at-frontier? context proposed)))
+                     (trace/release! proposed trace)
+                     (throw (ex-info "NUTS replay failed or left its declared frontier"
+                                     {:type ::invalid-replay :address address} (:trace/error proposed))))
+                   (let [entry-score (tc/entry-score context)
+                         joint (- (tc/score context proposed) (tc/score context trace))
+                         own (- (entry-score (get-in proposed [:trace/entries address]))
+                                (entry-score (get-in trace [:trace/entries address])))]
+                     (when (or (:trace/error proposed) (> (Math/abs (double (- joint own))) 1e-6))
+                       (let [e (tc/incomplete-target "NUTS" ::incomplete-target context trace proposed address (- joint own))]
+                         (trace/release! proposed trace)
+                         (throw e)))
+                     (tc/settle! context trace proposed true)
+                     (resolve {:trace proposed :accepted? true :divergent? divergent? :stat tr}))
+                   (catch #?(:clj Throwable :cljs :default) e (reject e))))
+               reject)))))
+      (catch #?(:clj Throwable :cljs :default) e (reject e)))))
+
+(def ^:private jitter-attempts 100)
+
+(defn- jittered
+  "θ + U(−2, 2) per coordinate whose log density and gradient are finite —
+  Stan's initialization radius and its 100 attempts, keyed to `world`'s
+  stream — or nil when no attempt is."
+  [world address dist theta]
+  (let [u (dist/uniform -2.0 2.0)]
+    (some (fn [attempt]
+            (let [theta' (random/in-world-stream world [::jitter address attempt]
+                                                 #(mapv (fn [x] (+ (double x) (double (dist/draw u)))) theta))
+                  [lp g] (block/value+grad! dist (double-array theta'))]
+              (when (and (finite? lp) (all-finite? g)) theta')))
+          (range jitter-attempts))))
+
+(defn jitter
+  "A chain's start for NUTS: every block site of `trace` (the chain's
+  initial state) moved by a uniform jitter in (−2, 2) per coordinate of θ,
+  the unconstrained coordinates — Stan's random initialization radius,
+  around the site's `:init` as PyMC jitters around its initial point — so
+  that chains start apart and R̂ can see them disagree. The draws come from
+  the chain's world stream, so a seeded run is reproducible. A site keeps
+  its value when none of 100 jitters has a finite log density and
+  gradient, and the whole state keeps it when the jittered state has zero
+  density. Returns a CPS operation resolving the new trace."
+  [trace]
+  (fn [resolve reject]
+    (try
+      (let [world (:trace/world trace)
+            values (into {}
+                         (keep (fn [address]
+                                 (let [{theta :value {dist :dist} :note} (get-in trace [:trace/entries address])]
+                                   (some->> (jittered world address dist theta) (vector address)))))
+                         (filterv #(block-site? trace %) (itrace/latent-addresses trace)))]
+        (if (empty? values)
+          (resolve trace)
+          (let [move (tc/policy {} (fn [sp _]
+                                     (when-let [v (get values (:savepoint/address sp))]
+                                       {:value v :symmetric? true})))]
+            ((itrace/reexecute trace (set (keys values)) move (tc/replay-options {} trace [::jitter]))
              (fn [proposed]
                (try
-                 (when (or (:trace/error proposed) (not (tc/at-frontier? context proposed)))
-                   (trace/release! proposed trace)
-                   (throw (ex-info "NUTS replay failed or left its declared frontier"
-                                   {:type ::invalid-replay :address address} (:trace/error proposed))))
-                 (let [entry-score (tc/entry-score context)
-                       joint (- (tc/score context proposed) (tc/score context trace))
-                       own (- (entry-score (get-in proposed [:trace/entries address]))
-                              (entry-score (get-in trace [:trace/entries address])))]
-                   (when (or (:trace/error proposed) (> (Math/abs (double (- joint own))) 1e-6))
-                     (trace/release! proposed trace)
-                     (throw (ex-info "NUTS needs the block's complete conditional as its target: the move changed sites outside the block"
-                                     {:type ::incomplete-target :address address :outside (- joint own)})))
-                   (tc/settle! context trace proposed true)
-                   (resolve {:trace proposed :accepted? true :divergent? divergent? :stat tr}))
+                 (if (or (:trace/error proposed) (not (finite? (itrace/log-joint proposed))))
+                   (do (trace/release! proposed trace) (resolve trace))
+                   (do (tc/settle! {} trace proposed true) (resolve proposed)))
                  (catch #?(:clj Throwable :cljs :default) e (reject e))))
              reject))))
       (catch #?(:clj Throwable :cljs :default) e (reject e)))))
@@ -314,17 +477,23 @@
   there is one. A fresh adaptation state per call (per chain). `opts`:
   `:burn`, `:target-accept` (0.8), `:max-depth` (10), `:metric` (`:variance`,
   Stan's estimate from the positions, or `:fisher`, from positions and
-  gradients).
+  gradients), `:step-size` (0.1) and `:inverse-metric` (ones), where each
+  block's adaptation starts, or, with `:burn` 0, the fixed values it runs
+  with — each one value for every block site or a map {address value}.
+  The sampler statistics' `:step-size` and `:inverse-metric` are such maps,
+  the values each block's transition ran with.
   Returns per-step `:sampler-stats` for direct NUTS inference. The flag
   `:reached-max-depth?` reports depth attainment, including transitions that
   stop naturally or diverge at that depth; it does not identify cap exhaustion.
   Composed kernels and final-state-only output do not retain these statistics."
-  [{:keys [burn target-accept max-depth metric] :or {burn 0 target-accept 0.8 max-depth 10 metric :variance}}]
+  [{:keys [burn target-accept max-depth metric step-size inverse-metric]
+    :or {burn 0 target-accept 0.8 max-depth 10 metric :variance}}]
   (let [adaptation (atom {})
         divergences (atom 0)]
     (fn [trace {:keys [iteration] :as chain-opts}]
       (fn [resolve reject]
-        (let [opts (assoc chain-opts :burn burn :target-accept target-accept :max-depth max-depth :metric metric)
+        (let [opts (assoc chain-opts :burn burn :target-accept target-accept :max-depth max-depth :metric metric
+                          :step-size step-size :inverse-metric inverse-metric)
               blocks (filterv #(block-site? trace %) (itrace/latent-addresses trace))]
           (letfn [(others [t] (vec (remove #(block-site? t %) (itrace/latent-addresses t))))
                   (go [t [address & more] moves stats]
@@ -334,7 +503,9 @@
                            (when-let [visit (:on-visit chain-opts)] (visit r))
                            (when (and (:divergent? r) (>= (or (:adaptation-iteration opts) iteration) burn)) (swap! divergences inc))
                            (go (:trace r) more (inc moves)
-                               (conj stats (assoc (select-keys (:stat r) [:accept-stat :depth :n-leapfrog])
+                               (conj stats (assoc (select-keys (:stat r) [:accept-stat :depth :n-leapfrog
+                                                                          :step-size :inverse-metric])
+                                                  :address address
                                                   :divergent? (boolean (:divergent? r))))))
                          reject)
                         (let [done (fn [t moves accepted]
@@ -347,6 +518,8 @@
                                                 :accept-stat (/ (reduce + 0.0 (map :accept-stat stats))
                                                                 (max 1 (count stats)))
                                                 :reached-max-depth? (boolean (some #(>= (:depth %) max-depth) stats))
+                                                :step-size (into {} (map (juxt :address :step-size)) stats)
+                                                :inverse-metric (into {} (map (juxt :address :inverse-metric)) stats)
                                                 :blocks (count stats)}}))]
                           (if (seq (others t))
                             ((itrace/mh-step t (assoc chain-opts

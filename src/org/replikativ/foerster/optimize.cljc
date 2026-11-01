@@ -59,16 +59,32 @@
                     r (map vector pairs (rseq alphas)))]
       (mapv - r))))
 
+(defn- next-alpha
+  "The diagonal estimate of the inverse Hessian after the curvature pair
+  (s, y), sᵀy > 0: Zhang et al. (2022) Alg. 3, as BlackJAX's
+  `lbfgs_recover_alpha`. A coordinate whose update is not positive and
+  finite keeps its value."
+  [alpha s y]
+  (let [a (reduce + 0.0 (map (fn [al z] (* al z z)) alpha y))
+        b (dot y s)
+        c (reduce + 0.0 (map (fn [si al] (/ (* si si) al)) s alpha))]
+    (mapv (fn [al si zi]
+            (let [v (/ 1.0 (+ (/ a (* b al)) (/ (* zi zi) b) (- (/ (* a si si) (* b c al al)))))]
+              (if (and (pos? v) (< v ##Inf)) v al)))
+          alpha s y)))
+
 (defn- lbfgs
   "Minimize `f` (θ → [f(θ) ∇f(θ)]) from θ0. With `record?`, `:path` holds
-  every iterate as {:theta :grad :pairs}, the curvature pairs [s y 1/sᵀy]
-  L-BFGS held there (newest last). With `rel-obj-tolerance` it also stops
-  once a step changes f by less than that, relative to |f| (Stan's
-  tol_rel_obj)."
+  every iterate as {:theta :grad :pairs :alpha}: the curvature pairs [s y
+  1/sᵀy] L-BFGS held there (newest last), and the diagonal inverse Hessian
+  estimate of Zhang et al.'s Alg. 3 over every pair so far. With
+  `rel-obj-tolerance` it also stops once a step changes f by less than
+  that, relative to |f| (Stan's tol_rel_obj)."
   [f theta0 {:keys [max-iterations tolerance history record? rel-obj-tolerance]
              :or {max-iterations 1000 tolerance 1e-8 history 10}}]
   (loop [theta (vec theta0) [fx g] (f theta0) pairs [] it 0
-         path (when record? [{:theta (vec theta0) :grad g :pairs []}])]
+         alpha (when record? (vec (repeat (count theta0) 1.0)))
+         path (when record? [{:theta (vec theta0) :grad g :pairs [] :alpha alpha}])]
     (if (or (< (norm g) (* tolerance (max 1.0 (norm theta)))) (= it max-iterations))
       {:theta theta :f fx :grad g :iterations it :converged? (< it max-iterations) :path path}
       (let [p (let [p (direction g pairs)] (if (neg? (dot p g)) p (mapv - g)))
@@ -82,16 +98,20 @@
         (if (< step 1e-20)
           {:theta theta :f fx :grad g :iterations it :converged? false :path path}
           (let [s (mapv - theta' theta) y (mapv - g' g) sy (dot s y)
-                pairs (if (> sy 1e-12)
+                pair? (> sy 1e-12)
+                pairs (if pair?
                         (let [pairs (conj pairs [s y (/ 1.0 sy)])]
                           (if (> (count pairs) history) (subvec pairs 1) pairs))
-                        pairs)]
+                        pairs)
+                alpha (if (and record? pair?) (next-alpha alpha s y) alpha)
+                at {:theta theta' :grad g' :pairs pairs :alpha alpha}]
             (if (and rel-obj-tolerance
-                     (< (/ (Math/abs (- fx fx')) (max (Math/abs fx) (Math/abs fx') 1.0)) rel-obj-tolerance))
+                     (< (/ (Math/abs (double (- fx fx'))) (max (Math/abs (double fx)) (Math/abs (double fx')) 1.0))
+                        rel-obj-tolerance))
               {:theta theta' :f fx' :grad g' :iterations (inc it) :converged? true
-               :path (when record? (conj path {:theta theta' :grad g' :pairs pairs}))}
-              (recur theta' [fx' g'] pairs (inc it)
-                     (when record? (conj path {:theta theta' :grad g' :pairs pairs}))))))))))
+               :path (when record? (conj path at))}
+              (recur theta' [fx' g'] pairs (inc it) alpha
+                     (when record? (conj path at))))))))))
 
 (defn- latents-of [b x]
   (into {} (map (fn [{:keys [name]}] [name (block/latent b x name)])) (:block/latents (:description b))))
@@ -100,14 +120,18 @@
   "The mode of the block site `d` (a `block/block-dist`), see the namespace.
   Options: `:init` θ0 (required unless the block can `:sample`),
   `:jacobian?` (false), `:max-iterations` (1000), `:tolerance` (1e-8, on
-  the gradient norm relative to |θ|), `:history` (10)."
+  the gradient norm relative to |θ|), `:history` (10). `:log-density` is
+  the maximized target at the mode: in the latents' own coordinates (no
+  Jacobian) unless `:jacobian?`."
   [d & [{:keys [init jacobian?] :as opts}]]
   (let [b (:block d)
         theta0 (or init (dist/draw d))
-        {:keys [theta grad iterations converged?]} (lbfgs (objective d jacobian?) theta0 opts)]
+        {:keys [theta f grad iterations converged?]} (lbfgs (objective d jacobian?) theta0 opts)]
     {:theta theta
      :latents (latents-of b (block/constrain b theta))
-     :log-density (first (block/value+grad d theta))
+     ;; f = −(the objective's log density) at θ, Jacobian taken out unless
+     ;; jacobian?
+     :log-density (- (double f))
      :iterations iterations
      :grad-norm (norm grad)
      :converged? converged?}))
@@ -185,45 +209,142 @@
 ;; Pathfinder
 ;; =============================================================================
 
-(defn- inverse-hessian
-  "The inverse Hessian estimate of L-BFGS from its `pairs` [s y ρ] (newest
-  last), dense: the BFGS inverse updates applied in order to γ·I, γ = sᵀy/yᵀy
-  of the newest pair."
-  [pairs n]
-  (let [[s y] (peek pairs)
-        gamma (/ (dot s y) (dot y y))]
-    (reduce (fn [h [s y rho]]
-              ;; H⁺ = H − ρ(s·(Hy)ᵀ + (Hy)·sᵀ) + (ρ²·yᵀHy + ρ)·s·sᵀ
-              (let [hy (mapv #(dot % y) h)
-                    c (+ (* rho rho (dot y hy)) rho)]
-                (vec (for [i (range n)]
-                       (vec (for [j (range n)]
-                              (+ (get-in h [i j])
-                                 (* (- rho) (+ (* (nth s i) (nth hy j)) (* (nth hy i) (nth s j))))
-                                 (* c (nth s i) (nth s j)))))))))
-            (vec (for [i (range n)] (vec (for [j (range n)] (if (= i j) gamma 0.0)))))
-            pairs)))
-
 (def ^:private half-log-2pi 0.9189385332046727)
 
 (defn- std-normals [n] (let [s (dist/normal 0.0 1.0)] (vec (repeatedly n #(dist/draw s)))))
 
-(defn- gaussian
-  "{:mean :covariance :at :draw} of N(mean, cov), or nil when cov is not
-  positive definite: `(at z)` maps standard normals z to [θ log q(θ)],
-  `(draw)` does so for fresh ones."
-  [mean cov]
-  (when-let [l (cholesky cov)]
-    (let [n (count mean)
-          log-det (* 2.0 (reduce + 0.0 (map #(Math/log (get-in l [% %])) (range n))))
-          at (fn [z]
-               [(mapv (fn [i] (+ (nth mean i) (reduce + 0.0 (map #(* (get-in l [i %]) (nth z %)) (range (inc i))))))
-                      (range n))
-                (- (* -0.5 (dot z z)) (* 0.5 log-det) (* n half-log-2pi))])]
-      {:mean mean :covariance cov :at at :draw #(at (std-normals n))})))
+(defn- transpose [a] (if (empty? a) [] (apply mapv vector a)))
 
-(defn- log-target [d theta]
-  (let [lp (first (block/value+grad d theta))]
+(defn- mat* [a b]
+  (let [bt (transpose b)] (mapv (fn [row] (mapv #(dot row %) bt)) a)))
+
+(defn- upper-inverse
+  "The inverse of the upper triangular `r` (nonzero diagonal)."
+  [r]
+  (let [n (count r)]
+    (reduce (fn [inv j]
+              ;; column j: back substitution of r·x = eⱼ
+              (reduce (fn [inv i]
+                        (assoc-in inv [i j]
+                                  (/ (- (if (= i j) 1.0 0.0)
+                                        (reduce + 0.0 (map #(* (get-in r [i %]) (get-in inv [% j])) (range (inc i) (inc j)))))
+                                     (get-in r [i i]))))
+                      inv (range j -1 -1)))
+            (vec (repeat n (vec (repeat n 0.0))))
+            (range n))))
+
+(defn- inverse-hessian-factors
+  "L-BFGS's inverse Hessian estimate from initial diagonal `alpha` and the
+  curvature `pairs` [s y ρ] (newest last) as diagonal plus low rank,
+  H = diag(α) + β·γ·βᵀ with β = [diag(α)·Y, S] (d × 2m) and
+  γ = [[0, −R⁻¹], [−R⁻ᵀ, R⁻ᵀ(D + YᵀαY)R⁻¹]], R the upper triangle of SᵀY
+  and D its diagonal: the compact form of the BFGS updates (Byrd, Nocedal
+  & Schnabel 1994), as Zhang et al. (2022, II.2) use it. Returns
+  {:alpha :beta (columns) :gamma}."
+  [pairs alpha]
+  (let [ss (mapv first pairs) ys (mapv second pairs) m (count pairs)
+        sty (vec (for [i (range m)] (vec (for [j (range m)] (dot (ss i) (ys j))))))
+        rinv (upper-inverse (vec (for [i (range m)] (vec (for [j (range m)] (if (<= i j) (get-in sty [i j]) 0.0))))))
+        mid (vec (for [i (range m)]
+                   (vec (for [j (range m)]
+                          (+ (reduce + 0.0 (map (fn [al a b] (* al a b)) alpha (ys i) (ys j)))
+                             (if (= i j) (get-in sty [i i]) 0.0))))))
+        lower-right (mat* (transpose rinv) (mat* mid rinv))
+        neg-rinv (mapv #(mapv - %) rinv)
+        neg-rinv-t (transpose neg-rinv)]
+    {:alpha alpha
+     :beta (into (mapv #(mapv * alpha %) ys) ss)
+     :gamma (into (mapv (fn [i] (into (vec (repeat m 0.0)) (neg-rinv i))) (range m))
+                  (mapv (fn [i] (into (neg-rinv-t i) (lower-right i))) (range m)))}))
+
+(defn- factors-times
+  "H·v for H = diag(α) + β·γ·βᵀ."
+  [{:keys [alpha beta gamma]} v]
+  (let [bv (mapv #(dot % v) beta)
+        gbv (mapv #(dot % bv) gamma)]
+    (reduce (fn [acc [b c]] (axpy c b acc)) (mapv * alpha v) (map vector beta gbv))))
+
+(defn- dense-inverse-hessian
+  "diag(α) + β·γ·βᵀ as a dense matrix (rows): O(d²·m)."
+  [{:keys [alpha beta gamma]}]
+  (let [n (count alpha)
+        bg (mapv (fn [row] (mapv (fn [col] (reduce + 0.0 (map * row col))) (transpose gamma)))
+                 (transpose beta))]
+    (vec (for [i (range n)]
+           (vec (for [j (range n)]
+                  (+ (if (= i j) (nth alpha i) 0.0)
+                     (reduce + 0.0 (map (fn [x b] (* x (nth b j))) (bg i) beta)))))))))
+
+(defn- thin-qr
+  "B = Q·R for the columns `bs`: Q orthonormal columns, one for each column
+  of B independent of those before it, by Gram–Schmidt twice (Giraud et
+  al. 2005); R (k × n) as rows."
+  [bs]
+  (let [[qs rcols]
+        (reduce (fn [[qs rcols] b]
+                  (let [[v coef] (reduce (fn [[v coef] _]
+                                           (let [cs (mapv #(dot % v) qs)]
+                                             [(reduce (fn [v [q c]] (axpy (- c) q v)) v (map vector qs cs))
+                                              (mapv + coef cs)]))
+                                         [b (vec (repeat (count qs) 0.0))] [1 2])
+                        nv (norm v)]
+                    (if (> nv (* 1e-10 (max 1e-300 (norm b))))
+                      [(conj qs (mapv #(/ % nv) v)) (conj rcols (conj coef nv))]
+                      [qs (conj rcols coef)])))
+                [[] []] bs)
+        k (count qs)]
+    [qs (vec (for [i (range k)] (mapv #(get % i 0.0) rcols)))]))
+
+(defn- gaussian
+  "{:mean :at :draw :factors :covariance} of N(mean, H), H = diag(α) +
+  β·γ·βᵀ (`factors`), or nil when H is not positive definite, by Zhang et
+  al.'s Alg. 4: with √α⁻¹β = Q·R (thin) and L·Lᵀ = I + R·γ·Rᵀ, a draw is
+  mean + √α ⊙ (Q(L − I)Qᵀz + z), log det H = Σ log α + 2 Σ log Lᵢᵢ —
+  O(d·m²) to set up and O(d·m) per draw. `(at z)` maps standard normals z
+  to [θ log q(θ)], `(draw)` does so for fresh ones; `:covariance` is a
+  delay of the dense H."
+  [mean {:keys [alpha beta gamma] :as factors}]
+  (let [n (count mean)
+        sqrt-alpha (mapv #(Math/sqrt %) alpha)
+        [qs r] (thin-qr (mapv #(mapv / % sqrt-alpha) beta))
+        k (count qs)
+        rgr (mat* r (mat* gamma (transpose r)))]
+    (when-let [l (if (zero? k) [] (cholesky (vec (for [i (range k)] (update (rgr i) i + 1.0)))))]
+      (let [log-det (+ (reduce + 0.0 (map #(Math/log %) alpha))
+                       (* 2.0 (reduce + 0.0 (map #(Math/log (get-in l [% %])) (range k)))))
+            at (fn [z]
+                 (let [t (mapv #(dot % z) qs)
+                       ;; (L − I)·t
+                       w (mapv (fn [i] (- (reduce + 0.0 (map #(* (get-in l [i %]) (nth t %)) (range (inc i)))) (nth t i)))
+                               (range k))
+                       u (reduce (fn [acc [q c]] (axpy c q acc)) z (map vector qs w))]
+                   [(mapv (fn [m s x] (+ m (* s x))) mean sqrt-alpha u)
+                    (- (* -0.5 (dot z z)) (* 0.5 log-det) (* n half-log-2pi))]))]
+        {:mean mean :factors factors :covariance (delay (dense-inverse-hessian factors))
+         :at at :draw #(at (std-normals n))}))))
+
+(defn- approximation
+  "The Gaussian at an L-BFGS iterate: μ = θ − H·∇f (f = −log p), Σ = H,
+  H from the iterate's `pairs` and initial diagonal `alpha`; nil when H is
+  not positive definite."
+  [theta grad pairs alpha]
+  (let [factors (inverse-hessian-factors pairs alpha)]
+    (gaussian (mapv - theta (factors-times factors grad)) factors)))
+
+(defn- initial-diagonal
+  "The initial inverse Hessian diagonal at an iterate: L-BFGS's own γ·I,
+  γ = sᵀy/yᵀy of the newest pair (`:lbfgs`), or Zhang et al.'s Alg. 3
+  estimate along the path (`:recovered`, as Stan and BlackJAX)."
+  [diagonal pairs alpha]
+  (case diagonal
+    :lbfgs (let [[s y] (peek pairs)] (vec (repeat (count s) (/ (dot s y) (dot y y)))))
+    :recovered alpha))
+
+(defn- log-target
+  "The log target of `d` at θ, the log density alone (no gradient): −∞ for
+  a non-finite value."
+  [d theta]
+  (let [lp (double (dist/logpdf d theta))]
     (if (or (NaN? lp) (infinite? lp)) ##-Inf lp)))
 
 (defn- single-path
@@ -231,19 +352,17 @@
   largest ELBO estimate. Every iterate's estimate uses the same standard
   normals (common random numbers), so their differences are not swamped by
   Monte Carlo noise."
-  [d theta0 {:keys [elbo-draws history] :as opts}]
+  [d theta0 {:keys [elbo-draws history diagonal] :as opts}]
   (let [n (count theta0)
         zs (vec (repeatedly elbo-draws #(std-normals n)))
         {:keys [path iterations]} (lbfgs (objective d true) theta0
                                          (merge {:rel-obj-tolerance (* 1e4 2.220446049250313e-16)}
                                                 opts {:record? true :history history}))
-        candidates (keep (fn [{:keys [theta grad pairs]}]
+        candidates (keep (fn [{:keys [theta grad pairs alpha]}]
                            (when (seq pairs)
-                             (let [h (inverse-hessian pairs n)]
-                               ;; μ = θ − H·∇f, f = −log p
-                               (when-let [q (gaussian (mapv - theta (mapv #(dot % grad) h)) h)]
-                                 (let [lw (mapv #(let [[x lq] ((:at q) %)] (- (log-target d x) lq)) zs)]
-                                   (assoc q :elbo (/ (reduce + lw) elbo-draws)))))))
+                             (when-let [q (approximation theta grad pairs (initial-diagonal diagonal pairs alpha))]
+                               (let [lw (mapv #(let [[x lq] ((:at q) %)] (- (log-target d x) lq)) zs)]
+                                 (assoc q :elbo (/ (reduce + lw) elbo-draws))))))
                          path)]
     (when (seq candidates)
       (assoc (apply max-key :elbo candidates) :iterations iterations))))
@@ -261,8 +380,17 @@
   paths' Gaussians then give `:draws` draws in all, importance-resampled
   against the target with Pareto-smoothed weights.
 
+  H is kept as a diagonal plus a rank-2m term (m ≤ `:history` pairs), the
+  compact form of the BFGS updates, and a Gaussian is drawn from and
+  scored by Zhang et al.'s Alg. 4: O(d·m²) per iterate and O(d·m) per
+  draw, no d × d matrix (only the returned `:covariance` is dense). Its
+  diagonal is Zhang et al.'s Alg. 3 estimate recovered along the path
+  (`:diagonal :recovered`, the default, as Stan and BlackJAX), or L-BFGS's
+  own γ·I (`:diagonal :lbfgs`: the inverse Hessian the optimizer used).
+
   Options: `:init`, `:paths` (4), `:draws` (1000), `:elbo-draws` (30),
-  `:history` (6, L-BFGS pairs), `:max-iterations` (1000), `:tolerance`,
+  `:history` (6, L-BFGS pairs), `:diagonal` (`:recovered`), `:max-iterations`
+  (1000), `:tolerance`,
   `:rel-obj-tolerance` (1e4·ε, as Stan: a step that changes the target by
   less, relatively, ends the path).
   Returns {:mean :covariance (the best path's Gaussian, by ELBO) :elbo
@@ -271,12 +399,14 @@
   above 0.7 says the Gaussians miss part of the target: use them to start a
   sampler, not as the posterior. Throws `::no-approximation` when no path
   yields a Gaussian or none of its draws has positive target density."
-  [d & [{:keys [init paths draws elbo-draws history]
-         :or {paths 4 draws 1000 elbo-draws 30 history 6}
+  [d & [{:keys [init paths draws elbo-draws history diagonal]
+         :or {paths 4 draws 1000 elbo-draws 30 history 6 diagonal :recovered}
          :as opts}]]
   (doseq [[k v] {:paths paths :draws draws :elbo-draws elbo-draws :history history}]
     (when-not (pos-int? v)
       (throw (ex-info (str k " is a positive count") {:type ::invalid-option k v}))))
+  (when-not (#{:lbfgs :recovered} diagonal)
+    (throw (ex-info ":diagonal is :lbfgs or :recovered" {:type ::invalid-option :diagonal diagonal})))
   (let [b (:block d)
         n (or (some-> init count) (:dimension b))
         base (or init (vec (repeat n 0.0)))
@@ -284,7 +414,7 @@
         per-path (max 1 (long (Math/ceil (/ (double draws) paths))))
         qs (vec (keep (fn [_]
                         (single-path d (mapv #(+ % (dist/draw jitter)) base)
-                                     (assoc opts :elbo-draws elbo-draws :history history)))
+                                     (assoc opts :elbo-draws elbo-draws :history history :diagonal diagonal)))
                       (range paths)))]
     (when (empty? qs)
       (throw (ex-info "Pathfinder found no Gaussian approximation" {:type ::no-approximation})))
@@ -298,7 +428,7 @@
           picks (m/systematic-resample (mapv #(Math/exp %) lw) draws)
           best (apply max-key :elbo qs)]
       {:mean (:mean best)
-       :covariance (:covariance best)
+       :covariance @(:covariance best)
        :elbo (:elbo best)
        :draws (mapv #(first (nth proposals %)) picks)
        :pareto-k k

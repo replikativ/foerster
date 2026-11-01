@@ -76,9 +76,9 @@
                  own (- (entry-score (get-in proposed [:trace/entries address]))
                         (entry-score (get-in trace [:trace/entries address])))]
              (when (or (:trace/error proposed) (> (Math/abs (double (- joint own))) 1e-6))
-               (trace/release! proposed trace)
-               (throw (ex-info "A block move needs the block's complete conditional as its target: the move changed sites outside the block"
-                               {:type ::incomplete-target :address address :outside (- joint own)})))
+               (let [e (tc/incomplete-target "A random-walk block move" ::incomplete-target context trace proposed address (- joint own))]
+                 (trace/release! proposed trace)
+                 (throw e)))
              (tc/settle! context trace proposed true)
              (resolve proposed))
            (catch #?(:clj Throwable :cljs :default) e (reject e))))
