@@ -649,20 +649,36 @@
        :num-csmc-nodes - Number of CSMC nodes (default num-nodes/2)
        :executor - Shared executor
        :all-particles? - Return all particles or one per node (default true)
+       and the other particle methods' options except :resample-threshold
+
+   Every node, conditional or not, resamples at every barrier by multinomial
+   draws: iPMCMC's extended target needs each conditional node to be the
+   conditional of the very SMC the free nodes run, since the Gibbs draw of
+   the conditional nodes compares their evidence estimates (Rainforth et al.
+   2016, §3; Anglican's ipmcmc.clj runs both node types alike). An
+   ESS-adaptive free node would not be, so `:resample-threshold` is refused.
 
    Returns: Spin<EmpiricalMeasure>
 
    Reference:
      Rainforth et al., 'Interacting Particle Markov Chain Monte Carlo', ICML 2016"
   [model-task num-particles num-iterations & [opts]]
-  (check-options! opts (into particle-options #{:num-nodes :num-csmc-nodes :all-particles?}))
+  (when (contains? opts :resample-threshold)
+    (throw (ex-info (str "IPMCMC resamples every node at every barrier (the conditional nodes "
+                         "must be conditionals of the free nodes' SMC): :resample-threshold does not apply")
+                    {:type ::unknown-options :unknown [:resample-threshold]})))
+  (check-options! opts (into (disj particle-options :resample-threshold)
+                             #{:num-nodes :num-csmc-nodes :all-particles?}))
   (spin
    (let [num-nodes (or (:num-nodes opts) 8)
          num-csmc-nodes (or (:num-csmc-nodes opts) (quot num-nodes 2))
          num-smc-nodes (- num-nodes num-csmc-nodes)
          all-particles? (get opts :all-particles? true)
          seed (or (:seed opts) (random/fresh-seed))
-         sweep-opts #(assoc opts :seed (sp/derive-seed seed ::sweep %))]
+         ;; every node resamples at every barrier (ESS ≤ N < ∞·N),
+         ;; multinomially, as conditional SMC does (`smc/smc` :retained)
+         node-opts (assoc opts :resample-threshold ##Inf :resampling :multinomial)
+         sweep-opts #(assoc node-opts :seed (sp/derive-seed seed ::sweep %))]
      (assert (> num-csmc-nodes 0) ":num-csmc-nodes must be > 0")
      (assert (< num-csmc-nodes num-nodes) ":num-csmc-nodes must be < :num-nodes")
      (loop [iteration 0

@@ -1041,7 +1041,8 @@
 
 (defn smc
   "Run `model` (a spin) with `n` particles. Options: `:resample-threshold`
-  (ESS fraction, default 0.5), `:policy` (an `foerster.trace/policy`,
+  (ESS fraction, default 0.5; the ESS never exceeds N, so ##Inf resamples
+  at every barrier, as conditional SMC does), `:policy` (an `foerster.trace/policy`,
   default the prior with no options), `:executor` for the root world,
   `:root` a world to run in instead of a fresh one, `:copy? true` to make
   particles by copying worlds (`effects.savepoint/copy`: a world holding a
