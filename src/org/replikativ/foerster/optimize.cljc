@@ -226,8 +226,11 @@
                 (- (* -0.5 (dot z z)) (* 0.5 log-det) (* n half-log-2pi))])]
       {:mean mean :covariance cov :at at :draw #(at (std-normals n))})))
 
-(defn- log-target [d theta]
-  (let [lp (first (block/value+grad d theta))]
+(defn- log-target
+  "The log target of `d` at θ, the log density alone (no gradient): −∞ for
+  a non-finite value."
+  [d theta]
+  (let [lp (double (dist/logpdf d theta))]
     (if (or (NaN? lp) (infinite? lp)) ##-Inf lp)))
 
 (defn- single-path

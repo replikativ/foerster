@@ -123,3 +123,22 @@
     (is (close? (:log-density natural) (- (* 2.0 (Math/log 2.0)) 2.0) 1e-9) (str natural))
     (is (close? (:s (:latents unconstrained)) 3.0 1e-6))
     (is (close? (:log-density unconstrained) (- (* 3.0 (Math/log 3.0)) 3.0) 1e-9) (str unconstrained))))
+
+(deftest pathfinder-takes-gradients-only-along-the-l-bfgs-path
+  ;; the ELBO estimates and the importance weights need the log density
+  ;; only: every gradient is one L-BFGS asked for
+  (random/set-seed! 7)
+  (let [in-lbfgs (atom false) outside (atom 0) densities (atom 0)
+        lbfgs @#'opt/lbfgs
+        vg (block/capability gaussian :value+grad)
+        ld (block/capability gaussian :log-density)
+        counted (block/block {:block/id :g :block/latents [{:name :x :shape [3]}]}
+                             {:log-density (fn [th inputs] (swap! densities inc) (ld th inputs))
+                              :value+grad (fn [th inputs] (when-not @in-lbfgs (swap! outside inc)) (vg th inputs))})]
+    (with-redefs-fn {#'opt/lbfgs (fn [& args]
+                                   (reset! in-lbfgs true)
+                                   (try (apply lbfgs args) (finally (reset! in-lbfgs false))))}
+      #(opt/pathfinder (block/block-dist counted nil) {:paths 2 :draws 100}))
+    (is (zero? @outside))
+    ;; 30 ELBO draws per candidate iterate, and the 100 proposals
+    (is (>= @densities (+ 100 30)))))

@@ -581,7 +581,9 @@ the target with Pareto-smoothed weights:
                                ; or as a tempering reference
 ```
 
-It costs a few hundred gradient evaluations per path. On posteriordb's
+Its gradients are L-BFGS's own, one per optimizer step and line-search
+trial; on top, every iterate costs `:elbo-draws` (30) log densities without
+gradient, and the final draws one each. On posteriordb's
 regressions its means and standard deviations come within a few percent of
 the reference. Where k̂ is high, use it to initialize a sampler, not as the
 posterior.
