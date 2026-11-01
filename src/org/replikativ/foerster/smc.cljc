@@ -965,11 +965,18 @@
                           (throw (ex-info "The population is not waiting for a value"
                                           {:type ::not-waiting})))
                       {:keys [streaming]} before
+                      ;; the value is scored under the particle's own policy
+                      ;; (its interventions, temperature, fallback), with the
+                      ;; value as that site's constraint, as PGAS scores a
+                      ;; retained future
                       parked (into {} (map (fn [[slot sp]]
-                                             (let [policy (itrace/policy
-                                                           {:constraints {(:savepoint/address sp) value}})]
-                                               (decide! policy sp)
-                                               [slot {:sp sp :value value}])))
+                                             (let [address (:savepoint/address sp)
+                                                   policy (itrace/policy
+                                                           (-> (or (itrace/policy-options (policy-of slot)) {})
+                                                               (dissoc :draw)
+                                                               (update :constraints assoc address value)))
+                                                   {decided :value} (decide! policy sp)]
+                                               [slot {:sp sp :value decided}])))
                                    streaming)]
                   (swap! state assoc :streaming {} :parked parked :in-barrier? false)
                   (arrived!))
