@@ -9,7 +9,8 @@
     log α = log p(x') − log p(x) + log q(u' ; x') − log q(u ; x) + log |det ∂h/∂(x,u)|
 
   Random-walk, scale, swap and data-driven moves are all such pairs (q, h).
-  The Jacobian term is the caller's (`:log-jacobian` from the involution);
+  The Jacobian term is the caller's (`:log-jacobian` from the involution,
+  required; 0.0 for a discrete or volume-preserving map);
   `fd-log-jacobian` computes it numerically for real-valued maps — raster's AD
   is the intended replacement.
 
@@ -22,6 +23,7 @@
   `:removed` is dropped, both scored as in single-site MH."
   (:require [org.replikativ.spindel.trace :as trace]
             [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.transport :as transport]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.engine.protocols :as rtp]))
@@ -104,7 +106,8 @@
             ;; every move from this state draws its own auxiliary variable
             move (rtp/swap-state! world [:inference ::moves] (fnil inc 0))
             {u :aux lq-fwd :log-q} (random/in-world-stream world [::aux move] #(propose x))
-            {x' :choices u' :aux lj :log-jacobian removed :removed} (involution x u)
+            {x' :choices u' :aux lj :log-jacobian removed :removed}
+            (transport/require-jacobian! (involution x u) "An involution")
             changed (into {} (filter (fn [[a v]] (or (not (contains? x a)) (not= v (get x a))))) x')
             from (trace/earliest trace (keys changed))]
         (if-not from
@@ -128,7 +131,7 @@
                              (+ (- (itrace/log-joint t') (itrace/log-joint trace))
                                 (replay-terms trace t' (set removed))
                                 (- (log-q (itrace/choices t') u') lq-fwd)
-                                (or lj 0.0)))
+                                lj))
                      accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
                                   (or (>= ratio 0.0)
                                       (< (Math/log (random/in-world-stream (:trace/world t') ::accept

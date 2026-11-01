@@ -350,14 +350,16 @@ the weight keeps the particle properly weighted:
                (let [u (dist/draw (dist/normal 0.0 0.05))]
                  {:updates {:mu (+ mu u)}    ; new values
                   :log-q (dist/logpdf (dist/normal 0.0 0.05) u)
-                  :reverse (- u)}))          ; what L would draw to go back
+                  :reverse (- u)             ; what L would draw to go back
+                  :log-jacobian 0.0}))       ; a random walk preserves volume
    :backward (fn [choices' u'] (dist/logpdf (dist/normal 0.0 0.05) u'))})
 
 (infer/smc-infer (model) 1000 {:anchors #{:mu} :smcp3 random-walk-kernel})
 ```
 
-K draws from `foerster.random` (it runs in the particle's stream), may
-return `:log-jacobian` for a deterministic continuous map, and needs an
+K draws from `foerster.random` (it runs in the particle's stream), must
+return `:log-jacobian` (the log |det| of its deterministic map; 0.0 for a
+random walk or a discrete move), and needs an
 anchor at the earliest site it updates. Sites it does not update are kept,
 and sites the replay reaches afresh are drawn from their prior. The weight's
 variance depends on how well L reverses K: a symmetric random walk as L

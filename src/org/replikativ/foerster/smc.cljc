@@ -649,8 +649,10 @@
                       w0 (weight-of world0)
                       t0 (assoc (particle-trace session world0) :trace/pending sp :trace/pending-value value)
                       {:keys [updates log-q reverse log-jacobian]}
-                      (random/in-world-stream world0 [::smcp3 k]
-                                              #((:forward smcp3) (itrace/choices t0) t0))]
+                      (transport/require-jacobian!
+                       (random/in-world-stream world0 [::smcp3 k]
+                                               #((:forward smcp3) (itrace/choices t0) t0))
+                       "An SMCP3 forward kernel")]
                   (if (empty? updates)
                     ;; staying is a move too: its densities still weigh
                     (do (rtp/swap-state! world0 [:inference :log-weight]
@@ -1075,7 +1077,8 @@
   u' :log-jacobian lj}`: new values for some latent sites (earlier ones
   included, so K may revise the past), the log density of K's own random
   choices, the auxiliary value the backward kernel would draw to go back, and
-  an optional log |Jacobian| for a deterministic continuous map. `(L choices'
+  the log |Jacobian| of its deterministic map (required; 0.0 for a discrete
+  or volume-preserving move such as a random walk). `(L choices'
   u')` is the log density of that reverse draw given the new choices. The
   particle is replayed from the earliest updated site (it needs an anchor
   there, `:anchors`) to its barrier, and its weight multiplied by

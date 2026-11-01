@@ -1,6 +1,8 @@
 (ns org.replikativ.foerster.transport
   "Scored forward/backward transport. The caller supplies valid auxiliary
-  proposal laws and any change-of-variables Jacobian; these are not inferred."
+  proposal laws and the change-of-variables Jacobian; these are not inferred.
+  The Jacobian must be stated (`:log-jacobian`, 0.0 for a discrete or
+  volume-preserving map): a forgotten one would silently bias the weights."
   (:require [is.simm.partial-cps.async :as pcps]
             [org.replikativ.foerster.trace :as it]
             [org.replikativ.foerster.random :as random]
@@ -19,6 +21,18 @@
     (throw (ex-info "Transport needs scored forward/backward proposals" {:type ::unscored-proposal})))
   (->Kernel (:id source) (:id destination) forward backward))
 
+(defn require-jacobian!
+  "Refuse a move `proposed` (a forward kernel's or an involution's result)
+  that does not state its `:log-jacobian`. `what` names the move."
+  [proposed what]
+  (when-not (or (number? (:log-jacobian proposed))
+                ;; staying put: no map, no Jacobian
+                (and (contains? proposed :updates) (empty? (:updates proposed))))
+    (throw (ex-info (str what " must return :log-jacobian, the log |det| of its "
+                         "deterministic map (0.0 for a discrete or volume-preserving move)")
+                    {:type ::missing-jacobian :keys (vec (keys proposed))})))
+  proposed)
+
 (defn correction [log-target-ratio log-forward log-backward log-jacobian]
   (let [terms [log-target-ratio log-forward log-backward (or log-jacobian 0.0)]]
     (when-not (every? #(and (number? %) (not (#?(:clj Double/isNaN :cljs js/isNaN) %))) terms)
@@ -33,12 +47,15 @@
         {:keys [value log-q reverse log-jacobian] :as proposed} ((:forward kernel) (copy x))]
     (when-not (contains? proposed :value)
       (throw (ex-info "A value transport must return :value" {:type ::invalid-proposal})))
+    (require-jacobian! proposed "A transport's forward kernel")
     {:particle value :log-increment (correction (- ((:score destination) value) old-score)
                                                 log-q ((:backward kernel) value reverse) log-jacobian)}))
 
 (defn trace-step [source destination kernel old seed]
   (pcps/async
-   (let [{:keys [updates log-q reverse log-jacobian]} (random/with-stream* seed ::forward #((:forward kernel) (it/choices old) old))
+   (let [{:keys [updates log-q reverse log-jacobian]} (require-jacobian!
+                                                       (random/with-stream* seed ::forward #((:forward kernel) (it/choices old) old))
+                                                       "A transport's forward kernel")
          unknown (remove #(contains? (:trace/entries old) %) (keys updates))
          _ (when (seq unknown)
              (throw (ex-info "Trace transport cannot update absent sites"
