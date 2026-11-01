@@ -219,3 +219,84 @@
                             [:b :v0 :v1]))
             "a constraint reached through the changed branch is fine")
         (await-cps (gfi/close! t))))))
+
+;; -----------------------------------------------------------------------------
+;; Second review: update's values are values, model errors, involution checks
+
+(deftest updated-latent-sites-stay-latent
+  (with-root [root]
+    (let [t (await-cps (gfi/simulate (hierarchical root)))
+          {t' :trace w :weight} (await-cps (gfi/update t {:x 1.0}))
+          z (get (itrace/choices t) :z)]
+      (is (= #{:x :z} (set (itrace/latent-addresses t'))) "a new value is not new conditioning")
+      (let [x0 (get (itrace/choices t) :x)
+            expected (- (+ (lp (dist/normal 0.0 1.0) 1.0) (lp (dist/normal 1.0 1.0) z))
+                        (+ (lp (dist/normal 0.0 1.0) x0) (lp (dist/normal x0 1.0) z)))]
+        (is (< (Math/abs (- w expected)) 1e-9) "nothing drawn afresh: the weight is the joint ratio"))
+      (let [{t2 :trace} (await-cps (gfi/regenerate t' #{:x}))]
+        (is (not= 1.0 (get (itrace/choices t2) :x)) "a later move changes it again"))
+      (await-cps (gfi/close! t)))))
+
+(deftest update-keeps-a-latent-value-outside-its-new-support
+  (random/set-seed! 21)
+  (with-root [root]
+    (let [t (loop [i 0]
+              (let [t (await-cps (gfi/simulate (nested-support root)))
+                    [x z] (:trace/result t)]
+                (if (or (> z 1.0) (> i 500)) t (do (await-cps (gfi/close! t)) (recur (inc i))))))
+          z (get (itrace/choices t) :z)
+          {t' :trace w :weight} (await-cps (gfi/update t {:x (/ z 2.0)}))]
+      (is (> z 1.0))
+      (is (= z (get (itrace/choices t') :z)) "z is kept")
+      (is (= ##-Inf w))
+      (is (= #{:x :z} (set (itrace/latent-addresses t'))))
+      (await-cps (gfi/close! t)))))
+
+(deftest update-reports-a-failing-replay
+  (with-root [root]
+    (let [model (binding [ec/*execution-context* root]
+                  (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+                          (when (> x 5.0) (throw (ex-info "too large" {})))
+                          (sample (dist/normal x 1.0) :id :z))))
+          t (await-cps (gfi/simulate model))
+          r (await-cps (gfi/update t {:x 10.0 :z 1.0}))]
+      (is (= ##-Inf (:weight r)))
+      (is (= "too large" (ex-message (:error r))) "the program's error, not unvisited constraints")
+      (await-cps (gfi/close! t)))))
+
+(deftest involutive-moves-count-reverse-redraws
+  ;; z ~ U(x, x + 1/2): shifting x by 2 redraws z from its new support; the
+  ;; reverse redraws it back, so the ratio is the prior ratio of x alone
+  (with-root [root]
+    (let [model (binding [ec/*execution-context* root]
+                  (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)
+                              z (sample (dist/uniform x (+ x 0.5)) :id :z)]
+                          [x z])))
+          shift {:propose (fn [_] {:aux 2.0 :log-q 0.0})
+                 :log-q (fn [_ _] 0.0)
+                 :involution (fn [{x :x} u] {:choices {:x (+ x u)} :aux (- u) :log-jacobian 0.0})}]
+      (dotimes [_ 5]
+        (let [t (await-cps (gfi/simulate model))
+              x (get (itrace/choices t) :x)
+              {r :log-ratio} (await-cps (inv/step t shift))]
+          (is (< (Math/abs (- r (- (lp (dist/normal 0.0 1.0) (+ x 2.0)) (lp (dist/normal 0.0 1.0) x)))) 1e-9))
+          (await-cps (gfi/close! t)))))))
+
+(deftest the-involution-check-accepts-full-choice-maps
+  (with-root [root]
+    (let [t (await-cps (gfi/simulate (switch-with-proposal root)))
+          full {:propose (fn [_] {:aux nil :log-q 0.0})
+                :log-q (fn [_ _] 0.0)
+                :involution (fn [x _] {:choices (update x :b not) :aux nil :log-jacobian 0.0})}]
+      (is (map? (await-cps (inv/step t (assoc full :check? true)))))
+      (await-cps (gfi/close! t)))))
+
+(deftest involutions-cannot-change-observations
+  (with-root [root]
+    (let [t (await-cps (gfi/simulate (hierarchical root)))
+          move {:propose (fn [_] {:aux nil :log-q 0.0})
+                :log-q (fn [_ _] 0.0)
+                :involution (fn [_ _] {:choices {:y 0.0} :aux nil :log-jacobian 0.0})}]
+      (is (= ::inv/observed-site
+             (:type (ex-data (try (await-cps (inv/step t move)) (catch Exception e e))))))
+      (await-cps (gfi/close! t)))))

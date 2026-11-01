@@ -97,12 +97,13 @@
 (defn- fresh-log-q
   "Σ log q of the latent choices `new` drew afresh: not shared with `old`
   (upstream of a replay the entries are the same objects), not kept, not
-  constrained."
+  constrained, not set to a given value (`:moved?`)."
   [old new]
   (let [old-by (entry-map old)]
     (transduce (comp (filter itrace/latent?)
                      (remove #(identical? (:note %) (:note (get old-by (:address %)))))
                      (remove (comp :kept? :note))
+                     (remove (comp :moved? :note))
                      (map (comp :log-proposal :note)))
                + 0.0 (itrace/entries new))))
 
@@ -132,7 +133,10 @@
   [name operation constraints allow-unvisited? close-on-error f]
   (fn [resolve reject]
     (operation (fn [t]
-                 (if-let [error (when-not allow-unvisited? (unvisited-error name t constraints))]
+                 ;; a run the program aborted reached only part of its
+                 ;; sites: its own error is what to report, not theirs
+                 (if-let [error (when-not (or allow-unvisited? (:trace/error t))
+                                  (unvisited-error name t constraints))]
                    (close-on-error t (fn [] (reject error)))
                    (try (resolve (f t))
                         (catch #?(:clj Throwable :cljs :default) e (reject e)))))
@@ -222,8 +226,11 @@
         overwritten values of constrained sites, and the sites no longer
         reached.
   As in Gen, a kept value is kept even when the change moved it outside its
-  site's support: t' then has density zero and w = −∞. A site that was
-  constrained stays constrained.
+  site's support: t' then has density zero and w = −∞. `constraints` are new
+  values, not new conditioning: a site that was latent stays latent with its
+  new value (so a later move can change it again), and one that was
+  constrained stays constrained. A replay the program aborts resolves with
+  w = −∞ and the program's error under `:error`.
 
   A constraint on a site `trace` never reached replays from its first
   sample site, so the program can get there. A constraint the new run still
@@ -237,14 +244,23 @@
          (reject (ex-info "update: the trace has no sample site to replay from"
                           {:type ::nothing-to-replay})))
        (check-visited "update"
-                      (itrace/reexecute trace (let [existing (filter #(contains? (entry-map trace) %) (keys constraints))]
-                                                (if (seq existing) (set existing) #{from}))
-                                        (itrace/policy {:keep? true :constraints constraints :out-of-support :keep})
-                                        {:anchor? itrace/anchor?})
+                      (let [old-by (entry-map trace)
+                            fixed? (fn [a] (let [n (:note (get old-by a))]
+                                             (and (:constrained? n) (not (:intervened? n)))))
+                            fixed (into {} (filter (comp fixed? key)) constraints)
+                            moved (into {} (remove (comp fixed? key)) constraints)]
+                        (itrace/reexecute trace (let [existing (filter #(contains? old-by %) (keys constraints))]
+                                                  (if (seq existing) (set existing) #{from}))
+                                          (itrace/policy {:keep? true :constraints fixed :out-of-support :keep
+                                                          :draw (fn [sp _]
+                                                                  (when-let [[_ v] (find moved (:savepoint/address sp))]
+                                                                    {:value v :symmetric? true}))})
+                                          {:anchor? itrace/anchor?}))
                       constraints allow-unvisited?
                       (fn [t' done] (trace/release! t' trace) (done))
                       (fn [t']
-                        (let [new-by (entry-map t')
+                        (let [error (:trace/error t')
+                              new-by (entry-map t')
                               discard (into {}
                                             (keep (fn [{:keys [address value] :as e}]
                                                     (when (and (= itrace/choose-site (:site e))
@@ -253,9 +269,12 @@
                                                                    (contains? constraints address)))
                                                       [address value])))
                                             (itrace/entries trace))]
-                          {:trace t'
-                           :weight (- (itrace/log-joint t') (itrace/log-joint trace) (fresh-log-q trace t'))
-                           :discard discard})))))))
+                          (cond-> {:trace t'
+                                   :weight (if error
+                                             ##-Inf
+                                             (- (itrace/log-joint t') (itrace/log-joint trace) (fresh-log-q trace t')))
+                                   :discard discard}
+                            error (assoc :error error)))))))))
 
 (defn- selected [trace selection]
   (let [entries (:trace/entries trace)]

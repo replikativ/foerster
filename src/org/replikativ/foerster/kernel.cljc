@@ -243,7 +243,7 @@
                        current (:value entry)]
                    ;; a Gaussian step is a move on the reals: noise on a
                    ;; discrete value is not a value of its law
-                   (when (or (not (number? current)) (dist/support (:distribution entry)))
+                   (when-not (and (number? current) (dist/continuous? (:distribution entry)))
                      (throw (ex-info "A random-walk block kernel moves real-valued sites only"
                                      {:type ::not-real-valued :address addr})))
                    [addr (random-walk-propose current step-size)]))

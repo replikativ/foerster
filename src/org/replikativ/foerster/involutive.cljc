@@ -48,9 +48,16 @@
                                    (not (:kept? (:note e)))
                                    (not (:symmetric? (:note e)))))
                       new-entries)
+        ;; every old latent the reverse replay would draw again: dropped,
+        ;; or redrawn by this replay (a value that left its support), but
+        ;; not set by the involution (symmetric) nor moved into u'
         stale (filter (fn [e] (and (itrace/latent? e)
-                                   (not (contains? new-by (:address e)))
-                                   (not (contains? removed (:address e)))))
+                                   (not (contains? removed (:address e)))
+                                   (let [n (:note (get new-by (:address e)))]
+                                     (or (nil? n)
+                                         (and (not (identical? n (:note e)))
+                                              (not (:kept? n))
+                                              (not (:symmetric? n)))))))
                       (itrace/entries old))]
     (if (itrace/irreversible-redraw? old-by new-entries)
       ##-Inf
@@ -73,7 +80,12 @@
   auxiliaries must come back as `u` (Gen's `check=true`)."
   [involution x u x' u']
   (let [{x'' :choices u'' :aux} (involution x' u')
-        wrong (into {} (remove (fn [[a v]] (and (contains? x a) (same-value? v (get x a))))) x'')]
+        ;; an address of x must come back to its value; one only the new
+        ;; state has (a site its replay drew) may pass through unchanged
+        wrong (into {} (remove (fn [[a v]] (if (contains? x a)
+                                             (same-value? v (get x a))
+                                             (same-value? v (get x' a)))))
+                    x'')]
     (when (or (seq wrong) (not (same-value? u u'')))
       (throw (ex-info "The move is not an involution: applying it twice does not return the state"
                       {:type ::not-an-involution
@@ -109,6 +121,13 @@
             {x' :choices u' :aux lj :log-jacobian removed :removed}
             (transport/require-jacobian! (involution x u) "An involution")
             changed (into {} (filter (fn [[a v]] (or (not (contains? x a)) (not= v (get x a))))) x')
+            ;; an involution names the sites it sets, so it may set one that
+            ;; `generate` fixed (it is latent afterwards); data it cannot
+            ;; change: a replay would keep the observation and drop the move
+            observed (filter #(:observed? (:note (get-in trace [:trace/entries %]))) (keys changed))
+            _ (when (seq observed)
+                (throw (ex-info "An involution cannot change an observed site"
+                                {:type ::observed-site :addresses (vec observed)})))
             from (trace/earliest trace (keys changed))]
         (if-not from
           (resolve {:trace trace :accepted? false :log-ratio 0.0})

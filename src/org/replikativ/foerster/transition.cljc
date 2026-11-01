@@ -36,7 +36,8 @@
         block-of (fn [t legacy block-id]
                    (let [latent (set (itrace/latent-addresses t))]
                      (into #{} (keep (fn [[address entry]]
-                                       (when (and (latent address)
+                                       (when (and (some? block-id)
+                                                  (latent address)
                                                   (= block-id (address-classifier address entry)))
                                          address)))
                            legacy)))]
@@ -278,8 +279,10 @@
                {final :trace moves :moves accepted :accepted}
                (await (itrace/mh-chain initial iterations step-opts))
                _ (when (warming-up?)
-                   (throw (ex-info (str "A component kernel's warm-up (:burn) did not finish within the chain: "
-                                        "raise the outer iterations or lower the component's :burn")
+                   (throw (ex-info (str "A kernel's warm-up (:burn of a NUTS or adaptive random-walk kernel) "
+                                        "did not finish within the chain: the chain must run past it. In a cycle "
+                                        "or mixture the warm-up counts that kernel's own moves, which a mixture "
+                                        "makes only when it picks it: raise the iterations or lower its :burn")
                                    {:type :org.replikativ.foerster.core/warm-up-unfinished
                                     :iterations iterations})))
                world (:trace/world final)]

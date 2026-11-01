@@ -943,7 +943,9 @@
   to date incrementally in the world itself: a run that asks at every site
   converts each entry once instead of the whole trace each time. The cache
   forks with the world, as the trace does; it is rebuilt if the trace no
-  longer extends the order it was built from."
+  longer extends the order it was built from. It assumes entries are only
+  appended, as in a forward run (the site kernels of `kernel-infer`); a
+  replay that rewrites entries in place must use `legacy-trace`."
   [world]
   (let [trace (rtp/get-state world [:savepoint/trace])
         order (vec (:trace/order trace))
