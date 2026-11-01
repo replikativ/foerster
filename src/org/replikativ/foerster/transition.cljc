@@ -71,7 +71,9 @@
     :nuts {:step (nuts/within-gibbs {:burn (:burn kernel 0)
                                      :target-accept (:target-accept kernel)
                                      :max-depth (:max-depth kernel)
-                                     :metric (:metric kernel)})}
+                                     :metric (:metric kernel)
+                                     :step-size (:step-size kernel)
+                                     :inverse-metric (:inverse-metric kernel)})}
     (throw (ex-info "Unsupported Markov transition"
                     {:type ::unsupported-kernel :kernel (k/transition-id kernel)}))))
 

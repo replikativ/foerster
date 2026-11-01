@@ -877,7 +877,7 @@
     {:enumerate #{} :importance particles :smc particles :tempered particles
      :parallel-tempering #{:chains}
      :pimh sweeps :pgibbs sweeps :pgas sweeps :ipmcmc sweeps :bbvi sweeps
-     :mh chains :rmh (conj chains :step-size) :nuts chains
+     :mh chains :rmh (conj chains :step-size) :nuts (conj chains :step-size)
      :kernel #{:kernel :chains :particles}
      :pmmh #{:particles :iterations :burn}}))
 
@@ -913,9 +913,11 @@
                                         :rounds; one block site
     :pimh :pgibbs :pgas :ipmcmc :bbvi   :particles :iterations
     :mh :rmh :nuts                      :iterations per chain, :chains (default
-                                        4), :burn, :step-size (:rmh); every
-                                        draw after :burn is kept; :nuts adapts
-                                        during :burn (block sites). :rmh with
+                                        4), :burn, :step-size (:rmh, :nuts);
+                                        every draw after :burn is kept; :nuts
+                                        adapts during :burn (block sites),
+                                        from :step-size and :inverse-metric
+                                        (`k/nuts-kernel`). :rmh with
                                         :compiled? true (JVM) runs on the
                                         model compiled to plain functions
                                         (`foerster.compiled`): a model from
@@ -957,8 +959,10 @@
              (compiled-rmh model iterations burn step-size chains (dissoc rest-opts :compiled?))
              (kernel-infer model (k/random-walk-mh-kernel iterations (merge chain-output (when step-size {:step-size step-size})))
                            (or chains 4) rest-opts))
-      :nuts (kernel-infer model (k/nuts-kernel iterations (merge chain-output (select-keys rest-opts [:target-accept :max-depth :metric])))
-                          (or chains 4) (dissoc rest-opts :target-accept :max-depth :metric))
+      :nuts (let [nuts-opts [:target-accept :max-depth :metric :inverse-metric]]
+              (kernel-infer model (k/nuts-kernel iterations (cond-> (merge chain-output (select-keys rest-opts nuts-opts))
+                                                              step-size (assoc :step-size step-size)))
+                            (or chains 4) (apply dissoc rest-opts nuts-opts)))
       :kernel (kernel-infer model kernel (or chains particles 4) rest-opts)
       :pmmh (on-savepoints (smc2/pmmh model particles iterations (cond-> rest-opts burn (assoc :burn burn)))))))
 

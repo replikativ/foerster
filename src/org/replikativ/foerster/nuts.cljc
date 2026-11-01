@@ -309,10 +309,28 @@
 (defn- block-site? [trace address]
   (block/block-dist? (get-in trace [:trace/entries address :note :dist])))
 
+(defn- initial-state
+  "A chain's adaptation state for the block site at `address` of dimension
+  `dim`, starting from the given `step-size` and `inverse-metric` (each a
+  value or a map {address value}), else ε = 0.1 and the unit metric."
+  [address dim burn metric step-size inverse-metric]
+  (let [for-block #(if (map? %) (get % address) %)
+        eps (double (or (for-block step-size) 0.1))
+        inv-metric (if-let [v (for-block inverse-metric)]
+                     (if (= dim (count v))
+                       (mapv double v)
+                       (throw (ex-info "The inverse metric's length is not the block's dimension"
+                                       {:type ::inverse-metric-dimension :address address
+                                        :dimension dim :length (count v)})))
+                     (vec (repeat dim 1.0)))]
+    {:eps eps :da (da-init eps) :inv-metric inv-metric
+     :windows (windows burn) :draws [] :metric metric}))
+
 (defn- nuts-move
   "Move the block site at `address` by one NUTS transition and replay; the
   chain's adaptation state is in the atom `adaptation`."
-  [trace address iteration {:keys [burn target-accept max-depth metric adaptation-iteration]
+  [trace address iteration {:keys [burn target-accept max-depth metric adaptation-iteration
+                                   step-size inverse-metric]
                             :as context} adaptation]
   (fn [resolve reject]
     (try
@@ -324,8 +342,7 @@
             warm-up? (< local-iteration burn)
             fresh? (nil? (get @adaptation address))
             st (or (get @adaptation address)
-                   {:eps 0.1 :da (da-init 0.1) :inv-metric (vec (repeat dim 1.0))
-                    :windows (windows burn) :draws [] :metric metric})
+                   (initial-state address dim burn metric step-size inverse-metric))
             ;; the previous transition's end, when the chain is still there
             ;; and the block's inputs have not moved since
             start (let [{:keys [q lp g] :as end} (:end st)]
@@ -359,31 +376,32 @@
                       (= (inc local-iteration) burn) (assoc :eps (Math/exp (:x-bar (:da s))))))
                   st)]
         (swap! adaptation assoc address st')
-        (if (= q q0)
-          (resolve {:trace trace :accepted? false :divergent? divergent? :stat tr})
-          (let [move (tc/policy context (fn [sp _]
-                                          (when (= address (:savepoint/address sp))
+        (let [tr (assoc tr :step-size (:eps st) :inverse-metric (:inv-metric st))]
+          (if (= q q0)
+            (resolve {:trace trace :accepted? false :divergent? divergent? :stat tr})
+            (let [move (tc/policy context (fn [sp _]
+                                            (when (= address (:savepoint/address sp))
                                             ;; scored by the transition's own log density
-                                            {:value (block/with-log-density dist q lp) :symmetric? true})))]
-            ((itrace/reexecute trace #{address} move (tc/replay-options context trace [::move address iteration]))
-             (fn [proposed]
-               (try
-                 (when (or (:trace/error proposed) (not (tc/at-frontier? context proposed)))
-                   (trace/release! proposed trace)
-                   (throw (ex-info "NUTS replay failed or left its declared frontier"
-                                   {:type ::invalid-replay :address address} (:trace/error proposed))))
-                 (let [entry-score (tc/entry-score context)
-                       joint (- (tc/score context proposed) (tc/score context trace))
-                       own (- (entry-score (get-in proposed [:trace/entries address]))
-                              (entry-score (get-in trace [:trace/entries address])))]
-                   (when (or (:trace/error proposed) (> (Math/abs (double (- joint own))) 1e-6))
+                                              {:value (block/with-log-density dist q lp) :symmetric? true})))]
+              ((itrace/reexecute trace #{address} move (tc/replay-options context trace [::move address iteration]))
+               (fn [proposed]
+                 (try
+                   (when (or (:trace/error proposed) (not (tc/at-frontier? context proposed)))
                      (trace/release! proposed trace)
-                     (throw (ex-info "NUTS needs the block's complete conditional as its target: the move changed sites outside the block"
-                                     {:type ::incomplete-target :address address :outside (- joint own)})))
-                   (tc/settle! context trace proposed true)
-                   (resolve {:trace proposed :accepted? true :divergent? divergent? :stat tr}))
-                 (catch #?(:clj Throwable :cljs :default) e (reject e))))
-             reject))))
+                     (throw (ex-info "NUTS replay failed or left its declared frontier"
+                                     {:type ::invalid-replay :address address} (:trace/error proposed))))
+                   (let [entry-score (tc/entry-score context)
+                         joint (- (tc/score context proposed) (tc/score context trace))
+                         own (- (entry-score (get-in proposed [:trace/entries address]))
+                                (entry-score (get-in trace [:trace/entries address])))]
+                     (when (or (:trace/error proposed) (> (Math/abs (double (- joint own))) 1e-6))
+                       (trace/release! proposed trace)
+                       (throw (ex-info "NUTS needs the block's complete conditional as its target: the move changed sites outside the block"
+                                       {:type ::incomplete-target :address address :outside (- joint own)})))
+                     (tc/settle! context trace proposed true)
+                     (resolve {:trace proposed :accepted? true :divergent? divergent? :stat tr}))
+                   (catch #?(:clj Throwable :cljs :default) e (reject e))))
+               reject)))))
       (catch #?(:clj Throwable :cljs :default) e (reject e)))))
 
 (defn within-gibbs
@@ -392,17 +410,23 @@
   there is one. A fresh adaptation state per call (per chain). `opts`:
   `:burn`, `:target-accept` (0.8), `:max-depth` (10), `:metric` (`:variance`,
   Stan's estimate from the positions, or `:fisher`, from positions and
-  gradients).
+  gradients), `:step-size` (0.1) and `:inverse-metric` (ones), where each
+  block's adaptation starts, or, with `:burn` 0, the fixed values it runs
+  with — each one value for every block site or a map {address value}.
+  The sampler statistics' `:step-size` and `:inverse-metric` are such maps,
+  the values each block's transition ran with.
   Returns per-step `:sampler-stats` for direct NUTS inference. The flag
   `:reached-max-depth?` reports depth attainment, including transitions that
   stop naturally or diverge at that depth; it does not identify cap exhaustion.
   Composed kernels and final-state-only output do not retain these statistics."
-  [{:keys [burn target-accept max-depth metric] :or {burn 0 target-accept 0.8 max-depth 10 metric :variance}}]
+  [{:keys [burn target-accept max-depth metric step-size inverse-metric]
+    :or {burn 0 target-accept 0.8 max-depth 10 metric :variance}}]
   (let [adaptation (atom {})
         divergences (atom 0)]
     (fn [trace {:keys [iteration] :as chain-opts}]
       (fn [resolve reject]
-        (let [opts (assoc chain-opts :burn burn :target-accept target-accept :max-depth max-depth :metric metric)
+        (let [opts (assoc chain-opts :burn burn :target-accept target-accept :max-depth max-depth :metric metric
+                          :step-size step-size :inverse-metric inverse-metric)
               blocks (filterv #(block-site? trace %) (itrace/latent-addresses trace))]
           (letfn [(others [t] (vec (remove #(block-site? t %) (itrace/latent-addresses t))))
                   (go [t [address & more] moves stats]
@@ -412,7 +436,9 @@
                            (when-let [visit (:on-visit chain-opts)] (visit r))
                            (when (and (:divergent? r) (>= (or (:adaptation-iteration opts) iteration) burn)) (swap! divergences inc))
                            (go (:trace r) more (inc moves)
-                               (conj stats (assoc (select-keys (:stat r) [:accept-stat :depth :n-leapfrog])
+                               (conj stats (assoc (select-keys (:stat r) [:accept-stat :depth :n-leapfrog
+                                                                          :step-size :inverse-metric])
+                                                  :address address
                                                   :divergent? (boolean (:divergent? r))))))
                          reject)
                         (let [done (fn [t moves accepted]
@@ -425,6 +451,8 @@
                                                 :accept-stat (/ (reduce + 0.0 (map :accept-stat stats))
                                                                 (max 1 (count stats)))
                                                 :reached-max-depth? (boolean (some #(>= (:depth %) max-depth) stats))
+                                                :step-size (into {} (map (juxt :address :step-size)) stats)
+                                                :inverse-metric (into {} (map (juxt :address :inverse-metric)) stats)
                                                 :blocks (count stats)}}))]
                           (if (seq (others t))
                             ((itrace/mh-step t (assoc chain-opts

@@ -12,6 +12,7 @@
             [org.replikativ.foerster.nuts :as nuts]
             [org.replikativ.foerster.measure :as measure]
             [org.replikativ.foerster.random :as random]
+            [org.replikativ.foerster.transition :as transition]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (def ^:private scales [0.05 0.2 0.5 1.0 2.0 3.0 5.0 8.0 12.0 20.0])
@@ -265,3 +266,42 @@
     (is (= 0.1 (first @heuristic)))
     ;; the first state's dual averaging, then one restart per heuristic
     (is (= [0.1 0.25 0.25 0.25] @restarts))))
+
+(deftest adapted-tuning-starts-a-frozen-run
+  ;; warm-up adapts ε and the diagonal metric; its retained draws report
+  ;; them, and a second run given them with :burn 0 runs frozen at them
+  (let [model #(spin (sample (block/block-dist scaled-gaussian nil) :id :x :init (vec (repeat 10 0.5))))
+        warm (b/run-infer 125 #(infer/infer (model) {:method :nuts :seed 11 :iterations 600 :chains 1 :burn 500}))
+        stats (mapv (comp :sampler-stats first) (measure/get-particles warm))
+        {:keys [step-size inverse-metric]} (peek stats)]
+    (is (= 1 (count (set (map :step-size stats)))) "fixed after warm-up")
+    (is (= #{:x} (set (keys step-size)) (set (keys inverse-metric))))
+    ;; the variance estimate of N(0, s²) coordinates is s²
+    (doseq [[v s] (map vector (:x inverse-metric) scales)]
+      (is (< 0.5 (/ v (* s s)) 2.0) (str v " vs " (* s s))))
+    (let [frozen (b/run-infer 126 #(infer/infer (model) {:method :nuts :seed 12 :iterations 1000 :chains 4 :burn 0
+                                                         :step-size step-size :inverse-metric inverse-metric}))
+          fstats (mapv (comp :sampler-stats first) (measure/get-particles frozen))]
+      (is (every? #(= step-size (:step-size %)) fstats))
+      (is (every? #(= inverse-metric (:inverse-metric %)) fstats))
+      (doseq [j (range 10)]
+        (let [cs (d/chains frozen #(nth % j))]
+          (is (< (d/rhat cs) 1.01) (str j))
+          (is (< (Math/abs (- 1.0 (/ (:sd (d/summary frozen #(nth % j))) (nth scales j)))) 0.1) (str j)))))
+    (testing "frozen NUTS is a fixed kernel a population can move by"
+      (is (not (transition/adaptation? (transition/prepare (k/nuts-kernel 1 {:step-size step-size
+                                                                             :inverse-metric inverse-metric}))))))))
+
+(deftest injected-tuning-is-validated
+  (is (thrown? AssertionError (k/nuts-kernel 10 {:step-size 0.0})))
+  (is (thrown? AssertionError (k/nuts-kernel 10 {:inverse-metric [1.0 -1.0]})))
+  (is (thrown? AssertionError (k/nuts-kernel 10 {:step-size {:x ##Inf}})))
+  (is (= ::nuts/inverse-metric-dimension
+         (try (b/run-infer 127 #(infer/infer (spin (sample (block/block-dist (isotropic-gaussian 2 1.0) nil) :id :x :init [0.0 0.0]))
+                                             {:method :nuts :iterations 5 :chains 1 :inverse-metric [1.0 2.0 3.0]}))
+              nil
+              (catch Exception e
+                (loop [e e] (cond (nil? e) nil
+                                  (:type (ex-data e)) (if (= ::nuts/inverse-metric-dimension (:type (ex-data e)))
+                                                        (:type (ex-data e)) (recur (ex-cause e)))
+                                  :else (recur (ex-cause e)))))))))

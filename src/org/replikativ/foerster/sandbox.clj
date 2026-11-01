@@ -150,7 +150,7 @@
 (def ^:private run-options
   "Options a sandbox may pass: data only, no functions, kernels or worlds."
   #{:method :particles :iterations :chains :burn :seed :world-policy :resampling
-    :resample-threshold :step-size :target-accept :max-depth :metric
+    :resample-threshold :step-size :target-accept :max-depth :metric :inverse-metric
     ;; :pmmh: the parameter addresses and the random walk's scale
     :params :scale
     ;; :enumerate
@@ -411,7 +411,7 @@
 
 (def docs
   "{ns-sym {sym [arglists docstring]}} for `namespaces`."
-  '{infer {run [([model opts]) "Run inference on `model` (a spin with sample/observe sites); a spin of the posterior as data. opts: :method (:importance :smc :mh :rmh :nuts; particle MCMC :pimh :pgibbs :pgas :ipmcmc; :pmmh with :params, the parameters' addresses, and :scale; exact :enumerate for finite discrete models, at most :max-branches assignments), its sizes (:particles; or :iterations :chains :burn; particle MCMC and :pmmh :particles per sweep and :iterations), :seed, :world-policy, :resampling, :resample-threshold, :step-size (:rmh), :target-accept :max-depth :metric (:nuts). NUTS needs a block site (model/site). Values the model returns must be plain data."]
+  '{infer {run [([model opts]) "Run inference on `model` (a spin with sample/observe sites); a spin of the posterior as data. opts: :method (:importance :smc :mh :rmh :nuts; particle MCMC :pimh :pgibbs :pgas :ipmcmc; :pmmh with :params, the parameters' addresses, and :scale; exact :enumerate for finite discrete models, at most :max-branches assignments), its sizes (:particles; or :iterations :chains :burn; particle MCMC and :pmmh :particles per sweep and :iterations), :seed, :world-policy, :resampling, :resample-threshold, :step-size (:rmh, :nuts), :target-accept :max-depth :metric :inverse-metric (:nuts). NUTS needs a block site (model/site). Values the model returns must be plain data."]
            start [([model opts]) "As `run`, started in the background: a job handle {:job/id …} for status, result and cancel. Use it for runs longer than one evaluation may take."]
            status [([job]) "{:status :running|:done|:failed|:cancelled}"]
            result [([job timeout-ms]) "The job's posterior, waiting at most timeout-ms; :pending if not done yet."]

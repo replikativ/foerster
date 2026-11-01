@@ -262,9 +262,16 @@
   (chain-output (->BlockGibbsKernel num-iterations block-selector block-kernels address-classifier)
                 opts))
 
-(defrecord NUTSKernel [num-iterations target-accept max-depth metric]
+(defrecord NUTSKernel [num-iterations target-accept max-depth metric step-size inverse-metric]
   PMarkovKernel
   (transition-id [_] :nuts))
+
+(defn- positive-finite? [x] (and (number? x) (pos? x) (< x ##Inf)))
+
+(defn- per-block?
+  "`x` satisfies `ok?`, or is a map from block addresses to values that do."
+  [ok? x]
+  (or (ok? x) (and (map? x) (seq x) (every? ok? (vals x)))))
 
 (defn nuts-kernel
   "The No-U-Turn sampler on block sites (`foerster.nuts`), within Gibbs: the
@@ -273,10 +280,23 @@
   trajectory at 2^depth leapfrog steps; `:metric` estimates the metric from
   the warm-up positions' variance (`:variance`, Stan's) or from positions
   and gradients (`:fisher`, nutpie's). A block's target must be its
-  complete conditional. Output options as for every chain kernel."
-  [num-iterations & [{:keys [target-accept max-depth metric] :or {target-accept 0.8 max-depth 10 metric :variance} :as opts}]]
-  {:pre [(pos-int? num-iterations) (#{:variance :fisher} metric)]}
-  (chain-output (->NUTSKernel num-iterations target-accept max-depth metric) (select-keys opts [:samples :burn])))
+  complete conditional. Output options as for every chain kernel.
+
+  `:step-size` (default 0.1) and `:inverse-metric` (the diagonal of M⁻¹ in
+  θ, default ones) set where a chain starts — each a value for every block
+  site or a map {address value} — and warm-up adapts from there; with
+  `:burn 0` NUTS runs frozen at them, a fixed invariant kernel, as a
+  population move needs. Every retained draw's `:sampler-stats` give the
+  `:step-size` and `:inverse-metric` it ran with as such maps, so a warmed-up
+  run's values start a second, frozen one."
+  [num-iterations & [{:keys [target-accept max-depth metric step-size inverse-metric]
+                      :or {target-accept 0.8 max-depth 10 metric :variance} :as opts}]]
+  {:pre [(pos-int? num-iterations) (#{:variance :fisher} metric)
+         (or (nil? step-size) (per-block? positive-finite? step-size))
+         (or (nil? inverse-metric)
+             (per-block? #(and (sequential? %) (seq %) (every? positive-finite? %)) inverse-metric))]}
+  (chain-output (->NUTSKernel num-iterations target-accept max-depth metric step-size inverse-metric)
+                (select-keys opts [:samples :burn])))
 
 ;; =============================================================================
 ;; Composing Markov-chain kernels
