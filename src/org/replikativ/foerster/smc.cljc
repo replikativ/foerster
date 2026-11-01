@@ -729,12 +729,17 @@
               ;; each parked particle's future replayed on the retained values
               ;; in a fork under a handler table of its own; its final weight
               ;; (from 0) is log p(retained latents, observations | its past)
+              ;; under the target every particle is weighted by: the caller's
+              ;; policy (its temperature, interventions, constraints) with the
+              ;; retained values as constraints
               (fn [resolve reject]
                 (let [k (count entries)
                       scores (object-array k)
                       remaining (atom k)
                       failed? (atom false)
-                      scoring (itrace/policy {:constraints retained})
+                      scoring (itrace/policy
+                               (update (dissoc (itrace/policy-options policy) :draw)
+                                       :constraints merge retained))
                       done! (fn [i score]
                               (aset scores i score)
                               (when (zero? (swap! remaining dec))
