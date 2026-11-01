@@ -5,7 +5,12 @@
   (Hoffman & Gelman 2014; Betancourt 2017), divergences when the energy error
   exceeds 1000, a diagonal metric, and during warm-up dual-averaging step
   size adaptation and windowed variance estimation of the metric (Stan's
-  75/25/50 windows, scaled to short warm-ups).
+  75/25/50 windows, scaled to short warm-ups). Stan's step size heuristic
+  (`init_stepsize`: double or halve until one leapfrog step's acceptance
+  crosses 0.8) runs as warm-up begins and after every metric window, and
+  dual averaging restarts from it, at μ = log 10ε. (Stan's first μ comes
+  from its configured step size instead; here it comes from the
+  heuristic's, as at every later restart.)
 
   NUTS samples the block's own density, so the block's target must be the
   complete conditional of its latents (`:block/target
@@ -125,6 +130,14 @@
               {:valid? persist? :z-end (:z-end right) :z-propose z-propose :log-w log-w :rho rho
                :beg (:beg left) :end (:end right) :n n :metro metro})))))))
 
+(defn- momentum
+  "A momentum p ~ N(0, M), M the inverse of `inv-metric`."
+  ^doubles [^doubles inv-metric]
+  (let [n (alength inv-metric) out (double-array n)]
+    (dotimes [i n]
+      (aset out i (* (double (dist/draw (dist/normal 0.0 1.0))) (Math/sqrt (/ 1.0 (aget inv-metric i))))))
+    out))
+
 (defn transition
   "One NUTS transition of `dist` (a block distribution) from position `q0`
   with step size `eps` and diagonal inverse metric `inv-metric`, drawing from
@@ -136,10 +149,7 @@
   ([dist q0 eps inv-metric max-depth start]
    (let [inv-metric (double-array inv-metric)
          q0 (double-array q0)
-         p0 (let [n (alength inv-metric) out (double-array n)]
-              (dotimes [i n]
-                (aset out i (* (double (dist/draw (dist/normal 0.0 1.0))) (Math/sqrt (/ 1.0 (aget inv-metric i))))))
-              out)
+         p0 (momentum inv-metric)
          z0 (point dist inv-metric q0 p0 (when start [(double (first start)) (double-array (second start))]))
          h0 (hamiltonian z0)
          result (fn [sample n metro depth divergent?]
@@ -179,6 +189,39 @@
 ;; =============================================================================
 ;; Adaptation (Stan's defaults)
 ;; =============================================================================
+
+(def ^:private log-0-8 (Math/log 0.8))
+
+(defn- init-step-size
+  "Stan's `init_stepsize` (base_hmc.hpp): from `eps`, double the step size
+  while one leapfrog step from `q` with fresh momentum is accepted with
+  probability above 0.8, or halve it while it is below, whichever the first
+  step says, until that crosses. `start` is [log density, gradient] at `q`.
+  An extreme `eps` (0 or above 1e7) is returned as it is."
+  [dist inv-metric q start eps]
+  (let [inv-metric (double-array inv-metric)
+        q (double-array q)
+        start [(double (first start)) (double-array (second start))]
+        delta-h (fn [eps]
+                  (let [z (point dist inv-metric q (momentum inv-metric) start)
+                        h0 (hamiltonian z)
+                        h (let [h (hamiltonian (leapfrog dist inv-metric eps 1 z))] (if (NaN? h) ##Inf h))]
+                    (- h0 h)))]
+    (if (or (zero? eps) (> eps 1e7))
+      eps
+      (let [direction (if (> (delta-h eps) log-0-8) 1 -1)]
+        (loop [eps eps]
+          (let [dh (delta-h eps)]
+            (if (if (= 1 direction) (not (> dh log-0-8)) (not (< dh log-0-8)))
+              eps
+              (let [eps (if (= 1 direction) (* 2.0 eps) (* 0.5 eps))]
+                (when (> eps 1e7)
+                  (throw (ex-info "Posterior is improper: no step size is too large for it"
+                                  {:type ::improper-posterior :step-size eps})))
+                (when (zero? eps)
+                  (throw (ex-info "No acceptably small step size: is the log density continuous?"
+                                  {:type ::no-step-size})))
+                (recur eps)))))))))
 
 (defn- da-init [eps] {:mu (Math/log (* 10.0 eps)) :s-bar 0.0 :x-bar 0.0 :counter 0})
 
@@ -242,7 +285,8 @@
   `q` with gradient `g` and accept statistic `stat`: the step size by dual
   averaging; within a window the positions (and gradients) are collected,
   and at its end they give the metric — their regularized variance, or the
-  Fisher estimate with `metric` :fisher — and the step size restarts."
+  Fisher estimate with `metric` :fisher — and the step size restarts
+  (`:restart?`: `nuts-move` runs Stan's heuristic from the new metric)."
   [{:keys [da windows draws metric] :as st} i q g stat target]
   (let [[da eps] (da-update da stat target)
         st (assoc st :da da :eps eps)
@@ -255,7 +299,7 @@
              :inv-metric (if (= metric :fisher)
                            (fisher-variance (mapv first draws') (mapv second draws'))
                            (regularized-variance (mapv first draws')))
-             :draws [] :da (da-init eps))
+             :draws [] :restart? true)
       :else (assoc st :draws draws'))))
 
 ;; =============================================================================
@@ -276,6 +320,9 @@
       (let [local-iteration (or adaptation-iteration iteration)
             {q0 :value {dist :dist} :note} (get-in trace [:trace/entries address])
             dim (count q0)
+            world (:trace/world trace)
+            warm-up? (< local-iteration burn)
+            fresh? (nil? (get @adaptation address))
             st (or (get @adaptation address)
                    {:eps 0.1 :da (da-init 0.1) :inv-metric (vec (repeat dim 1.0))
                     :windows (windows burn) :draws [] :metric metric})
@@ -285,14 +332,31 @@
                     (when (and end (identical? (:block dist) (:block end))
                                (= (:inputs dist) (:inputs end)) (= q q0))
                       [lp g]))
+            ;; Stan's step size heuristic as warm-up begins; dual averaging
+            ;; then shrinks towards 10 times the step size it found
+            [st start] (if (and fresh? warm-up?)
+                         (let [start (or start (block/value+grad! dist (double-array q0)))
+                               eps (random/in-world-stream world [::step-size address iteration]
+                                                           #(init-step-size dist (:inv-metric st) q0 start (:eps st)))]
+                           [(assoc st :eps eps :da (da-init eps)) start])
+                         [st start])
             {:keys [q lp g accept-stat divergent?] :as tr}
-            (random/in-world-stream (:trace/world trace) [::transition address iteration]
+            (random/in-world-stream world [::transition address iteration]
                                     #(transition dist q0 (:eps st) (:inv-metric st) max-depth start))
             st (assoc st :end {:block (:block dist) :inputs (:inputs dist) :q q :lp lp :g g})
-            st' (if (< local-iteration burn)
-                  (cond-> (adapt st local-iteration q g accept-stat target-accept)
+            st' (if warm-up?
+                  (let [s (adapt st local-iteration q g accept-stat target-accept)
+                        ;; a metric window ended: Stan's heuristic again from
+                        ;; the last step size under the new metric, and dual
+                        ;; averaging restarts from it
+                        s (if (:restart? s)
+                            (let [eps (random/in-world-stream world [::step-size address iteration]
+                                                              #(init-step-size dist (:inv-metric s) q [lp g] (:eps s)))]
+                              (-> s (dissoc :restart?) (assoc :eps eps :da (da-init eps))))
+                            s)]
                     ;; warm-up over: the averaged step size
-                    (= (inc local-iteration) burn) (as-> s (assoc s :eps (Math/exp (:x-bar (:da s))))))
+                    (cond-> s
+                      (= (inc local-iteration) burn) (assoc :eps (Math/exp (:x-bar (:da s))))))
                   st)]
         (swap! adaptation assoc address st')
         (if (= q q0)

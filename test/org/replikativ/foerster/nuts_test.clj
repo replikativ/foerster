@@ -11,6 +11,7 @@
             [org.replikativ.foerster.kernel :as k]
             [org.replikativ.foerster.nuts :as nuts]
             [org.replikativ.foerster.measure :as measure]
+            [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (def ^:private scales [0.05 0.2 0.5 1.0 2.0 3.0 5.0 8.0 12.0 20.0])
@@ -218,3 +219,49 @@
           (str tree-depth " " n-leapfrog))
       (when (and diverging (= 1 n-leapfrog))
         (is (zero? tree-depth))))))
+
+(defn- isotropic-gaussian
+  "N(0, s²I) in dimension d."
+  [d s]
+  (let [lp (fn [^doubles th] (* -0.5 (/ (areduce th i a 0.0 (+ a (* (aget th i) (aget th i)))) (* s s))))]
+    (block/block {:block/id :iso :block/target :complete-conditional
+                  :block/latents [{:name :x :shape [d] :support :real}]}
+                 {:log-density (fn [th _] (lp th))
+                  :value+grad (fn [^doubles th _] [(lp th) (double-array (map #(- (/ % (* s s))) th))])})))
+
+(deftest the-step-size-heuristic-finds-the-targets-scale
+  ;; Stan's init_stepsize from ε = 0.1 on N(0, s²I): the step it settles on
+  ;; follows the scale over six orders of magnitude (leapfrog on a Gaussian
+  ;; is stable below ε = 2s)
+  (let [init @#'nuts/init-step-size]
+    (doseq [s [1e-3 1.0 1e3] d [1 10]]
+      (let [dd (block/block-dist (isotropic-gaussian d s) nil)
+            q (vec (repeat d (* 0.5 s)))
+            eps (for [seed (range 50)]
+                  (random/with-stream* [seed 1] ::heuristic
+                    #(init dd (repeat d 1.0) q (block/value+grad! dd (double-array q)) 0.1)))]
+        (is (every? #(<= 0.25 (/ % s) 8.0) eps) (str s " " d " " (vec eps)))))
+    (testing "an extreme step size is left alone, as Stan does"
+      (let [dd (block/block-dist (isotropic-gaussian 1 1.0) nil)]
+        (is (= 2e7 (init dd [1.0] [0.0] [0.0 (double-array [0.0])] 2e7)))))
+    (testing "a flat target is improper: every step is accepted"
+      (let [flat (block/block {:block/id :flat :block/latents [{:name :x :shape [] :support :real}]}
+                              {:log-density (fn [_ _] 0.0) :value+grad (fn [_ _] [0.0 (double-array [0.0])])})]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"improper"
+                              (init (block/block-dist flat nil) [1.0] [0.0] [0.0 (double-array [0.0])] 0.1)))))))
+
+(deftest the-step-size-heuristic-starts-warm-up-and-every-metric-window
+  ;; warm-up 200: Stan's windows [75, 100) and [100, 150); the heuristic runs
+  ;; at the start and after each, and dual averaging restarts at μ = log 10ε
+  ;; from the step size it found
+  (let [heuristic (atom []) restarts (atom [])
+        da-init @#'nuts/da-init]
+    (with-redefs-fn {#'nuts/init-step-size (fn [_ _ _ _ eps] (swap! heuristic conj eps) 0.25)
+                     #'nuts/da-init (fn [eps] (swap! restarts conj eps) (da-init eps))}
+      #(b/run-infer 41 (fn [] (infer/infer (spin (sample (block/block-dist (isotropic-gaussian 2 1.0) nil) :id :x
+                                                         :init [0.1 0.2]))
+                                           {:method :nuts :seed 3 :iterations 210 :burn 200 :chains 1}))))
+    (is (= 3 (count @heuristic)))
+    (is (= 0.1 (first @heuristic)))
+    ;; the first state's dual averaging, then one restart per heuristic
+    (is (= [0.1 0.25 0.25 0.25] @restarts))))
