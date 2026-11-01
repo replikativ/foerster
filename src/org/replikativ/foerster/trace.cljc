@@ -256,10 +256,25 @@
 
       :else
       (let [drawn (when draw (draw sp old-entry))
+            old-note (:note old-entry)
             kept-lp (when (and (not drawn) keep? old-entry
-                               (not (:observed? (:note old-entry))))
-                      (dist/logpdf dist (:value old-entry)))]
+                               (not (:observed? old-note)))
+                      (dist/logpdf dist (:value old-entry)))
+            ;; a site a constraint fixed stays fixed across replays: a move
+            ;; never turns conditioning into a latent choice
+            was-constrained? (and (:constrained? old-note) (not (:intervened? old-note)))]
         (cond
+          (and (some? kept-lp) was-constrained?)
+          (do (add-weight! world kept-lp)
+              {:value (:value old-entry)
+               :note {:dist dist :log-prob kept-lp :constrained? true}})
+
+          ;; Gen's update: a kept value stays even outside the new support,
+          ;; and the trace has density zero
+          (and (some? kept-lp) (= :keep (:out-of-support opts)) (not (finite? kept-lp)))
+          {:value (:value old-entry)
+           :note {:dist dist :log-prob kept-lp :kept? true :out-of-support? true}}
+
           drawn
           (let [_ (when-not (or (:symmetric? drawn) (number? (:log-proposal drawn)))
                     (throw (ex-info "A proposal returns :log-proposal or :symmetric? true"
@@ -310,7 +325,12 @@
     :constraints {address value} fix those sample sites; their density enters
                  the weight
     :keep?       reuse the value a sample site had in the replayed trace,
-                 rescored under the site's distribution NOW
+                 rescored under the site's distribution NOW. A site that was
+                 constrained stays constrained. A latent value that fell
+                 outside its site's new support is drawn again (`:redrawn?`,
+                 see `mh-log-ratio`), unless :out-of-support is :keep
+    :out-of-support :keep — with :keep?, keep such a value anyway, scored
+                 −∞ (Gen's `update`: the new trace has density zero)
     :draw        (fn [sp old-entry]) -> nil (not my site) or
                  {:value v :log-proposal lq}, or {:value v :symmetric? true}
                  for a symmetric move around the old value
@@ -483,6 +503,29 @@
 ;; Metropolis-Hastings: replay plus accept
 ;; =============================================================================
 
+(defn redraw-log-density
+  "log of the density with which a replay draws `value` afresh at a site
+  whose note is `note` (`decide-choose`): the site's own `:proposal` if it has
+  one, else its law's draw density (a block's :sample), else its law. This is
+  what a reverse move pays for a site it would have to draw."
+  [note value]
+  (if-let [q (:proposal note)]
+    (dist/logpdf q value)
+    (or (dist/-draw-logpdf (:dist note) value) (:log-prob note))))
+
+(defn irreversible-redraw?
+  "Whether `new` redrew a kept value (`:redrawn?`) that the reverse move
+  would keep instead: the new value lies inside the OLD site's support, so
+  the old state cannot be reached back. `old-by-address` maps addresses to
+  `old`'s entries."
+  [old-by-address new-entries]
+  (boolean
+   (some (fn [entry]
+           (and (:redrawn? (:note entry))
+                (when-let [was (get old-by-address (:address entry))]
+                  (finite? (dist/logpdf (:dist (:note was)) (:value entry))))))
+         new-entries)))
+
 (defn mh-log-ratio
   "Log acceptance ratio of moving from `old` to `new`, where `new` is `old`
   replayed from its earliest target with kept values elsewhere.
@@ -557,17 +600,11 @@
                          ;; afresh as a replay does: from the site's
                          ;; `:proposal`, if it has one
                          (map (fn [{:keys [address note value]}]
-                                (let [moved? (:moved? (:note (get new-by-address address)))]
-                                  (if (and (:proposal note) (not moved?))
-                                    (dist/logpdf (:proposal note) value)
-                                    (or (dist/-draw-logpdf (:dist note) value) (:log-prob note)))))))
+                                (if (:moved? (:note (get new-by-address address)))
+                                  (redraw-log-density (dissoc note :proposal) value)
+                                  (redraw-log-density note value)))))
                    + 0.0 old-entries)
-         irreversible? (some (fn [entry]
-                               (and (:redrawn? (:note entry))
-                                    (when-let [was (get old-by-address (:address entry))]
-                                      (finite? (dist/logpdf (:dist (:note was))
-                                                            (:value entry))))))
-                             new-entries)]
+         irreversible? (irreversible-redraw? old-by-address new-entries)]
      (if irreversible?
        ##-Inf
        (+ (- (log-joint new-entries) (log-joint old-entries))
