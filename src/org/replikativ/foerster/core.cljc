@@ -916,7 +916,9 @@
                                         4), :burn, :step-size (:rmh, :nuts);
                                         every draw after :burn is kept; :nuts
                                         adapts during :burn (block sites),
-                                        from :step-size and :inverse-metric
+                                        from :step-size and :inverse-metric,
+                                        each chain jittered around :init
+                                        unless :jitter false
                                         (`k/nuts-kernel`). :rmh with
                                         :compiled? true (JVM) runs on the
                                         model compiled to plain functions
@@ -959,7 +961,7 @@
              (compiled-rmh model iterations burn step-size chains (dissoc rest-opts :compiled?))
              (kernel-infer model (k/random-walk-mh-kernel iterations (merge chain-output (when step-size {:step-size step-size})))
                            (or chains 4) rest-opts))
-      :nuts (let [nuts-opts [:target-accept :max-depth :metric :inverse-metric]]
+      :nuts (let [nuts-opts [:target-accept :max-depth :metric :inverse-metric :jitter]]
               (kernel-infer model (k/nuts-kernel iterations (cond-> (merge chain-output (select-keys rest-opts nuts-opts))
                                                               step-size (assoc :step-size step-size)))
                             (or chains 4) (apply dissoc rest-opts nuts-opts)))

@@ -189,17 +189,19 @@
 
 (deftest a-transition-reuses-the-previous-gradient
   ;; every gradient is a leapfrog step's, except the first transition's start
-  ;; point; the write-back replay reuses the transition's log density
-  (let [densities (atom 0) gradients (atom 0)
-        b (counting-gaussian 3 densities gradients)
-        result (b/run-infer 31 #(infer/infer (spin (sample (block/block-dist b nil) :id :x :init [0.0 0.0 0.0]))
-                                             {:method :nuts :seed 1 :iterations 200 :burn 0 :chains 1}))
-        stats (map (comp :sampler-stats first) (measure/get-particles result))
-        leapfrogs (reduce + (map :n-leapfrog stats))]
-    (is (= 200 (count stats)))
-    (is (= (inc leapfrogs) @gradients))
-    ;; the initial state's score only
-    (is (= 1 @densities))))
+  ;; point and the check of the jittered start; the write-back replays reuse
+  ;; the log density computed with the gradient
+  (doseq [[jitter extra] [[false 1] [true 2]]]
+    (let [densities (atom 0) gradients (atom 0)
+          b (counting-gaussian 3 densities gradients)
+          result (b/run-infer 31 #(infer/infer (spin (sample (block/block-dist b nil) :id :x :init [0.0 0.0 0.0]))
+                                               {:method :nuts :seed 1 :iterations 200 :burn 0 :chains 1 :jitter jitter}))
+          stats (map (comp :sampler-stats first) (measure/get-particles result))
+          leapfrogs (reduce + (map :n-leapfrog stats))]
+      (is (= 200 (count stats)))
+      (is (= (+ leapfrogs extra) @gradients) (str "jitter " jitter))
+      ;; the initial state's score only
+      (is (= 1 @densities) (str "jitter " jitter)))))
 
 (deftest an-invalid-subtree-does-not-count-as-depth
   ;; Stan's base_nuts increments the depth only for a valid subtree: a tree
@@ -269,18 +271,24 @@
 
 (deftest adapted-tuning-starts-a-frozen-run
   ;; warm-up adapts ε and the diagonal metric; its retained draws report
-  ;; them, and a second run given them with :burn 0 runs frozen at them
-  (let [model #(spin (sample (block/block-dist scaled-gaussian nil) :id :x :init (vec (repeat 10 0.5))))
-        warm (b/run-infer 125 #(infer/infer (model) {:method :nuts :seed 11 :iterations 600 :chains 1 :burn 500}))
-        stats (mapv (comp :sampler-stats first) (measure/get-particles warm))
+  ;; them, and a second run given them with :burn 0 runs frozen at them,
+  ;; resumed from the first run's last state (no jitter: with :burn 0 every
+  ;; draw is kept, so a start must already be a posterior draw)
+  (let [model #(spin (sample (block/block-dist scaled-gaussian nil) :id :x :init %))
+        warm (b/run-infer 125 #(infer/infer (model (vec (repeat 10 0.5)))
+                                            {:method :nuts :seed 11 :iterations 600 :chains 1 :burn 500}))
+        particles (measure/get-particles warm)
+        stats (mapv (comp :sampler-stats first) particles)
+        last-draw (measure/get-value (first (peek particles)))
         {:keys [step-size inverse-metric]} (peek stats)]
     (is (= 1 (count (set (map :step-size stats)))) "fixed after warm-up")
     (is (= #{:x} (set (keys step-size)) (set (keys inverse-metric))))
     ;; the variance estimate of N(0, s²) coordinates is s²
     (doseq [[v s] (map vector (:x inverse-metric) scales)]
       (is (< 0.5 (/ v (* s s)) 2.0) (str v " vs " (* s s))))
-    (let [frozen (b/run-infer 126 #(infer/infer (model) {:method :nuts :seed 12 :iterations 1000 :chains 4 :burn 0
-                                                         :step-size step-size :inverse-metric inverse-metric}))
+    (let [frozen (b/run-infer 126 #(infer/infer (model last-draw)
+                                                {:method :nuts :seed 12 :iterations 1000 :chains 4 :burn 0 :jitter false
+                                                 :step-size step-size :inverse-metric inverse-metric}))
           fstats (mapv (comp :sampler-stats first) (measure/get-particles frozen))]
       (is (every? #(= step-size (:step-size %)) fstats))
       (is (every? #(= inverse-metric (:inverse-metric %)) fstats))
@@ -305,3 +313,41 @@
                                   (:type (ex-data e)) (if (= ::nuts/inverse-metric-dimension (:type (ex-data e)))
                                                         (:type (ex-data e)) (recur (ex-cause e)))
                                   :else (recur (ex-cause e)))))))))
+
+(defn- starts
+  "Each chain's first draw under NUTS frozen at a step size so small that it
+  is the chain's start to 1e-9: `opts` go to infer."
+  [seed block init opts]
+  (let [result (b/run-infer seed #(infer/infer (spin (sample (block/block-dist block nil) :id :x :init init))
+                                               (merge {:method :nuts :iterations 1 :burn 0 :max-depth 1
+                                                       :step-size 1e-12}
+                                                      opts)))]
+    (mapv (comp measure/get-value first) (measure/get-particles result))))
+
+(deftest chains-start-jittered-around-their-init
+  (let [init [0.5 -1.0]
+        target (isotropic-gaussian 2 1.0)
+        jittered (starts 51 target init {:chains 40 :seed 5})
+        offsets (mapcat #(map - % init) jittered)]
+    (testing "Stan's radius: uniform in (−2, 2) per coordinate of θ"
+      (is (every? #(< -2.0 % 2.0) offsets))
+      (is (= 80 (count (set offsets))) "every chain and coordinate apart")
+      ;; 80 draws of U(−2, 2): mean 0 (sd 0.13), variance 4/3 (sd ≈ 0.12)
+      (let [mean (/ (reduce + offsets) 80)
+            variance (/ (reduce + (map #(* (- % mean) (- % mean)) offsets)) 79)]
+        (is (< (Math/abs mean) 0.45) (str mean))
+        (is (< (Math/abs (- variance (/ 4.0 3.0))) 0.45) (str variance))))
+    (testing "keyed to the chain's stream: the same seed starts the same"
+      (is (= jittered (starts 52 target init {:chains 40 :seed 5})))
+      (is (not= jittered (starts 51 target init {:chains 40 :seed 6}))))
+    (testing ":jitter false starts at :init"
+      (is (every? #(every? (fn [[x x0]] (< (Math/abs (- x x0)) 1e-9)) (map vector % init))
+                  (starts 53 target init {:chains 4 :seed 5 :jitter false}))))
+    (testing "a site no jitter can leave keeps its :init"
+      (let [pinned (block/block {:block/id :pinned :block/target :complete-conditional
+                                 :block/latents [{:name :x :shape [2] :support :real}]}
+                                {:log-density (fn [^doubles x _] (if (zero? (aget x 0)) 0.0 ##-Inf))
+                                 :value+grad (fn [^doubles x _] [(if (zero? (aget x 0)) 0.0 ##-Inf)
+                                                                 (double-array 2)])})]
+        (is (every? #(< (Math/abs (- (first %) 0.0)) 1e-9)
+                    (starts 54 pinned [0.0 0.0] {:chains 2 :seed 5})))))))

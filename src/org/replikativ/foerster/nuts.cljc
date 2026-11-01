@@ -404,6 +404,56 @@
                reject)))))
       (catch #?(:clj Throwable :cljs :default) e (reject e)))))
 
+(def ^:private jitter-attempts 100)
+
+(defn- jittered
+  "θ + U(−2, 2) per coordinate whose log density and gradient are finite —
+  Stan's initialization radius and its 100 attempts, keyed to `world`'s
+  stream — or nil when no attempt is."
+  [world address dist theta]
+  (let [u (dist/uniform -2.0 2.0)]
+    (some (fn [attempt]
+            (let [theta' (random/in-world-stream world [::jitter address attempt]
+                                                 #(mapv (fn [x] (+ (double x) (double (dist/draw u)))) theta))
+                  [lp g] (block/value+grad! dist (double-array theta'))]
+              (when (and (finite? lp) (all-finite? g))
+                (block/with-log-density dist theta' lp))))
+          (range jitter-attempts))))
+
+(defn jitter
+  "A chain's start for NUTS: every block site of `trace` (the chain's
+  initial state) moved by a uniform jitter in (−2, 2) per coordinate of θ,
+  the unconstrained coordinates — Stan's random initialization radius,
+  around the site's `:init` as PyMC jitters around its initial point — so
+  that chains start apart and R̂ can see them disagree. The draws come from
+  the chain's world stream, so a seeded run is reproducible. A site keeps
+  its value when none of 100 jitters has a finite log density and
+  gradient, and the whole state keeps it when the jittered state has zero
+  density. Returns a CPS operation resolving the new trace."
+  [trace]
+  (fn [resolve reject]
+    (try
+      (let [world (:trace/world trace)
+            values (into {}
+                         (keep (fn [address]
+                                 (let [{theta :value {dist :dist} :note} (get-in trace [:trace/entries address])]
+                                   (some->> (jittered world address dist theta) (vector address)))))
+                         (filterv #(block-site? trace %) (itrace/latent-addresses trace)))]
+        (if (empty? values)
+          (resolve trace)
+          (let [move (tc/policy {} (fn [sp _]
+                                     (when-let [v (get values (:savepoint/address sp))]
+                                       {:value v :symmetric? true})))]
+            ((itrace/reexecute trace (set (keys values)) move (tc/replay-options {} trace [::jitter]))
+             (fn [proposed]
+               (try
+                 (if (or (:trace/error proposed) (not (finite? (itrace/log-joint proposed))))
+                   (do (trace/release! proposed trace) (resolve trace))
+                   (do (tc/settle! {} trace proposed true) (resolve proposed)))
+                 (catch #?(:clj Throwable :cljs :default) e (reject e))))
+             reject))))
+      (catch #?(:clj Throwable :cljs :default) e (reject e)))))
+
 (defn within-gibbs
   "A step for `foerster.trace/mh-chain` (`:step`): a NUTS move of every block
   site, then one single-site MH move of a latent that is not a block site, if

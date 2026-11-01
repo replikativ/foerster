@@ -262,7 +262,7 @@
   (chain-output (->BlockGibbsKernel num-iterations block-selector block-kernels address-classifier)
                 opts))
 
-(defrecord NUTSKernel [num-iterations target-accept max-depth metric step-size inverse-metric]
+(defrecord NUTSKernel [num-iterations target-accept max-depth metric step-size inverse-metric jitter]
   PMarkovKernel
   (transition-id [_] :nuts))
 
@@ -288,14 +288,20 @@
   `:burn 0` NUTS runs frozen at them, a fixed invariant kernel, as a
   population move needs. Every retained draw's `:sampler-stats` give the
   `:step-size` and `:inverse-metric` it ran with as such maps, so a warmed-up
-  run's values start a second, frozen one."
-  [num-iterations & [{:keys [target-accept max-depth metric step-size inverse-metric]
-                      :or {target-accept 0.8 max-depth 10 metric :variance} :as opts}]]
+  run's values start a second, frozen one.
+
+  `:jitter` (true) starts each chain driven by this kernel (`kernel-infer`,
+  `infer :nuts`) at its block sites' values plus a uniform jitter in
+  (−2, 2) per coordinate of θ, as Stan's random initialization; `false`
+  starts exactly at `:init`. A population move never jitters."
+  [num-iterations & [{:keys [target-accept max-depth metric step-size inverse-metric jitter]
+                      :or {target-accept 0.8 max-depth 10 metric :variance jitter true} :as opts}]]
   {:pre [(pos-int? num-iterations) (#{:variance :fisher} metric)
+         (boolean? jitter)
          (or (nil? step-size) (per-block? positive-finite? step-size))
          (or (nil? inverse-metric)
              (per-block? #(and (sequential? %) (seq %) (every? positive-finite? %)) inverse-metric))]}
-  (chain-output (->NUTSKernel num-iterations target-accept max-depth metric step-size inverse-metric)
+  (chain-output (->NUTSKernel num-iterations target-accept max-depth metric step-size inverse-metric jitter)
                 (select-keys opts [:samples :burn])))
 
 ;; =============================================================================

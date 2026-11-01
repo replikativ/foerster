@@ -239,6 +239,11 @@
                _ (when (= ##-Inf (itrace/log-joint initial))
                    (throw (ex-info "The initial state of the chain has zero density"
                                    {:type :org.replikativ.foerster.core/impossible-initial-state})))
+               ;; NUTS chains start jittered around their :init (Stan's
+               ;; random initialization); population moves never do
+               initial (if (some #(and (= :nuts (k/transition-id %)) (:jitter % true)) (leaves kernel))
+                         (await (nuts/jitter initial))
+                         initial)
                samples (volatile! [])
                step-opts (cond-> step-opts
                            (= :all (:samples kernel))
