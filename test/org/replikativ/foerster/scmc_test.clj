@@ -295,3 +295,32 @@
     (testing "and give the same states, bit for bit"
       (is (= (mapv #(dissoc (:state %) :last-update :model) cached)
              (mapv #(dissoc (:state %) :last-update :model) uncached))))))
+
+(deftest the-projection-inflation-is-an-opt-in-deviation
+  (let [opts {:particles 30 :memory 12 :seed [12]}
+        batches (partition 5 (regression 60 13))
+        run (fn [opts] (reduce scmc/append-batch (scmc/start (counting-model (atom 0)) opts) batches))
+        default (run opts)]
+    (testing "k = 1 is the reference projection"
+      (is (= (dissoc default :model :projection-inflation)
+             (dissoc (run (assoc opts :projection-inflation 1)) :model :projection-inflation)
+             (dissoc (run (assoc opts :projection-inflation 1.0)) :model :projection-inflation))))
+    (testing "k = 3 fits the projection at spread points, at N·|E| more evaluations"
+      (let [steps (counted-steps identity (assoc opts :projection-inflation 3) batches)
+            inflated (:state (peek steps))]
+        (is (not= (:coreset default) (:coreset inflated)))
+        (is (= 3 (:projection-inflation inflated)))
+        (doseq [{:keys [coreset last-update calls]} steps]
+          (let [e (+ coreset 5)
+                projection (if (:compressed? last-update) (* 30 e) 0)]
+            (is (= projection (get-in last-update [:likelihood-evaluations :projection])))
+            (is (= (+ (* 30 5) (* 2 30 e) projection) calls))))))
+    (testing "a likelihood that is not finite at a spread point is refused"
+      (let [m (update (counting-model (atom 0)) :log-lik
+                      (fn [ll] (fn [[a b :as q] d] (if (> (Math/abs (double b)) 5.0) ##-Inf (ll q d)))))]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not finite"
+                              (reduce scmc/append-batch (scmc/start m (assoc opts :projection-inflation 1e3)) batches)))))
+    (testing "refusals"
+      (doseq [k [0 -1 ##Inf :wide]]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #":projection-inflation"
+                              (scmc/start (counting-model (atom 0)) (assoc opts :projection-inflation k))))))))

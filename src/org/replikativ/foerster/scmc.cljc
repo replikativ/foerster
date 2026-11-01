@@ -20,6 +20,15 @@
   default; `:refit :none` keeps GIGA's weights). The fit is best where the
   population has its mass.
 
+  `:projection-inflation k` is a research option and a deviation from the
+  UAI 2021 algorithm, off by default: the projection is fitted at the
+  particles spread by the factor k about their mean, μ + k·(θ − μ), rather
+  than at the particles themselves, so the core-set's log-likelihood is
+  matched over a wider region than the current population (the posterior
+  can move outside it as data arrive). It costs N·|E| likelihood
+  evaluations per compression, and the likelihood must be finite at the
+  spread points. k = 1, or no factor, is the reference projection.
+
   The reweighting by each new batch is exact. Only the moves target the
   core-set approximation, so the particles carry its error: small when the
   log-likelihoods compress well (exchangeable data, few parameters), larger
@@ -296,14 +305,28 @@
   [xs]
   #?(:clj (into (vector-of :double) xs) :cljs (vec xs)))
 
+(defn- inflated?
+  "Whether a :projection-inflation factor moves the projection's points."
+  [k]
+  (and (some? k) (not (== 1 k))))
+
+(defn- inflate
+  "The particles `qs` spread by the factor `k` about their (uniformly
+  weighted) mean: μ + k·(q − μ)."
+  [qs k]
+  (let [n (count qs)
+        mean (apply mapv (fn [& xs] (/ (reduce + xs) n)) qs)]
+    (mapv (fn [q] (mapv (fn [x mu] (+ mu (* k (- x mu)))) q mean)) qs)))
+
 (defn start
   "Initialize resumable numeric SCMC. model provides :prior-sample,
   :prior-log-density and :log-lik. State is a persistent in-memory value,
   including model functions; it is not a serialized inference artifact.
   opts: :particles (1000), :memory (100), :scale (2.38), :seed, :refit
-  (:nnls, the default, or :none: see `append-batch`)."
+  (:nnls, the default, or :none) and :projection-inflation (none): see the
+  namespace."
   [{:keys [prior-sample] :as model}
-   & [{:keys [particles memory scale seed refit]
+   & [{:keys [particles memory scale seed refit projection-inflation]
        :or {particles 1000 memory 100 scale 2.38 refit :nnls}}]]
   (when-not (pos-int? particles)
     (throw (ex-info ":particles is a positive count" {:type ::invalid-particles :particles particles})))
@@ -311,11 +334,17 @@
     (throw (ex-info ":memory is a positive count" {:type ::invalid-memory :memory memory})))
   (when-not (#{:nnls :none} refit)
     (throw (ex-info ":refit is :nnls or :none" {:type ::invalid-refit :refit refit})))
+  (when-not (or (nil? projection-inflation)
+                (and (number? projection-inflation) (pos? projection-inflation)
+                     (< projection-inflation ##Inf)))
+    (throw (ex-info ":projection-inflation is a positive factor"
+                    {:type ::invalid-projection-inflation :projection-inflation projection-inflation})))
   (let [seed (or seed (random/fresh-seed))]
     {:model (select-keys model [:prior-sample :prior-log-density :log-lik])
      :particles (mapv (fn [i] (random/with-stream* seed [::init i] #(vec (prior-sample))))
                       (range particles))
-     :memory memory :scale scale :seed seed :refit refit :coreset [] :steps 0
+     :memory memory :scale scale :seed seed :refit refit
+     :projection-inflation projection-inflation :coreset [] :steps 0
      :coreset-log-likelihoods (vec (repeat particles (row [])))
      :compressed? false :approximate? false :log-normalizer 0.0
      :max-coreset-size 0 :moves 0 :accepted 0}))
@@ -326,7 +355,7 @@
   caller owns any observation history needed for replay or correction.
   :last-update reports ESS before resampling, not convergence or accuracy.
   Historical replacement/retraction is not an append operation."
-  [{:keys [particles memory scale seed coreset steps model compressed? refit] :as state} batch]
+  [{:keys [particles memory scale seed coreset steps model compressed? refit projection-inflation] :as state} batch]
   (let [batch (vec batch)]
     (when (empty? batch)
       (throw (ex-info "An SCMC update requires a non-empty batch" {:type ::empty-batch})))
@@ -377,7 +406,15 @@
           lls (mapv (fn [q] (or (get @seen q) (evaluate :projection q))) qs)
           compress? (> (count expanded) memory)
           kept (if compress?
-                 (recompress lls (vec (repeat n (- (Math/log n)))) expanded memory (or refit :nnls))
+                 (recompress (if (inflated? projection-inflation)
+                               (let [ls (mapv #(evaluate :projection %) (inflate qs projection-inflation))]
+                                 (when-not (every? (fn [row] (every? #(< ##-Inf % ##Inf) row)) ls)
+                                   (throw (ex-info "A likelihood is not finite at an inflated projection point"
+                                                   {:type ::non-finite-projection :batch steps
+                                                    :projection-inflation projection-inflation})))
+                                 ls)
+                               lls)
+                             (vec (repeat n (- (Math/log n)))) expanded memory (or refit :nnls))
                  (mapv (fn [j] [j 1.0]) (range (count expanded))))
           coreset (if compress?
                     (mapv (fn [[j w]] [w (second (expanded j))]) kept)
