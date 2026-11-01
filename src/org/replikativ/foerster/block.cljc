@@ -377,11 +377,7 @@
                       {:type ::no-sample :block (:block/id (:description block))}))))
   (-logpdf [_ theta]
     (if (= (dimension block) (count theta))
-      (let [known (::known (meta theta))]
-        (if (and known (identical? block (:block known)) (= inputs (:inputs known))
-                 (= theta (:theta known)))
-          (:log-density known)
-          ((capability block :log-density) (theta-array theta) inputs)))
+      ((capability block :log-density) (theta-array theta) inputs)
       ##-Inf))
   dist/DrawDensity
   (-draw-logpdf [_ theta]
@@ -398,16 +394,6 @@
   (->BlockDist b inputs))
 
 (defn block-dist? [d] (instance? BlockDist d))
-
-(defn with-log-density
-  "θ (a vector) carrying `lp`, the log target of `dist` (a `block-dist`) at
-  θ, which a sampler has just computed with the gradient: replaying the site
-  at the same block, inputs and θ scores it by `lp` instead of evaluating the
-  density again. Any other block, inputs or θ (a changed copy of the vector
-  keeps the metadata) evaluates the density as usual."
-  [dist theta lp]
-  (vary-meta theta assoc ::known {:block (:block dist) :inputs (:inputs dist)
-                                  :theta theta :log-density (double lp)}))
 
 (defn value+grad
   "[log target, gradient] of `dist` (a `block-dist`) at θ, both from the

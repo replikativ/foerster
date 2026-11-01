@@ -189,19 +189,24 @@
 
 (deftest a-transition-reuses-the-previous-gradient
   ;; every gradient is a leapfrog step's, except the first transition's start
-  ;; point and the check of the jittered start; the write-back replays reuse
-  ;; the log density computed with the gradient
-  (doseq [[jitter extra] [[false 1] [true 2]]]
+  ;; point and the check of the jittered start. The trace scores a block by
+  ;; :log-density only: once for the initial state, once for the jittered
+  ;; start's replay, and once per transition that moved (its write-back)
+  (doseq [[jitter extra-gradients extra-densities] [[false 1 1] [true 2 2]]]
     (let [densities (atom 0) gradients (atom 0)
           b (counting-gaussian 3 densities gradients)
           result (b/run-infer 31 #(infer/infer (spin (sample (block/block-dist b nil) :id :x :init [0.0 0.0 0.0]))
                                                {:method :nuts :seed 1 :iterations 200 :burn 0 :chains 1 :jitter jitter}))
-          stats (map (comp :sampler-stats first) (measure/get-particles result))
-          leapfrogs (reduce + (map :n-leapfrog stats))]
+          particles (measure/get-particles result)
+          stats (map (comp :sampler-stats first) particles)
+          values (map (comp measure/get-value first) particles)
+          leapfrogs (reduce + (map :n-leapfrog stats))
+          ;; a transition that moved: its draw differs from the one before
+          ;; (the first draw always differs from the start here)
+          moved (inc (count (filter true? (map not= (rest values) values))))]
       (is (= 200 (count stats)))
-      (is (= (+ leapfrogs extra) @gradients) (str "jitter " jitter))
-      ;; the initial state's score only
-      (is (= 1 @densities) (str "jitter " jitter)))))
+      (is (= (+ leapfrogs extra-gradients) @gradients) (str "jitter " jitter))
+      (is (= (+ moved extra-densities) @densities) (str "jitter " jitter)))))
 
 (deftest an-invalid-subtree-does-not-count-as-depth
   ;; Stan's base_nuts increments the depth only for a valid subtree: a tree
@@ -430,3 +435,32 @@
         (is (< (Math/abs (- (:mean s) mean)) (* 4 (:mcse s))) (str i " " s " vs " mean))
         (when sd
           (is (< (Math/abs (- 1.0 (/ (:sd s) sd))) 0.1) (str i " " s " vs sd " sd)))))))
+
+(deftest the-trace-scores-a-block-by-its-log-density
+  ;; z ~ Bernoulli(½) picks σ_z ∈ {0.5, 2}; μ ~ N(0, 1), y = 2 ~ N(μ, σ_z), μ a
+  ;; block with inputs {:s σ_z}. Its :value+grad drops −log σ_z, a constant in
+  ;; θ that NUTS never sees but MH on z must: the trace scores the block by
+  ;; :log-density, so the posterior is exact (P(z = 1) = 0.624, E μ = 0.851)
+  (let [y 2.0 sigmas [0.5 2.0]
+        lp (fn [m s] (+ (* -0.5 m m) (* -0.5 (/ (* (- y m) (- y m)) (* s s))) (- (Math/log s))))
+        sloppy (block/block {:block/id :mu :block/target :complete-conditional
+                             :block/latents [{:name :mu :shape [] :support :real}]}
+                            {:log-density (fn [^doubles th {:keys [s]}] (lp (aget th 0) s))
+                             :value+grad (fn [^doubles th {:keys [s]}]
+                                           (let [m (aget th 0)]
+                                             [(+ (lp m s) (Math/log s))
+                                              (double-array [(+ (- m) (/ (- y m) (* s s)))])]))})
+        weights (mapv (fn [s] (/ (Math/exp (/ (* -0.5 y y) (+ 1 (* s s)))) (Math/sqrt (+ 1 (* s s))))) sigmas)
+        p-z1 (/ (weights 1) (reduce + weights))
+        e-mu (+ (* (- 1 p-z1) (/ y (+ 1 (* 0.25)))) (* p-z1 (/ y (+ 1 4.0))))
+        measure (b/run-infer 132 #(infer/infer (spin (let [z (sample (dist/bernoulli 0.5) :id :z :init 0)
+                                                           [mu] (sample (block/block-dist sloppy {:s (nth sigmas z)})
+                                                                        :id :mu :init [0.0])]
+                                                       [z mu]))
+                                               {:method :nuts :seed 13 :iterations 3000 :burn 500 :chains 4}))
+        z (d/summary measure #(double (first %)))
+        mu (d/summary measure second)]
+    (is (< (Math/abs (- p-z1 0.624)) 1e-3))
+    (is (< (Math/abs (- (:mean z) p-z1)) (* 4 (:mcse z))) (str z " vs " p-z1))
+    (is (< (Math/abs (- (:mean mu) e-mu)) (* 4 (:mcse mu))) (str mu " vs " e-mu))))
+

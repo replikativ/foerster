@@ -392,9 +392,12 @@
           (if (= q q0)
             (resolve {:trace trace :accepted? false :divergent? divergent? :stat tr})
             (let [move (tc/policy context (fn [sp _]
+                                            ;; the replay scores q by the block's
+                                            ;; :log-density, never by :value+grad's lp:
+                                            ;; that need only be right up to a constant
+                                            ;; in θ, which may depend on the inputs
                                             (when (= address (:savepoint/address sp))
-                                            ;; scored by the transition's own log density
-                                              {:value (block/with-log-density dist q lp) :symmetric? true})))]
+                                              {:value q :symmetric? true})))]
               ((itrace/reexecute trace #{address} move (tc/replay-options context trace [::move address iteration]))
                (fn [proposed]
                  (try
@@ -428,8 +431,7 @@
             (let [theta' (random/in-world-stream world [::jitter address attempt]
                                                  #(mapv (fn [x] (+ (double x) (double (dist/draw u)))) theta))
                   [lp g] (block/value+grad! dist (double-array theta'))]
-              (when (and (finite? lp) (all-finite? g))
-                (block/with-log-density dist theta' lp))))
+              (when (and (finite? lp) (all-finite? g)) theta')))
           (range jitter-attempts))))
 
 (defn jitter
