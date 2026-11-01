@@ -14,8 +14,11 @@
   After each step's moves, when the core-set and the new batch exceed M, it
   is recompressed: a sparse nonnegative least-squares fit (GIGA; Campbell &
   Broderick 2018) of the core-set's log-likelihood functions, centred and
-  evaluated at the current particles, to their weighted sum. The fit is best
-  where the population has its mass.
+  evaluated at the current particles, to their weighted sum. As in the
+  reference implementation, GIGA's weights are then refitted by
+  nonnegative least squares on the points it selected (`:refit :nnls`, the
+  default; `:refit :none` keeps GIGA's weights). The fit is best where the
+  population has its mass.
 
   The reweighting by each new batch is exact. Only the moves target the
   core-set approximation, so the particles carry its error: small when the
@@ -97,6 +100,133 @@
                          (lin (/ 1.0 nn) lw' 0.0 lw')))))))))))
 
 ;; =============================================================================
+;; NNLS refit on GIGA's support
+;; =============================================================================
+
+(def ^:private eps 2.220446049250313e-16)
+
+(defn- residual-norm
+  "‖Σ_j w_j·ls_j − target‖."
+  ^double [ls w ^doubles target]
+  (let [r (aclone target)]
+    (doseq [[wj ^doubles l] (map vector w ls)
+            :when (not (zero? wj))]
+      (dotimes [i (alength r)] (aset r i (- (aget r i) (* (double wj) (aget l i))))))
+    (norm r)))
+
+(defn- least-squares
+  "The least-squares coefficients of `b` on the columns `cs` (double arrays
+  of b's length), by Householder QR; nil when a column is numerically
+  dependent on those before it."
+  [cs ^doubles b]
+  (let [p (count cs) r (alength b)
+        a (object-array (map aclone cs))
+        y (aclone b)
+        diag (double-array p)
+        sum-from (fn [k ^doubles x ^doubles z]
+                   (loop [i k s 0.0] (if (< i r) (recur (inc i) (+ s (* (aget x i) (aget z i)))) s)))]
+    (loop [k 0]
+      (if (< k p)
+        (let [^doubles col (aget a k)
+              sigma (Math/sqrt (sum-from k col col))]
+          (if (or (>= k r) (<= sigma (* 100.0 eps (norm (nth cs k)))))
+            nil
+            (let [alpha (if (pos? (aget col k)) (- sigma) sigma)
+                  _ (aset col k (- (aget col k) alpha))
+                  vv (sum-from k col col)
+                  reflect! (fn [^doubles x]
+                             (let [f (/ (* 2.0 (sum-from k col x)) vv)]
+                               (loop [i k] (when (< i r) (aset x i (- (aget x i) (* f (aget col i)))) (recur (inc i))))))]
+              (loop [j (inc k)] (when (< j p) (reflect! (aget a j)) (recur (inc j))))
+              (reflect! y)
+              (aset diag k alpha)
+              (recur (inc k)))))
+        (let [s (double-array p)]
+          (loop [k (dec p)]
+            (when (>= k 0)
+              (let [acc (loop [j (inc k) acc (aget y k)]
+                          (if (< j p) (recur (inc j) (- acc (* (aget ^doubles (aget a j) k) (aget s j)))) acc))]
+                (aset s k (/ acc (aget diag k)))
+                (recur (dec k)))))
+          s)))))
+
+(defn nnls
+  "Nonnegative least squares (Lawson & Hanson 1974, ch. 23): weights x ≥ 0
+  over the vectors `ls` (double arrays of one length) minimizing
+  ‖Σ_j x_j·ls_j − target‖, by the active-set method SciPy's `nnls`
+  implements. A vector numerically dependent on the passive ones, or one
+  that would enter with a nonpositive coefficient, is not added. Returns the
+  weights as a vector."
+  [ls target]
+  (let [n (count ls)
+        ^doubles target target
+        tol (* 10.0 eps (max 1 (alength target))
+               (reduce max 0.0 (map (fn [^doubles l] (areduce l i s 0.0 (+ s (Math/abs (aget l i))))) ls)))
+        solve (fn [ps] (least-squares (mapv #(nth ls %) ps) target))
+        dual (fn [x]
+               (let [r (aclone target)]
+                 (doseq [j (range n) :let [xj (double (nth x j))] :when (pos? xj)]
+                   (let [^doubles l (nth ls j)]
+                     (dotimes [i (alength r)] (aset r i (- (aget r i) (* xj (aget l i)))))))
+                 (mapv #(dot (nth ls %) r) (range n))))
+        max-iterations (+ 100 (* 30 n))]
+    (loop [x (vec (repeat n 0.0)) passive [] iterations 0]
+      (let [w (dual x)
+            in-passive (set passive)
+            ;; the most improving vector that keeps the passive columns
+            ;; independent and enters with a positive coefficient
+            entering (->> (range n)
+                          (remove in-passive)
+                          (filter #(> (nth w %) tol))
+                          (sort-by #(- (nth w %)))
+                          (some (fn [t]
+                                  (let [ps (conj passive t)
+                                        s (solve ps)]
+                                    (when (and s (pos? (aget ^doubles s (dec (count ps)))))
+                                      [ps s])))))]
+        (if (or (nil? entering) (>= iterations max-iterations))
+          x
+          (let [[ps s] entering
+                [x ps]
+                (loop [x x ps ps ^doubles s s inner 0]
+                  (if (or (every? pos? s) (>= inner max-iterations))
+                    [(reduce (fn [x [j sj]] (assoc x j sj)) x (map vector ps s)) ps]
+                    ;; step from x towards s until a passive weight reaches 0,
+                    ;; and drop the weights that did
+                    (let [alpha (reduce min 1.0 (keep (fn [[j sj]]
+                                                        (when (<= sj 0.0)
+                                                          (let [xj (nth x j)] (/ xj (- xj sj)))))
+                                                      (map vector ps s)))
+                          x (reduce (fn [x [j sj]] (let [xj (nth x j)] (assoc x j (+ xj (* alpha (- sj xj))))))
+                                    x (map vector ps s))
+                          floor (* 1e3 eps (reduce max 0.0 x))
+                          leaving (set (filter #(<= (nth x %) floor) ps))
+                          x (reduce #(assoc %1 %2 0.0) x leaving)
+                          ps (filterv (complement leaving) ps)]
+                      (if (empty? ps)
+                        [x ps]
+                        (recur x ps (solve ps) (inc inner))))))]
+            (recur x ps (inc iterations))))))))
+
+(defn nnls-refit
+  "GIGA's weights `w` refitted by nonnegative least squares on their
+  support, as the reference implementation does after GIGA (`giga.build(m);
+  giga.optimize()` in Campbell's bayesian-coresets, used by the SCMC
+  reference): the support stays, its weights become the NNLS solution for
+  the same `target`, and the refit is kept only if it does not increase the
+  residual by more than a relative 1e-12. Weights NNLS sets to zero leave
+  the support."
+  [ls target w]
+  (let [support (vec (keep-indexed (fn [j wj] (when (pos? wj) j)) w))]
+    (if (empty? support)
+      (vec w)
+      (let [x (nnls (mapv #(nth ls %) support) target)
+            w' (reduce (fn [w [j xj]] (assoc w j xj)) (vec w) (map vector support x))]
+        (if (> (residual-norm ls w' target) (* (residual-norm ls w target) (+ 1.0 1e-12)))
+          (vec w)
+          w')))))
+
+;; =============================================================================
 ;; The core-set projection
 ;; =============================================================================
 
@@ -104,8 +234,9 @@
   "The core-set [[w datum] …] compressed to at most `m` points: GIGA on the
   data's log-likelihoods at the particles `qs` (normalized log weights
   `lw`), each centred by its population mean and scaled by √π_k, towards
-  the core-set's own weighted sum."
-  [qs lw coreset log-lik m]
+  the core-set's own weighted sum; then, unless `refit` is :none, the
+  weights refitted by NNLS on GIGA's support (`nnls-refit`)."
+  [qs lw coreset log-lik m refit]
   (let [pis (mapv #(Math/exp %) lw)
         roots (mapv #(Math/sqrt %) pis)
         cols (mapv (fn [[_ u]]
@@ -116,26 +247,30 @@
         target (reduce (fn [^doubles acc [^doubles col [w _]]] (lin 1.0 acc (double w) col))
                        (double-array (count qs))
                        (map vector cols coreset))
-        w (giga cols target m)]
+        w (cond->> (giga cols target m)
+            (not= :none refit) (nnls-refit cols target))]
     (into [] (keep (fn [[wj [_ u]]] (when (pos? wj) [wj u]))) (map vector w coreset))))
 
 (defn start
   "Initialize resumable numeric SCMC. model provides :prior-sample,
   :prior-log-density and :log-lik. State is a persistent in-memory value,
   including model functions; it is not a serialized inference artifact.
-  opts: :particles (1000), :memory (100), :scale (2.38), :seed."
+  opts: :particles (1000), :memory (100), :scale (2.38), :seed, :refit
+  (:nnls, the default, or :none: see `append-batch`)."
   [{:keys [prior-sample] :as model}
-   & [{:keys [particles memory scale seed]
-       :or {particles 1000 memory 100 scale 2.38}}]]
+   & [{:keys [particles memory scale seed refit]
+       :or {particles 1000 memory 100 scale 2.38 refit :nnls}}]]
   (when-not (pos-int? particles)
     (throw (ex-info ":particles is a positive count" {:type ::invalid-particles :particles particles})))
   (when-not (pos-int? memory)
     (throw (ex-info ":memory is a positive count" {:type ::invalid-memory :memory memory})))
+  (when-not (#{:nnls :none} refit)
+    (throw (ex-info ":refit is :nnls or :none" {:type ::invalid-refit :refit refit})))
   (let [seed (or seed (random/fresh-seed))]
     {:model (select-keys model [:prior-sample :prior-log-density :log-lik])
      :particles (mapv (fn [i] (random/with-stream* seed [::init i] #(vec (prior-sample))))
                       (range particles))
-     :memory memory :scale scale :seed seed :coreset [] :steps 0
+     :memory memory :scale scale :seed seed :refit refit :coreset [] :steps 0
      :compressed? false :approximate? false :log-normalizer 0.0
      :max-coreset-size 0 :moves 0 :accepted 0}))
 
@@ -145,7 +280,7 @@
   caller owns any observation history needed for replay or correction.
   :last-update reports ESS before resampling, not convergence or accuracy.
   Historical replacement/retraction is not an append operation."
-  [{:keys [particles memory scale seed coreset steps model compressed?] :as state} batch]
+  [{:keys [particles memory scale seed coreset steps model compressed? refit] :as state} batch]
   (let [batch (vec batch)]
     (when (empty? batch)
       (throw (ex-info "An SCMC update requires a non-empty batch" {:type ::empty-batch})))
@@ -174,7 +309,7 @@
                                              :keys {:resample ::resample :move ::move}})
           compress? (> (count expanded) memory)
           coreset (if compress?
-                    (recompress qs (vec (repeat n (- (Math/log n)))) expanded log-lik memory)
+                    (recompress qs (vec (repeat n (- (Math/log n)))) expanded log-lik memory (or refit :nnls))
                     expanded)]
       (-> state
           (assoc :particles qs :coreset coreset :steps (inc steps)
@@ -204,7 +339,8 @@
   "Run numeric SCMC over :batches using start, append-batch and result.
   model: :prior-sample (fn [] theta-vector), :prior-log-density (fn [theta]),
   :log-lik (fn [theta datum]), :batches (lazy sequence of non-empty batches).
-  opts: :particles (1000), :memory (100), :scale (2.38), :seed.
+  opts: :particles (1000), :memory (100), :scale (2.38), :seed, :refit
+  (:nnls or :none).
   Returns an EmpiricalMeasure with :coreset, :steps, :max-coreset-size,
   :moves, :accepted, :last-update and :log-normalizer. Streaming memory is
   bounded by population, coreset and batch; no history of updates is retained.

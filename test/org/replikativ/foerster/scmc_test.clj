@@ -38,6 +38,82 @@
   (testing "a zero target"
     (is (= [0.0 0.0] (scmc/giga [(double-array [1 0]) (double-array [0 1])] (double-array [0 0]) 2)))))
 
+;; NNLS and the refit after GIGA, against SciPy's `nnls` and the reference
+;; implementation's `GIGA.build(m); GIGA.optimize()` (bayesian-coresets as
+;; vendored by ~/Development/scmc), whose outputs are recorded here.
+
+(deftest nnls-matches-scipy
+  (testing "SciPy's documented example"
+    (let [x (scmc/nnls [(double-array [1 1 0]) (double-array [0 0 1])] (double-array [2 1 1]))]
+      (is (every? true? (map #(< (Math/abs (- %1 %2)) 1e-12) x [1.5 1.0])))))
+  (testing "the unconstrained solution is negative: the constraint is active"
+    ;; least squares gives (-1, 1); NNLS gives (0, 1/2), residual 1/√2
+    (let [ls [(double-array [1 0 0]) (double-array [1 1 0])]
+          target (double-array [0 1 0])
+          x (scmc/nnls ls target)]
+      (is (= 0.0 (first x)))
+      (is (< (Math/abs (- 0.5 (second x))) 1e-12))
+      (is (< (Math/abs (- (Math/sqrt 0.5) (rel-error x ls target))) 1e-12))))
+  (testing "a target outside the cone"
+    (is (= [0.0 0.0] (scmc/nnls [(double-array [1 1 0]) (double-array [0 0 1])] (double-array [-1 -1 -1])))))
+  (testing "dependent vectors"
+    (let [x (scmc/nnls [(double-array [1 0]) (double-array [2 0]) (double-array [0 1])] (double-array [2 3]))]
+      (is (< (rel-error x [(double-array [1 0]) (double-array [2 0]) (double-array [0 1])] (double-array [2 3])) 1e-12))
+      (is (every? #(>= % 0.0) x)))))
+
+(defn- logistic-columns
+  "Centred, √π-scaled log-likelihood columns of 120 binomial-logistic windows
+  at 150 particles around (-2, 1.8), as SCMC's projection builds them, and
+  their sum: GIGA's vectors are nearly collinear here."
+  []
+  (let [rng (java.util.Random. 5)
+        sig (fn [x] (/ 1.0 (+ 1.0 (Math/exp (- x)))))
+        rows (vec (repeatedly 120 (fn [] (let [x (- (* 2.0 (.nextDouble rng)) 1.0)
+                                               p (sig (+ -2.0 (* 2.0 x)))]
+                                           [x (count (filter #(< % p) (repeatedly 8 #(.nextDouble rng))))]))))
+        qs (vec (repeatedly 150 #(vector (+ -2.0 (* 0.15 (.nextGaussian rng))) (+ 1.8 (* 0.3 (.nextGaussian rng))))))
+        ll (fn [[a b] [x k]] (let [eta (+ a (* b x))] (- (* k eta) (* 8.0 (Math/log1p (Math/exp eta))))))
+        r (Math/sqrt (/ 1.0 150))
+        cols (mapv (fn [u] (let [f (mapv #(ll % u) qs) mu (/ (reduce + f) 150)]
+                             (double-array (map #(* r (- % mu)) f)))) rows)]
+    {:cols cols :target (combine (repeat 120 1.0) cols)}))
+
+(defn- abs-error [w ls ^doubles target]
+  (* (rel-error w ls target) (Math/sqrt (reduce + (map #(* % %) target)))))
+
+(deftest the-refit-matches-the-reference-implementation
+  (testing "a 3-vector instance: GIGA stops short, NNLS on its support is exact"
+    (let [ls [(double-array [1 0 0]) (double-array [0 1 0]) (double-array [1 1 0.5])]
+          target (double-array [1 2 0.2])
+          g (scmc/giga ls target 3)
+          r (scmc/nnls-refit ls target g)]
+      (is (every? true? (map #(< (Math/abs (- %1 %2)) 1e-12) g [0.14215948111407847 1.0917970240366273 0.857840518885921])))
+      (is (every? true? (map #(< (Math/abs (- %1 %2)) 1e-12) r [0.6 1.6 0.4])))
+      (is (< (abs-error r ls target) 1e-12))
+      (testing "GIGA's support of two is already optimal"
+        (is (every? true? (map #(< (Math/abs (- %1 %2)) 1e-12)
+                               (scmc/nnls-refit ls target (scmc/giga ls target 2)) [0.0 1.12 0.88]))))))
+  (testing "nearly collinear log-likelihood vectors, budget 16"
+    (let [{:keys [cols target]} (logistic-columns)
+          g (scmc/giga cols target 16)
+          r (scmc/nnls-refit cols target g)
+          support (fn [w] (into {} (keep-indexed (fn [j x] (when (pos? x) [j x]))) w))
+          close? (fn [expected actual]
+                   (and (= (set (keys expected)) (set (keys actual)))
+                        (every? (fn [[j x]] (< (Math/abs (- x (actual j))) (* 1e-9 (max 1.0 x)))) expected)))]
+      (is (close? {23 6.618675887571942 33 1.4814124435848632 39 1.2828098605491924 50 0.5192804668750788
+                   72 2.444701451076503 74 38.79253944804988 91 0.7273845404560357 108 54.38239758722264
+                   119 0.6834538524209867}
+                  (support g)))
+      ;; the refit keeps 5 of GIGA's 9 points
+      (is (close? {23 19.182551833104505 50 1.2764257005361201 74 40.25328839173929
+                   108 54.20953565118226 119 5.966433493819927}
+                  (support r)))
+      (is (every? #(>= % 0.0) r))
+      (is (< (Math/abs (- (abs-error g cols target) 0.19426509152533136)) 1e-9))
+      (is (< (Math/abs (- (abs-error r cols target) 0.008607328638647355)) 1e-9))
+      (is (<= (abs-error r cols target) (abs-error g cols target))))))
+
 ;; y = a + b·x + N(0, 0.5²), (a, b) ~ N(0, I): the posterior and the evidence
 ;; are Gaussian in closed form
 (def ^:private sigma2 0.25)
@@ -100,6 +176,7 @@
     (is (< (Math/abs (- (m/log-marginal r) (:log-z (exact data)))) 0.5))))
 
 (deftest refusals
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo #":refit" (scmc/scmc (model [] 1) {:refit :lasso})))
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #":memory" (scmc/scmc (model [] 1) {:memory 0})))
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #":particles" (scmc/scmc (model [] 1) {:particles 0}))))
 
@@ -145,3 +222,28 @@
     (is (= :weighted-population (get-in result [:inference-contract :semantics])))
     (is (= [] (:coreset result)))
     (is (not (contains? result :log-z)))))
+
+(defn- counting-model
+  "The regression model with its log-likelihood calls counted in `calls`."
+  [calls]
+  (let [m (model [] 1)
+        log-lik (:log-lik m)]
+    (assoc (dissoc m :batches) :log-lik (fn [q d] (swap! calls inc) (log-lik q d)))))
+
+(deftest without-the-refit-scmc-is-the-giga-only-projection
+  ;; :refit :none reproduces the implementation before the refit existed,
+  ;; bit for bit (recorded on origin/main 24d9c1a)
+  (let [calls (atom 0)
+        state (reduce scmc/append-batch
+                      (scmc/start (counting-model calls) {:particles 50 :memory 30 :seed [5] :refit :none})
+                      (partition 20 (regression 300 9)))]
+    (is (= -1699575438 (hash (:particles state))))
+    (is (= -231.1534641942093 (:log-normalizer state)))
+    (is (= 28 (count (:coreset state))))
+    (is (= 1500 (:moves state)))
+    (testing "the default refits"
+      (let [refit (reduce scmc/append-batch
+                          (scmc/start (counting-model (atom 0)) {:particles 50 :memory 30 :seed [5]})
+                          (partition 20 (regression 300 9)))]
+        (is (= :nnls (:refit refit)))
+        (is (not= (:particles state) (:particles refit)))))))
