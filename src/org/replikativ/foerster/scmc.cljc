@@ -379,10 +379,12 @@
   "The `start` options that reproduce `state`'s run: with the same batches,
   `(append-batch …)` from `(start model (options state))` gives `state`
   again. They include the seed `start` drew when none was given, so a
-  replay (after a historical correction, say) is reproducible."
+  replay (after a historical correction, say) is reproducible. A state
+  without :refit was made before the refit existed and resumes without it."
   [{:keys [particles memory scale seed refit projection-inflation]}]
   (cond-> {:particles (count particles) :memory memory :scale scale :seed seed
-           :refit (or refit :nnls)}
+           ;; a state from before :refit existed was made without the refit
+           :refit (or refit :none)}
     projection-inflation (assoc :projection-inflation projection-inflation)))
 
 (defn initial
@@ -472,7 +474,7 @@
                                                     :projection-inflation projection-inflation})))
                                  ls)
                                lls)
-                             (vec (repeat n (- (Math/log n)))) expanded memory (or refit :nnls)))
+                             (vec (repeat n (- (Math/log n)))) expanded memory (or refit :none)))
           coreset (if compress?
                     (mapv (fn [[j w]] [w (second (expanded j))]) kept)
                     expanded)]

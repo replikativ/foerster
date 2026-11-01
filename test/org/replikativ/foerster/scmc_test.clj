@@ -376,3 +376,16 @@
             forged (scmc/append-batch (assoc-in edited [:coreset-log-likelihoods :coreset] (:coreset edited))
                                       next-batch)]
         (is (not= (moments-of fresh) (moments-of forged)))))))
+
+(deftest a-state-from-before-the-refit-resumes-as-it-ran
+  ;; A state without :refit (and without the cache or the split sizes) was
+  ;; made by the GIGA-only implementation: it resumes as that, and its
+  ;; options reproduce it (fingerprint recorded on origin/main 24d9c1a)
+  (let [fresh (scmc/start (counting-model (atom 0)) {:particles 50 :memory 30 :seed [5]})
+        old (dissoc fresh :refit :coreset-log-likelihoods :max-retained-coreset-size :max-transient-coreset-size)
+        state (reduce scmc/append-batch old (partition 20 (regression 300 9)))]
+    (is (= -1699575438 (hash (:particles state))))
+    (is (= -231.1534641942093 (:log-normalizer state)))
+    (is (= :none (:refit (scmc/options old))))
+    (is (= (:particles state)
+           (:particles (reduce scmc/append-batch (scmc/initial old) (partition 20 (regression 300 9))))))))

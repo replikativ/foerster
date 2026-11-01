@@ -235,7 +235,9 @@ resample-move SMC.
 A step evaluates each likelihood once per state: the batch at every
 particle for the weights, and the expanded core-set at each proposal of the
 moves. The values at the particles are kept in the state, so a move's start
-state and the compression cost no new evaluations. `:projection-inflation k`
+state and the compression cost no new evaluations; they are used only with
+the log-likelihood, core-set and particles they were computed for, and
+re-evaluated otherwise. `:projection-inflation k`
 is a research option, off by default and a deviation from the published
 algorithm: it fits the compression at the particles spread by k about their
 mean, μ + k·(θ − μ), at N·|E| more evaluations per compression.
