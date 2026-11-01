@@ -322,6 +322,10 @@
          _ (when (some transition/adaptation? prepared)
              (throw (ex-info "Population transitions require frozen tuning; run chain warm-up separately"
                              {:type ::adaptive-population-kernel})))
+         _ (when-not (every? #(contains? (get-in % [:capabilities :retention]) :keep-old?) prepared)
+             (throw (ex-info (str "This transition gives back the state it leaves, which a population "
+                                  "keeps for its other owners: use it in chains, not population moves")
+                             {:type ::unretaining-population-kernel})))
          current (when traced? (atom (:particles population)))
          moved (await (move-particles (get-in population [:target :representation]) (:resources scope)
                                       (:target population) (:particles population) kernel

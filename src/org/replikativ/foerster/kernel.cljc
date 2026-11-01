@@ -303,6 +303,39 @@
   (chain-output (->NUTSKernel num-iterations target-accept max-depth metric) (select-keys opts [:samples :burn])))
 
 ;; =============================================================================
+;; Programmable moves as chain components
+;; =============================================================================
+
+(defrecord InvolutiveKernel [num-iterations move]
+  PMarkovKernel
+  (transition-id [_] :involutive))
+
+(defn involutive-kernel
+  "A Markov-chain kernel making `num-iterations` involutive MH moves
+  (`foerster.involutive/step`): `move` is {:propose :log-q :involution},
+  optionally :check?. It composes with the other chain kernels through
+  `cycle` and `mixture`. Chains only: population programs refuse it, since
+  it gives back the state it leaves. Output options as for every chain
+  kernel."
+  [num-iterations move & [opts]]
+  {:pre [(pos-int? num-iterations) (fn? (:propose move)) (fn? (:log-q move)) (fn? (:involution move))]}
+  (chain-output (->InvolutiveKernel num-iterations move) opts))
+
+(defrecord ProposalMHKernel [num-iterations proposal args]
+  PMarkovKernel
+  (transition-id [_] :proposal-mh))
+
+(defn proposal-mh-kernel
+  "A Markov-chain kernel making `num-iterations` MH moves with the proposal
+  program `proposal` (`foerster.gfi/mh-proposal`: a function of the current
+  choices and `:args` returning a spin that proposes model addresses). It
+  composes through `cycle` and `mixture`; chains only, as
+  `involutive-kernel`. Output options as for every chain kernel."
+  [num-iterations proposal & [{:keys [args] :as opts}]]
+  {:pre [(pos-int? num-iterations) (fn? proposal)]}
+  (chain-output (->ProposalMHKernel num-iterations proposal (vec args)) (dissoc opts :args)))
+
+;; =============================================================================
 ;; Composing Markov-chain kernels
 ;; =============================================================================
 
