@@ -157,23 +157,29 @@
             own-executor (when-not executor (sched/thread-pool-executor {:threads 2}))
             executor (or executor own-executor)
             results (object-array chains)
-            remaining (atom chains)
             failed (atom false)
-            finish (fn []
-                     (when own-executor (.close ^java.lang.AutoCloseable own-executor)))]
-        (sched/spread! executor chains
-                       (fn [i]
-                         (try
-                           (aset results i (random/with-stream* (nth seeds i) ::rmh chain))
-                           (when (zero? (swap! remaining dec))
-                             (finish)
+            ;; every chain, and the fan-out itself: the run's own pool is
+            ;; shut down only once nothing can dispatch to it any more
+            pending (atom (inc chains))
+            done! (fn []
+                    (when (zero? (swap! pending dec))
+                      (when own-executor (.close ^java.lang.AutoCloseable own-executor))
+                      (when-not @failed
+                        (let [chains (vec results)]
+                          (resolve (assoc (m/markov-measure (into [] cat chains))
+                                          :chain-lengths (mapv count chains)))))))
+            fail! (fn [t]
+                    ;; the first failure is the run's error; the chains not
+                    ;; yet started are skipped
+                    (when (compare-and-set! failed false true) (reject t)))]
+        (try
+          (sched/spread! executor chains
+                         (fn [i]
+                           (try
                              (when-not @failed
-                               (let [chains (vec results)]
-                                 (resolve (assoc (m/markov-measure (into [] cat chains))
-                                                 :chain-lengths (mapv count chains))))))
-                           (catch Throwable t
-                             (swap! remaining dec)
-                             (when (compare-and-set! failed false true)
-                               (finish)
-                               (reject t)))))))
+                               (aset results i (random/with-stream* (nth seeds i) ::rmh chain)))
+                             (catch Throwable t (fail! t))
+                             (finally (done!)))))
+          (catch Throwable t (fail! t))
+          (finally (done!))))
       (catch Throwable t (reject t)))))

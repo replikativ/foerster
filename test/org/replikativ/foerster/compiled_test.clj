@@ -8,6 +8,7 @@
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.gfi :as gfi]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.engine.executor :as sched]))
 
 (def ^:private logistic
@@ -96,3 +97,26 @@
         (is (= [300 300 300] (:chain-lengths pooled)))
         (is (= (map m/get-value (m/get-contexts pooled)) (map m/get-value (m/get-contexts inline)))))
       (finally (.close ^java.lang.AutoCloseable pool)))))
+
+(deftest a-failing-chain-is-one-clean-error
+  ;; one chain of eight throws: the run rejects once, with that error, never
+  ;; resolves, and its own pool is not shut down under the other workers
+  ;; (no RejectedExecutionException from them)
+  (let [compiled (c/compile-model normal-mean [0.8 1.4])
+        calls (atom 0)
+        outcomes (atom [])
+        with-stream* @#'random/with-stream*
+        done (promise)]
+    (with-redefs [random/with-stream* (fn [seed key f]
+                                        (if (= 2 (swap! calls inc))
+                                          (throw (ex-info "chain failed" {:type ::chain-failed}))
+                                          (with-stream* seed key f)))]
+      ((c/rmh compiled {:iterations 5 :chains 8 :seed [5 6]})
+       #(do (swap! outcomes conj [:resolve %]) (deliver done true))
+       #(do (swap! outcomes conj [:reject %]) (deliver done true)))
+      (deref done 10000 nil)
+      ;; let the other chains finish before looking
+      (Thread/sleep 500))
+    (is (= 1 (count @outcomes)) (str (mapv first @outcomes)))
+    (is (= :reject (ffirst @outcomes)))
+    (is (= ::chain-failed (:type (ex-data (second (first @outcomes))))))))
