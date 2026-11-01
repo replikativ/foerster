@@ -29,24 +29,54 @@
 (defn- entry-map [t]
   (into {} (map (juxt :address identity)) (itrace/entries t)))
 
-(defn- prior-terms
-  "Σ log p of the stale latents of `old` minus Σ log p of the latents `new`
-  drew from their prior: sites outside the involution that the replay
-  dropped or reached afresh."
+(defn- replay-terms
+  "log q(old | new) − log q(new | old) for the sites outside the involution:
+  Σ, over the latents of `old` the replay dropped (and the involution did not
+  move into its auxiliaries, `removed`), of the density a reverse replay
+  would draw them with, minus Σ, over the latents `new` drew afresh, of the
+  density they were drawn with (`:log-proposal`: the site's prior, its
+  `:proposal` or a block's :sample). −∞ when the replay redrew a value the
+  reverse move would keep (`trace/irreversible-redraw?`)."
   [old new removed]
   (let [old-by (entry-map old)
         new-by (entry-map new)
+        new-entries (itrace/entries new)
         fresh (filter (fn [e] (and (itrace/latent? e)
                                    (not (identical? (:note e) (:note (get old-by (:address e)))))
                                    (not (:kept? (:note e)))
                                    (not (:symmetric? (:note e)))))
-                      (itrace/entries new))
+                      new-entries)
         stale (filter (fn [e] (and (itrace/latent? e)
                                    (not (contains? new-by (:address e)))
                                    (not (contains? removed (:address e)))))
                       (itrace/entries old))]
-    (- (reduce + 0.0 (map (comp :log-prob :note) stale))
-       (reduce + 0.0 (map (comp :log-prob :note) fresh)))))
+    (if (itrace/irreversible-redraw? old-by new-entries)
+      ##-Inf
+      (- (reduce + 0.0 (map (fn [{:keys [note value]}] (itrace/redraw-log-density note value)) stale))
+         (reduce + 0.0 (map (comp :log-proposal :note) fresh))))))
+
+(defn- same-value? [a b]
+  (cond (and (number? a) (number? b))
+        (<= (Math/abs (- (double a) (double b)))
+            (* 1e-9 (max 1.0 (Math/abs (double a)) (Math/abs (double b)))))
+        (and (map? a) (map? b))
+        (and (= (set (keys a)) (set (keys b))) (every? #(same-value? (get a %) (get b %)) (keys a)))
+        (and (sequential? a) (sequential? b))
+        (and (= (count a) (count b)) (every? true? (map same-value? a b)))
+        :else (= a b)))
+
+(defn- check-involution!
+  "Apply `involution` to the new state (x', u') and require it to give back
+  the old one: every address it sets must take its value in `x`, and the
+  auxiliaries must come back as `u` (Gen's `check=true`)."
+  [involution x u x' u']
+  (let [{x'' :choices u'' :aux} (involution x' u')
+        wrong (into {} (remove (fn [[a v]] (and (contains? x a) (same-value? v (get x a))))) x'')]
+    (when (or (seq wrong) (not (same-value? u u'')))
+      (throw (ex-info "The move is not an involution: applying it twice does not return the state"
+                      {:type ::not-an-involution
+                       :choices wrong
+                       :aux {:expected u :actual u''}})))))
 
 (defn step
   "One involutive MH move on `trace`.
@@ -59,11 +89,14 @@
                 (or for addresses of a new dimension), and :removed names
                 the sites of the old dimension it moved into u'
                 (reversible jump; default none)
+    :check?     apply the involution to the new state as well and require it
+                to give back the old one (Gen's `check=true`); a debugging
+                aid that costs one more involution per move
 
   `choices` is `foerster.trace/choices` of the trace ({address value}).
   Resolves {:trace t :accepted? b :log-ratio r}; the loser's worlds are
   given back."
-  [trace {:keys [propose log-q involution]}]
+  [trace {:keys [propose log-q involution check?]}]
   (fn [resolve reject]
     (try
       (let [x (itrace/choices trace)
@@ -85,10 +118,15 @@
                          {:anchor? itrace/anchor?})
            (fn [t']
              (try
+               (when (and check? (not (:trace/error t')))
+                 (try (check-involution! involution x u (itrace/choices t') u')
+                      (catch #?(:clj Throwable :cljs :default) e
+                        (trace/release! t' trace)
+                        (throw e))))
                (let [ratio (if (:trace/error t')
                              ##-Inf
                              (+ (- (itrace/log-joint t') (itrace/log-joint trace))
-                                (prior-terms trace t' (set removed))
+                                (replay-terms trace t' (set removed))
                                 (- (log-q (itrace/choices t') u') lq-fwd)
                                 (or lj 0.0)))
                      accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
