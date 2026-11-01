@@ -29,11 +29,17 @@
   evaluations per compression, and the likelihood must be finite at the
   spread points. k = 1, or no factor, is the reference projection.
 
-  The reweighting by each new batch is exact. Only the moves target the
-  core-set approximation, so the particles carry its error: small when the
+  Each new batch reweights the particles by its own exact likelihood, but
+  the particles it reweights are not distributed as the previous target:
+  they were moved against the previous step's core-set before that step
+  compressed it (the core-set plus that step's batch), while the posterior
+  they stand for from then on uses the compressed core-set. No importance
+  correction exp(Σ_C' w'·ℓ − Σ_C w·ℓ) is applied for that switch, as in the
+  reference implementation; the next moves target the compressed core-set.
+  So the particles carry the core-set's approximation error: small when the
   log-likelihoods compress well (exchangeable data, few parameters), larger
   for a small `:memory`. With M at least the amount of data, SCMC is
-  resample-move SMC.
+  resample-move SMC and nothing is approximated.
 
   The engine is `foerster.population/theta-smc` on θ vectors: a step
   resamples, then moves every particle by population-scaled random-walk
