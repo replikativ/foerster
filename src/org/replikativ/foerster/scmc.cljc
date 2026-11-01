@@ -303,7 +303,7 @@
   (let [pis (mapv #(Math/exp %) lw)
         roots (mapv #(Math/sqrt %) pis)
         cols (mapv (fn [j]
-                     (let [f (mapv #(double (nth % j)) lls)
+                     (let [f (mapv #(aget ^doubles % j) lls)
                            mean (reduce + (map * pis f))]
                        (double-array (map (fn [fk r] (* r (- fk mean))) f roots))))
                    (range (count coreset)))
@@ -360,13 +360,17 @@
                      (< projection-inflation ##Inf)))
     (throw (ex-info ":projection-inflation is a positive factor"
                     {:type ::invalid-projection-inflation :projection-inflation projection-inflation})))
-  (let [seed (or seed (random/fresh-seed))]
+  (let [seed (or seed (random/fresh-seed))
+        qs (mapv (fn [i] (random/with-stream* seed [::init i] #(vec (prior-sample))))
+                 (range particles))]
     {:model (select-keys model [:prior-sample :prior-log-density :log-lik])
-     :particles (mapv (fn [i] (random/with-stream* seed [::init i] #(vec (prior-sample))))
-                      (range particles))
+     :particles qs
      :memory memory :scale scale :seed seed :refit refit
      :projection-inflation projection-inflation :coreset [] :steps 0
-     :coreset-log-likelihoods (vec (repeat particles (row [])))
+     ;; per particle, the log-likelihood of each core-set datum, for this
+     ;; log-likelihood, core-set and population only
+     :coreset-log-likelihoods {:log-lik (:log-lik model) :coreset [] :particles qs
+                               :rows (vec (repeat particles (row [])))}
      :compressed? false :approximate? false :log-normalizer 0.0
      :max-retained-coreset-size 0 :max-transient-coreset-size 0 :max-coreset-size 0
      :moves 0 :accepted 0}))
@@ -410,18 +414,32 @@
               (throw (ex-info "Every particle has zero likelihood for a batch: no posterior population"
                               {:type ::zero-evidence :batch steps})))
           ess (m/compute-ess (weights/selection mass))
-          cached (let [c (:coreset-log-likelihoods state)]
-                   (when (and (= n (count c)) (every? #(= (count coreset) (count %)) c)) c))
-          start-lls (when cached (zipmap particles (map into cached batch-lls)))
-          ;; per evaluated state, the log-likelihood of each expanded datum:
-          ;; the projection's columns at the moved particles
-          seen (volatile! {})
+          ;; the cache holds the log-likelihoods of this log-likelihood
+          ;; function, core-set and population; any other is re-evaluated
+          cache (:coreset-log-likelihoods state)
+          cached (when (and (map? cache)
+                            (identical? log-lik (:log-lik cache))
+                            (= coreset (:coreset cache))
+                            (= particles (:particles cache)))
+                   (:rows cache))
+          start-index (when cached (zipmap particles (range)))
+          start-row (fn [i]
+                      (let [c (nth cached i) b (nth batch-lls i)
+                            k (count c) out (double-array (+ k (count b)))]
+                        (dotimes [j k] (aset out j (double (nth c j))))
+                        (dotimes [j (count b)] (aset out (+ k j) (double (nth b j))))
+                        out))
+          ;; the likelihood rows of the states the current chain has
+          ;; evaluated, and of the states the chains kept: only the latter
+          ;; outlive a chain
+          pending (volatile! {})
+          survivors (volatile! {})
           counts (volatile! {:move 0 :projection 0})
           evaluate (fn [phase q]
                      (vswap! counts update phase + (count expanded))
-                     (mapv (fn [[_ u]] (log-lik q u)) expanded))
+                     (double-array (map (fn [[_ u]] (log-lik q u)) expanded)))
           target (fn [q lp ls]
-                   (vswap! seen assoc q ls)
+                   (vswap! pending assoc q ls)
                    (+ lp (weighted-sum expanded ls)))
           stats (atom {:moves 0 :accepted 0})
           path {:start 0 :done? pos?
@@ -432,15 +450,18 @@
                                (if (= ##-Inf lp) lp (target q lp (evaluate :move q))))))
                 :start-log-density (fn [_]
                                      (fn [q]
-                                       (when-let [ls (get start-lls q)]
+                                       (when-let [i (get start-index q)]
                                          (let [lp (prior-log-density q)]
-                                           (if (= ##-Inf lp) lp (target q lp ls))))))
+                                           (if (= ##-Inf lp) lp (target q lp (start-row i)))))))
+                :kept (fn [_ q]
+                        (when-let [ls (get @pending q)] (vswap! survivors assoc q ls))
+                        (vreset! pending {}))
                 :exhausted (fn [_] (ex-info "SCMC single update exhausted" {:type ::exhausted}))}
           {:keys [qs log-z]} (pop/theta-smc particles path
                                             {:n n :scale scale :seed seed :max-steps 1 :step-offset steps
                                              :positions? false :stats stats
                                              :keys {:resample ::resample :move ::move}})
-          lls (mapv (fn [q] (or (get @seen q) (evaluate :projection q))) qs)
+          lls (mapv (fn [q] (or (get @survivors q) (evaluate :projection q))) qs)
           compress? (> (count expanded) memory)
           kept (when compress?
                  (recompress (if (inflated? projection-inflation)
@@ -457,9 +478,10 @@
                     expanded)]
       (-> state
           (assoc :particles qs :coreset coreset :steps (inc steps)
-                 :coreset-log-likelihoods (if compress?
-                                            (mapv (fn [ls] (row (map #(nth ls (first %)) kept))) lls)
-                                            (mapv row lls))
+                 :coreset-log-likelihoods {:log-lik log-lik :coreset coreset :particles qs
+                                           :rows (if compress?
+                                                   (mapv (fn [^doubles ls] (row (map #(aget ls (first %)) kept))) lls)
+                                                   (mapv row lls))}
                  :compressed? (or compressed? compress?)
                  :approximate? (or (:approximate? state) compressed?)
                  :last-update {:ess ess :ess-fraction (/ ess n) :batch-size (count batch)

@@ -295,8 +295,10 @@
           (is (= (+ (* 20 5) (* 2 20 e) starts) calls))
           (is (= (+ (* 2 20 e) starts) (get-in last-update [:likelihood-evaluations :move]))))))
     (testing "and give the same states, bit for bit"
-      (is (= (mapv #(dissoc (:state %) :last-update :model) cached)
-             (mapv #(dissoc (:state %) :last-update :model) uncached))))))
+      (is (= (mapv #(dissoc (:state %) :last-update :model :coreset-log-likelihoods) cached)
+             (mapv #(dissoc (:state %) :last-update :model :coreset-log-likelihoods) uncached)))
+      (is (= (mapv #(get-in (:state %) [:coreset-log-likelihoods :rows]) cached)
+             (mapv #(get-in (:state %) [:coreset-log-likelihoods :rows]) uncached))))))
 
 (deftest the-projection-inflation-is-an-opt-in-deviation
   (let [opts {:particles 30 :memory 12 :seed [12]}
@@ -304,9 +306,10 @@
         run (fn [opts] (reduce scmc/append-batch (scmc/start (counting-model (atom 0)) opts) batches))
         default (run opts)]
     (testing "k = 1 is the reference projection"
-      (is (= (dissoc default :model :projection-inflation)
-             (dissoc (run (assoc opts :projection-inflation 1)) :model :projection-inflation)
-             (dissoc (run (assoc opts :projection-inflation 1.0)) :model :projection-inflation))))
+      (let [strip #(-> % (dissoc :model :projection-inflation) (update :coreset-log-likelihoods :rows))]
+        (is (= (strip default)
+               (strip (run (assoc opts :projection-inflation 1)))
+               (strip (run (assoc opts :projection-inflation 1.0)))))))
     (testing "k = 3 fits the projection at spread points, at N·|E| more evaluations"
       (let [steps (counted-steps identity (assoc opts :projection-inflation 3) batches)
             inflated (:state (peek steps))]
@@ -338,3 +341,38 @@
           scale (max 1.0 (Math/sqrt (reduce + (map #(* % %) b))))]
       (is (every? #(>= % 0.0) x) label)
       (is (<= (abs-error x ls target) (+ res (* 1e-9 scale))) label))))
+
+(defn- moments-of [state]
+  (mapv (fn [j] (/ (reduce + (map #(nth % j) (:particles state))) (count (:particles state)))) [0 1]))
+
+(deftest a-cache-from-another-model-core-set-or-population-is-not-used
+  ;; The cached likelihoods belong to one log-likelihood, core-set and
+  ;; population; after any change a step must equal the step without the
+  ;; cache (it re-evaluates instead)
+  (let [model (dissoc (model [] 1) :batches)
+        batches (partition 10 (regression 80 9))
+        state (reduce scmc/append-batch (scmc/start model {:particles 40 :memory 15 :seed [3]}) (take 4 batches))
+        next-batch (nth batches 4)
+        same? (fn [edited]
+                (let [cached (scmc/append-batch edited next-batch)
+                      fresh (scmc/append-batch (dissoc edited :coreset-log-likelihoods) next-batch)]
+                  (and (= (:particles cached) (:particles fresh))
+                       (= (:coreset cached) (:coreset fresh))
+                       (= (get-in cached [:coreset-log-likelihoods :rows])
+                          (get-in fresh [:coreset-log-likelihoods :rows])))))]
+    (is (true? (:compressed? state)))
+    (is (same? state) "unchanged: the cache is used and changes nothing")
+    (is (same? (update state :model update :log-lik (fn [ll] (fn [q d] (* 0.25 (ll q d))))))
+        "another log-likelihood")
+    (is (same? (assoc-in state [:coreset 0 1] [0.0 100.0])) "an edited core-set datum")
+    (is (same? (update-in state [:coreset 0 0] * 3.0)) "an edited core-set weight")
+    (is (same? (update state :coreset subvec 1)) "a dropped core-set point")
+    (is (same? (update state :particles (fn [ps] (vec (cons (mapv + (first ps) [0.5 0.5]) (rest ps))))))
+        "a moved particle")
+    (is (same? (update state :particles (comp vec reverse))) "reordered particles")
+    (testing "and the stale cache would have changed the posterior"
+      (let [edited (assoc-in state [:coreset 0 1] [0.0 100.0])
+            fresh (scmc/append-batch (dissoc edited :coreset-log-likelihoods) next-batch)
+            forged (scmc/append-batch (assoc-in edited [:coreset-log-likelihoods :coreset] (:coreset edited))
+                                      next-batch)]
+        (is (not= (moments-of fresh) (moments-of forged)))))))
