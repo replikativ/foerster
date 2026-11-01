@@ -227,7 +227,11 @@
   (log-marginal [this]
     ;; the normalizer accumulated at earlier resampling steps (SMC attaches
     ;; it as :log-normalizer) plus the log MEAN current weight
-    (when-not (= :unavailable (get-in this [:inference-contract :normalizer :status]))
+    (case (get-in this [:inference-contract :normalizer :status])
+      :unavailable nil
+      ;; a chain's separate evidence estimate: the draws' weights combine
+      ;; samples and carry no evidence
+      :estimate (:log-normalizer this)
       (+ (or (:log-normalizer this) 0.0)
          (log-mean-exp (mapv second particles)))))
 

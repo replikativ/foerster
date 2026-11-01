@@ -118,3 +118,15 @@
         step' (await-cps ((:push step) 5.0))]
     (is (= 0.0 (m/log-marginal (:measure step'))))
     ((:close step'))))
+
+(deftest a-pushed-value-is-tempered-as-an-observation
+  ;; under temperature 1/2 the pushed y = 5 counts N(5; x, 1)^(1/2):
+  ;; log Z = −¼ log 2π + ½ log 4π + log N(5; 0, √3) ≈ −4.829
+  (let [root (context/create-execution-context)
+        exact (+ (* -0.25 (Math/log (* 2 Math/PI))) (* 0.5 (Math/log (* 4 Math/PI)))
+                 (dist/logpdf (dist/normal 0.0 (Math/sqrt 3.0)) 5.0))
+        step (await-cps (smc/stream (random-walk root) 4000 {:policy (itrace/policy {:temperature 0.5})}))
+        step' (await-cps ((:push step) 5.0))]
+    (is (< (Math/abs (- (m/log-marginal (:measure step')) exact)) 0.1)
+        (str "log Z " (m/log-marginal (:measure step')) " exact " exact))
+    ((:close step'))))

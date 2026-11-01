@@ -9,6 +9,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.program :as ip]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
@@ -67,3 +68,23 @@
                                                                             p (await (ip/move scope p (k/involutive-kernel 1 flip-move)))]
                                                                         (ip/finish scope p))))))
                                          (catch Exception e e))))))))
+
+(deftest a-refused-move-leaves-the-population-usable
+  (let [result (b/run-infer 124 #(ip/run {:seed 124}
+                                         (fn [scope]
+                                           (spin
+                                            (let [p (await (ip/initialize scope (ip/trace-target (switch)) 8))
+                                                  refused (try (await (ip/move scope p (k/involutive-kernel 1 flip-move)))
+                                                               nil
+                                                               (catch Exception e (:type (ex-data e))))
+                                                  p (await (ip/move scope p (k/single-site-mh-kernel 1)))]
+                                              (assoc (ip/finish scope p) ::refused refused))))))]
+    (is (= ::ip/unretaining-population-kernel (::refused result)))
+    (is (= 8 (count (m/get-particles result))))))
+
+(deftest proposal-kernel-chains-reproduce-under-a-seed
+  (let [kernel (k/proposal-mh-kernel 50 flip-b {:samples :all})
+        run (fn [process-seed]
+              (mapv (comp m/get-value first)
+                    (m/get-particles (b/run-infer process-seed #(infer/kernel-infer (switch) kernel 2 {:seed 7})))))]
+    (is (= (run 1) (run 2)))))
