@@ -60,4 +60,4 @@
                                                                                      (k/single-site-mh-kernel 1)])
                                                         2)))
                  @n))]
-    (is (= (made 10) (made 30)))))
+    (is (= (made 12) (made 30)))))
