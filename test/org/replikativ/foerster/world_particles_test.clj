@@ -452,6 +452,40 @@
         (context/stop-context! root)))))
 
 ;; -----------------------------------------------------------------------------
+;; Importance sampling, PIMH and BBVI in canonical worlds
+;; -----------------------------------------------------------------------------
+
+(deftest particle-methods-see-the-caller-s-state-in-isolated-worlds
+  (let [root (context/create-execution-context)]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [log (sa/atom [:root])
+              model (fn []
+                      (spin
+                       (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+                         (observe (dist/normal x 1.0) 0.5 :id :y)
+                         (swap! log conj :mine)
+                         @log)))]
+          (doseq [[method run] [[:importance #(inference/importance-sampling (model) 4 {:world-policy :fork})]
+                                [:pimh #(inference/pimh-infer (model) 3 2 {:world-policy :fork})]
+                                [:bbvi #(inference/bbvi-infer (model) 4 2 {:world-policy :fork})]]]
+            (capturing-scopes [scopes]
+                              (let [posterior @(spin (await (run)))
+                                    descriptors (measure/world-descriptors posterior)]
+                                (is (every? #{[:root :mine]} (mapv measure/get-value (measure/get-contexts posterior)))
+                                    (str method ": each particle sees the caller's state and its own write only"))
+                                (is (= [:root] @log) (str method ": nothing reaches the caller's world"))
+                                (is (= (count (measure/get-particles posterior)) (count descriptors))
+                                    (str method ": every particle names its world"))
+                                (is (every? #(and (= :particle (:fork/purpose %)) (= :discarded (:fork/status %)))
+                                            descriptors)
+                                    (str method))
+                                (is (seq @scopes) (str method))
+                                (is (settled? @scopes) (str method ": every world is discarded")))))))
+      (finally
+        (context/stop-context! root)))))
+
+;; -----------------------------------------------------------------------------
 ;; Exact enumeration in canonical worlds
 ;; -----------------------------------------------------------------------------
 
