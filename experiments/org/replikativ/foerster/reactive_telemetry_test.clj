@@ -34,7 +34,9 @@
       (let [fit (by-key [memory seed])]
         (is (accurate? (:errors fit)))
         (is (<= (:coreset-size fit) memory))
-        (is (<= (:max-coreset-size fit) (+ memory telemetry/batch-size)))))
+        (is (<= (:max-retained-coreset-size fit) memory))
+        (is (<= (:max-transient-coreset-size fit) (+ memory telemetry/batch-size)))
+        (is (= (:max-coreset-size fit) (:max-transient-coreset-size fit)))))
     (doseq [seed [31 32 33]]
       (is (< (:calls (by-key [128 seed])) (* 0.65 (:calls (by-key [300 seed]))))))
     (let [poor (filter #(= 8 (:memory %)) (:fits @receipt))]

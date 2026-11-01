@@ -93,6 +93,8 @@
         (cond-> {:summary (particle-summary (:particles state))
                  :calls @counter :elapsed-seconds (/ (- (System/nanoTime) started) 1e9)
                  :coreset-size (count (:coreset state)) :max-coreset-size (:max-coreset-size state)
+                 :max-retained-coreset-size (:max-retained-coreset-size state)
+                 :max-transient-coreset-size (:max-transient-coreset-size state)
                  :moves (:moves state) :acceptance (/ (:accepted state) (double (:moves state)))
                  :last-update (:last-update state) :contract (:inference-contract (scmc/result state))}
           ref (assoc :audit (coreset-audit state rows ref)))))))

@@ -330,7 +330,9 @@
   including model functions; it is not a serialized inference artifact.
   opts: :particles (1000), :memory (100), :scale (2.38), :seed, :refit
   (:nnls, the default, or :none) and :projection-inflation (none): see the
-  namespace."
+  namespace. Without a :seed, start draws one and records it in the state
+  (:seed): replay from `(initial state)` or `(start model (options
+  state))`, never from the original opts, to reproduce the run."
   [{:keys [prior-sample] :as model}
    & [{:keys [particles memory scale seed refit projection-inflation]
        :or {particles 1000 memory 100 scale 2.38 refit :nnls}}]]
@@ -353,7 +355,24 @@
      :projection-inflation projection-inflation :coreset [] :steps 0
      :coreset-log-likelihoods (vec (repeat particles (row [])))
      :compressed? false :approximate? false :log-normalizer 0.0
-     :max-coreset-size 0 :moves 0 :accepted 0}))
+     :max-retained-coreset-size 0 :max-transient-coreset-size 0 :max-coreset-size 0
+     :moves 0 :accepted 0}))
+
+(defn options
+  "The `start` options that reproduce `state`'s run: with the same batches,
+  `(append-batch …)` from `(start model (options state))` gives `state`
+  again. They include the seed `start` drew when none was given, so a
+  replay (after a historical correction, say) is reproducible."
+  [{:keys [particles memory scale seed refit projection-inflation]}]
+  (cond-> {:particles (count particles) :memory memory :scale scale :seed seed
+           :refit (or refit :nnls)}
+    projection-inflation (assoc :projection-inflation projection-inflation)))
+
+(defn initial
+  "The state `state`'s run started from: `start` with its model and
+  `options`, the seed included."
+  [state]
+  (start (:model state) (options state)))
 
 (defn append-batch
   "Advance a persistent SCMC state by one non-empty batch. The old state
@@ -436,6 +455,9 @@
                                :compressed? compress?
                                :likelihood-evaluations (assoc @counts :reweight (* n (count batch)))})
           (update :log-normalizer + log-z)
+          (update :max-retained-coreset-size (fnil max 0) (count coreset))
+          (update :max-transient-coreset-size (fnil max 0) (count expanded))
+          ;; the transient size, under its pre-split name
           (update :max-coreset-size max (count expanded))
           (update :moves + (:moves @stats))
           (update :accepted + (:accepted @stats))))))
@@ -446,8 +468,8 @@
   not certify an unbiased normalizer or posterior convergence."
   [{:keys [particles approximate?] :as state}]
   (merge (m/empirical (mapv (fn [q] [(m/sample-particle q {}) 0.0]) particles))
-         (select-keys state [:coreset :steps :max-coreset-size :moves :accepted
-                             :log-normalizer :last-update])
+         (select-keys state [:coreset :steps :max-retained-coreset-size :max-transient-coreset-size
+                             :max-coreset-size :moves :accepted :log-normalizer :last-update])
          {:inference-contract {:semantics (if approximate? :approximate-population :weighted-population)
                                :normalizer {:status :unverified}
                                :adaptation :population
@@ -458,9 +480,12 @@
   model: :prior-sample (fn [] theta-vector), :prior-log-density (fn [theta]),
   :log-lik (fn [theta datum]), :batches (lazy sequence of non-empty batches).
   opts: :particles (1000), :memory (100), :scale (2.38), :seed, :refit
-  (:nnls or :none).
-  Returns an EmpiricalMeasure with :coreset, :steps, :max-coreset-size,
-  :moves, :accepted, :last-update and :log-normalizer. Streaming memory is
+  (:nnls or :none), :projection-inflation.
+  Returns an EmpiricalMeasure with :coreset, :steps,
+  :max-retained-coreset-size (the largest core-set kept between steps, at
+  most :memory), :max-transient-coreset-size (the largest core-set plus
+  batch a step moved against; :max-coreset-size is its old name), :moves,
+  :accepted, :last-update and :log-normalizer. Streaming memory is
   bounded by population, coreset and batch; no history of updates is retained.
   To pause between batches, retain the state returned by append-batch."
   [{:keys [batches] :as model} & [opts]]
