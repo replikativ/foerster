@@ -65,9 +65,10 @@
 ;; =============================================================================
 
 (defn- point
-  "A phase-space point: position, momentum, log density and gradient."
-  [dist inv-metric q p]
-  (let [[lp g] (block/value+grad! dist q)]
+  "A phase-space point: position, momentum, log density and gradient, the
+  last two given as `start` ([lp g]) or evaluated."
+  [dist inv-metric q p start]
+  (let [[lp g] (or start (block/value+grad! dist q))]
     {:q q :p p :lp lp :g g :p-sharp (emul inv-metric p)}))
 
 (defn- hamiltonian [{:keys [lp p p-sharp]}]
@@ -127,48 +128,52 @@
 (defn transition
   "One NUTS transition of `dist` (a block distribution) from position `q0`
   with step size `eps` and diagonal inverse metric `inv-metric`, drawing from
-  the current generator. Returns {:q :g (∇ log density at q) :accept-stat
-  :depth :n-leapfrog :divergent?}."
-  [dist q0 eps inv-metric max-depth]
-  (let [inv-metric (double-array inv-metric)
-        q0 (double-array q0)
-        p0 (let [n (alength inv-metric) out (double-array n)]
-             (dotimes [i n]
-               (aset out i (* (double (dist/draw (dist/normal 0.0 1.0))) (Math/sqrt (/ 1.0 (aget inv-metric i))))))
-             out)
-        z0 (point dist inv-metric q0 p0)
-        h0 (hamiltonian z0)]
-    (loop [depth 0 fwd z0 bck z0 sample z0 log-w 0.0 rho (:p z0) n 0 metro 0.0 divergent? false]
-      (if (>= depth max-depth)
-        {:q (vec (:q sample)) :g (vec (:g sample)) :accept-stat (/ metro (max 1 n)) :depth depth :n-leapfrog n :divergent? divergent?}
-        (let [forward? (> (random/uniform01) 0.5)
-              from (if forward? fwd bck)
-              sub (build-tree dist inv-metric eps (if forward? 1 -1) depth from h0)
-              n (+ n (:n sub)) metro (+ metro (:metro sub))]
-          (if-not (:valid? sub)
-            {:q (vec (:q sample)) :g (vec (:g sample)) :accept-stat (/ metro (max 1 n)) :depth (inc depth) :n-leapfrog n
-             :divergent? (boolean (:divergent? sub))}
-            (let [sample (if (or (> (:log-w sub) log-w)
-                                 (< (random/uniform01) (Math/exp (- (:log-w sub) log-w))))
-                           (:z-propose sub)
-                           sample)
-                  log-w (log-sum-exp log-w (:log-w sub))
-                  [fwd bck] (if forward? [(:end sub) bck] [fwd (:end sub)])
+  the current generator. `start`, when given, is [log density, gradient] at
+  q0 (the previous transition's), which is then not evaluated again.
+  Returns {:q :lp (log density at q) :g (its gradient) :accept-stat :depth
+  :n-leapfrog :divergent?}."
+  ([dist q0 eps inv-metric max-depth] (transition dist q0 eps inv-metric max-depth nil))
+  ([dist q0 eps inv-metric max-depth start]
+   (let [inv-metric (double-array inv-metric)
+         q0 (double-array q0)
+         p0 (let [n (alength inv-metric) out (double-array n)]
+              (dotimes [i n]
+                (aset out i (* (double (dist/draw (dist/normal 0.0 1.0))) (Math/sqrt (/ 1.0 (aget inv-metric i))))))
+              out)
+         z0 (point dist inv-metric q0 p0 (when start [(double (first start)) (double-array (second start))]))
+         h0 (hamiltonian z0)
+         result (fn [sample n metro depth divergent?]
+                  {:q (vec (:q sample)) :lp (:lp sample) :g (vec (:g sample)) :accept-stat (/ metro (max 1 n))
+                   :depth depth :n-leapfrog n :divergent? divergent?})]
+     (loop [depth 0 fwd z0 bck z0 sample z0 log-w 0.0 rho (:p z0) n 0 metro 0.0 divergent? false]
+       (if (>= depth max-depth)
+         (result sample n metro depth divergent?)
+         (let [forward? (> (random/uniform01) 0.5)
+               from (if forward? fwd bck)
+               sub (build-tree dist inv-metric eps (if forward? 1 -1) depth from h0)
+               n (+ n (:n sub)) metro (+ metro (:metro sub))]
+           (if-not (:valid? sub)
+             (result sample n metro (inc depth) (boolean (:divergent? sub)))
+             (let [sample (if (or (> (:log-w sub) log-w)
+                                  (< (random/uniform01) (Math/exp (- (:log-w sub) log-w))))
+                            (:z-propose sub)
+                            sample)
+                   log-w (log-sum-exp log-w (:log-w sub))
+                   [fwd bck] (if forward? [(:end sub) bck] [fwd (:end sub)])
                   ;; the whole trajectory's ends: backward end, forward end
-                  [bck-end fwd-end] [bck fwd]
-                  rho' (v+ rho (:rho sub))
+                   [bck-end fwd-end] [bck fwd]
+                   rho' (v+ rho (:rho sub))
                   ;; sub's first point sits next to the old end it grew from
-                  [old-rho new-rho] [rho (:rho sub)]
-                  persist? (and (criterion (:p-sharp bck-end) (:p-sharp fwd-end) rho')
-                                (if forward?
-                                  (and (criterion (:p-sharp bck-end) (:p-sharp (:beg sub)) (v+ old-rho (:p (:beg sub))))
-                                       (criterion (:p-sharp from) (:p-sharp fwd-end) (v+ new-rho (:p from))))
-                                  (and (criterion (:p-sharp (:beg sub)) (:p-sharp fwd-end) (v+ old-rho (:p (:beg sub))))
-                                       (criterion (:p-sharp bck-end) (:p-sharp from) (v+ new-rho (:p from))))))]
-              (if persist?
-                (recur (inc depth) fwd bck sample log-w rho' n metro divergent?)
-                {:q (vec (:q sample)) :g (vec (:g sample)) :accept-stat (/ metro (max 1 n)) :depth (inc depth) :n-leapfrog n
-                 :divergent? divergent?}))))))))
+                   [old-rho new-rho] [rho (:rho sub)]
+                   persist? (and (criterion (:p-sharp bck-end) (:p-sharp fwd-end) rho')
+                                 (if forward?
+                                   (and (criterion (:p-sharp bck-end) (:p-sharp (:beg sub)) (v+ old-rho (:p (:beg sub))))
+                                        (criterion (:p-sharp from) (:p-sharp fwd-end) (v+ new-rho (:p from))))
+                                   (and (criterion (:p-sharp (:beg sub)) (:p-sharp fwd-end) (v+ old-rho (:p (:beg sub))))
+                                        (criterion (:p-sharp bck-end) (:p-sharp from) (v+ new-rho (:p from))))))]
+               (if persist?
+                 (recur (inc depth) fwd bck sample log-w rho' n metro divergent?)
+                 (result sample n metro (inc depth) divergent?))))))))))
 
 ;; =============================================================================
 ;; Adaptation (Stan's defaults)
@@ -273,9 +278,16 @@
             st (or (get @adaptation address)
                    {:eps 0.1 :da (da-init 0.1) :inv-metric (vec (repeat dim 1.0))
                     :windows (windows burn) :draws [] :metric metric})
-            {:keys [q g accept-stat divergent?] :as tr}
+            ;; the previous transition's end, when the chain is still there
+            ;; and the block's inputs have not moved since
+            start (let [{:keys [q lp g] :as end} (:end st)]
+                    (when (and end (identical? (:block dist) (:block end))
+                               (= (:inputs dist) (:inputs end)) (= q q0))
+                      [lp g]))
+            {:keys [q lp g accept-stat divergent?] :as tr}
             (random/in-world-stream (:trace/world trace) [::transition address iteration]
-                                    #(transition dist q0 (:eps st) (:inv-metric st) max-depth))
+                                    #(transition dist q0 (:eps st) (:inv-metric st) max-depth start))
+            st (assoc st :end {:block (:block dist) :inputs (:inputs dist) :q q :lp lp :g g})
             st' (if (< local-iteration burn)
                   (cond-> (adapt st local-iteration q g accept-stat target-accept)
                     ;; warm-up over: the averaged step size
@@ -286,7 +298,8 @@
           (resolve {:trace trace :accepted? false :divergent? divergent? :stat tr})
           (let [move (tc/policy context (fn [sp _]
                                           (when (= address (:savepoint/address sp))
-                                            {:value q :symmetric? true})))]
+                                            ;; scored by the transition's own log density
+                                            {:value (block/with-log-density dist q lp) :symmetric? true})))]
             ((itrace/reexecute trace #{address} move (tc/replay-options context trace [::move address iteration]))
              (fn [proposed]
                (try

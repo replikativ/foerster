@@ -173,3 +173,28 @@
         result (b/run-infer 21 #(infer/infer (spin (sample (block/block-dist target nil) :id :x :init [0.0]))
                                              {:method :nuts :seed 123 :iterations 4 :burn 0 :chains 2 :max-depth 2}))]
     (is (some (comp :diverging :sampler-stats first) (measure/get-particles result)))))
+
+(defn- counting-gaussian
+  "A standard normal block of dimension `d` that counts its density and
+  gradient evaluations in the atoms `densities` and `gradients`."
+  [d densities gradients]
+  (let [lp (fn [^doubles th] (* -0.5 (areduce th i acc 0.0 (+ acc (* (aget th i) (aget th i))))))]
+    (block/block {:block/id :counted :block/target :complete-conditional
+                  :block/latents [{:name :x :shape [d] :support :real}]}
+                 {:log-density (fn [th _] (swap! densities inc) (lp th))
+                  :value+grad (fn [^doubles th _] (swap! gradients inc)
+                                [(lp th) (double-array (map - th))])})))
+
+(deftest a-transition-reuses-the-previous-gradient
+  ;; every gradient is a leapfrog step's, except the first transition's start
+  ;; point; the write-back replay reuses the transition's log density
+  (let [densities (atom 0) gradients (atom 0)
+        b (counting-gaussian 3 densities gradients)
+        result (b/run-infer 31 #(infer/infer (spin (sample (block/block-dist b nil) :id :x :init [0.0 0.0 0.0]))
+                                             {:method :nuts :seed 1 :iterations 200 :burn 0 :chains 1}))
+        stats (map (comp :sampler-stats first) (measure/get-particles result))
+        leapfrogs (reduce + (map :n-leapfrog stats))]
+    (is (= 200 (count stats)))
+    (is (= (inc leapfrogs) @gradients))
+    ;; the initial state's score only
+    (is (= 1 @densities))))
