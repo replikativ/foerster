@@ -13,6 +13,7 @@
             [org.replikativ.foerster.kernel :as kernel]
             [org.replikativ.foerster.measure :as measure]
             [org.replikativ.spindel.spin.core :as spin-core]
+            [org.replikativ.spindel.atom :as sa]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.spindel.yggdrasil :as ygg]
@@ -447,5 +448,160 @@
                             (is (= ::ygg/copy-forbidden (:type (ex-data (ex-cause result)))))
                             (is (not @ran?) "refused before the model runs")
                             (is (settled? @scopes)))))
+      (finally
+        (context/stop-context! root)))))
+
+;; -----------------------------------------------------------------------------
+;; Exact enumeration in canonical worlds
+;; -----------------------------------------------------------------------------
+
+(def ^:private backlog {:free-at 1.0 :jobs [{:id :in-flight :finish 1.0}]})
+
+(def ^:private readings [{:id :a :arrival 0.5 :work 1.0 :reported 1.9}
+                         {:id :b :arrival 1.2 :work 0.7 :reported 2.7}
+                         {:id :c :arrival 3.0 :work 1.2 :reported 4.1}])
+
+(defn- serve!
+  "Serve `job` on the queue held by the runtime atom `queue`; its finishing time."
+  [queue {:keys [id arrival work]} speed jitter]
+  (let [start (max arrival (:free-at @queue))
+        finish (+ start (/ (* work jitter) speed))]
+    (swap! queue (fn [state]
+                   (-> state
+                       (assoc :free-at finish)
+                       (update :jobs conj {:id id :start start :finish finish}))))
+    finish))
+
+(defn- queue-model
+  "The paper's queue: the server's speed and every job's jitter are unknown;
+  completions are reported with noise. It serves on the caller's queue."
+  [queue]
+  (spin
+   (let [speed (sample (dist/categorical {0.8 0.5, 1.4 0.5}) :id :speed)]
+     (doseq [{:keys [id reported] :as job} readings]
+       (let [jitter (sample (dist/categorical {0.8 0.5, 1.2 0.5}) :id [:jitter id])
+             finish (serve! queue job speed jitter)]
+         (observe (dist/normal finish 0.35) reported :id [:completion id])))
+     {:speed speed :queue @queue})))
+
+(defn- queue-reference
+  "An independent sum over the 16 speed/jitter paths: [P(speed = 1.4 | y) log Z]."
+  []
+  (let [paths (for [speed [0.8 1.4] a [0.8 1.2] b [0.8 1.2] c [0.8 1.2]]
+                (let [finishes (rest (reductions (fn [free [job jitter]]
+                                                   (+ (max free (:arrival job)) (/ (* (:work job) jitter) speed)))
+                                                 (:free-at backlog)
+                                                 (map vector readings [a b c])))]
+                  {:speed speed
+                   :p (* (/ 1.0 16) (Math/exp (reduce + (map (fn [job finish]
+                                                               (dist/logpdf (dist/normal finish 0.35) (:reported job)))
+                                                             readings finishes))))}))
+        z (reduce + (map :p paths))]
+    [(/ (reduce + (map :p (filter #(= 1.4 (:speed %)) paths))) z) (Math/log z)]))
+
+(deftest enumeration-runs-on-the-caller-s-state
+  (let [root (context/create-execution-context)
+        [p-fast log-z] (queue-reference)]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [queue (sa/atom backlog)]
+          (capturing-scopes [scopes]
+                            (let [posterior @(spin (await (inference/infer (queue-model queue)
+                                                                           {:method :enumerate :world-policy :fork})))
+                                  values (mapv measure/get-value (measure/get-contexts posterior))
+                                  descriptors (measure/world-descriptors posterior)]
+                              (is (< (Math/abs (- p-fast 0.5659282411891152)) 1e-12) "the reference")
+                              (is (< (Math/abs (- p-fast (:mean (inference/query posterior #(if (= 1.4 (:speed %)) 1.0 0.0)))))
+                                     1e-12))
+                              (is (< (Math/abs (- log-z (measure/log-marginal posterior))) 1e-12))
+                              (testing "every branch served on the caller's backlog, in a queue of its own"
+                                (is (= 16 (count values)))
+                                (is (every? #(= (:jobs backlog) (subvec (:jobs (:queue %)) 0 1)) values))
+                                (is (every? #(= [:in-flight :a :b :c] (mapv :id (:jobs (:queue %)))) values))
+                                (is (= 16 (count (set (map :queue values))))))
+                              (is (= backlog @queue) "the caller's queue is unchanged")
+                              (testing "the outcomes name their worlds, all discarded before delivery"
+                                (is (= 16 (count descriptors)))
+                                (is (every? #(and (= :particle (:fork/purpose %)) (= :discarded (:fork/status %)))
+                                            descriptors))
+                                (is (= 1 (count @scopes)))
+                                (is (settled? @scopes)))))))
+      (finally
+        (context/stop-context! root)))))
+
+(deftest enumeration-branches-write-in-isolation
+  (let [root (context/create-execution-context)]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [log (sa/atom [:root])
+              posterior @(spin (await (inference/infer
+                                       (spin
+                                        (let [x (sample (dist/flip 0.5) :id :x)]
+                                          (swap! log conj x)
+                                          (let [y (sample (dist/categorical {:a 0.2 :b 0.8}) :id :y)]
+                                            (swap! log conj y)
+                                            @log)))
+                                       {:method :enumerate :world-policy :fork})))
+              ps (measure/get-particles posterior)]
+          (is (= #{[:root true :a] [:root true :b] [:root false :a] [:root false :b]}
+                 (set (map (comp measure/get-value first) ps)))
+              "each branch sees its own writes and no other branch's")
+          (is (= [:root] @log))
+          (is (< (Math/abs (measure/log-marginal posterior)) 1e-12))))
+      (finally
+        (context/stop-context! root)))))
+
+(deftest enumeration-branches-split-the-inference-s-budget
+  (let [root (context/create-execution-context)
+        ledger (atom {(:fork-id root) {:wallet {:tokens 100}}})
+        tokens #(get-in @ledger [(:fork-id ec/*execution-context*) :wallet :tokens])]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [posterior @(spin (await (inference/infer
+                                       (spin
+                                        (let [at-start (tokens)]
+                                          (sample (dist/categorical {:a 1.0 :b 1.0 :c 1.0}) :id :x)
+                                          [at-start (tokens)]))
+                                       {:method :enumerate :world-policy :fork
+                                        :authority (wallet-authority ledger) :grant {:tokens 12}})))]
+          (is (= (repeat 3 [12 4]) (map (comp measure/get-value first) (measure/get-particles posterior)))
+              "the model starts with the grant; three branches share it evenly")
+          (is (= {(:fork-id root) {:wallet {:tokens 100}}} @ledger) "every branch gives back what it has left")))
+      (finally
+        (context/stop-context! root)))))
+
+(deftest enumeration-refuses-a-world-that-may-not-be-copied
+  (let [root (context/create-execution-context)
+        ran? (atom false)]
+    (try
+      (binding [ec/*execution-context* root]
+        (ygg/register! (mem-gset "live-handle-enumeration") {:grade :affine})
+        (capturing-scopes [scopes]
+                          (let [result (deref (spin (try
+                                                      (await (inference/infer
+                                                              (spin (reset! ran? true)
+                                                                    (sample (dist/flip 0.5) :id :x))
+                                                              {:method :enumerate :world-policy :fork}))
+                                                      (catch Throwable error error)))
+                                              5000 ::timed-out)]
+                            (is (= ::inference/inference-failed (:type (ex-data result))))
+                            (is (= ::ygg/copy-forbidden (:type (ex-data (ex-cause result)))))
+                            (is (not @ran?) "refused before the model runs")
+                            (is (settled? @scopes)))))
+      (finally
+        (context/stop-context! root)))))
+
+(deftest enumeration-options-are-checked
+  (let [root (context/create-execution-context)]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [model (spin (sample (dist/flip 0.3) :id :x))
+              fresh @(spin (await (inference/infer model {:method :enumerate :world-policy :fresh})))]
+          (is (= [] (measure/world-descriptors fresh)) "fresh worlds name no worlds")
+          (is (< (Math/abs (measure/log-marginal fresh)) 1e-12))
+          (doseq [opts [{:resample-threshold 0.5} {:grant {:tokens 1}} {:world-policy :fresh :world-opts {}}]]
+            (is (thrown? clojure.lang.ExceptionInfo
+                         (inference/infer model (assoc opts :method :enumerate)))
+                (str opts)))))
       (finally
         (context/stop-context! root)))))

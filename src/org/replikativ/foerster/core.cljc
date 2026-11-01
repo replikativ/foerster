@@ -272,12 +272,15 @@
                     particles)))))
 
 (defn- in-canonical-worlds
-  "Savepoint SMC (`smc/smc`) of `model-task` with `n` particles in canonical
-  worlds of the caller's (see above). `:world-opts` are the forks' options
-  (`:systems`, `:rights`, `:snapshots`); `:executor` the worlds' executor;
-  `:authority` a `world.scope/PResourceAuthority` and `:grant` what the
-  inference may spend of the caller's wallet."
-  [model-task n opts]
+  "A savepoint driver's run of `model-task` in canonical worlds of the
+  caller's (see above): `(run model root scope)` is a CPS operation resolving
+  the measure of `model` run in `root` by a session joining `scope` —
+  savepoint SMC (`smc/smc`) or enumeration (`enumerate/enumerate`).
+  `:world-opts` are the forks' options (`:systems`, `:rights`,
+  `:snapshots`); `:executor` the worlds' executor; `:authority` a
+  `world.scope/PResourceAuthority` and `:grant` what the inference may spend
+  of the caller's wallet."
+  [model-task opts run]
   (spin-core/with-causal-descendant-egress
     (spin
      (let [caller rtc/*execution-context*
@@ -296,17 +299,13 @@
                                                                resolve reject)))))
          (rtp/swap-state! @root [:inference :canonical?] (constantly true))
          (vreset! measure
-                  (await (smc/smc (binding [rtc/*execution-context* @root]
-                                  ;; every particle runs the whole model: a
-                                  ;; canonical model's effects may be random
-                                  ;; without a sample site
-                                    (spin (sp/savepoint smc/start-site nil)
-                                          (await model-task)))
-                                  n
-                                  (-> opts
-                                      (dissoc :world-policy :world-opts :executor :authority :grant)
-                                      (assoc :root @root :scope scope
-                                             :copy? #?(:clj true :cljs false))))))
+                  (await (run (binding [rtc/*execution-context* @root]
+                                ;; every particle runs the whole model: a
+                                ;; canonical model's effects may be random
+                                ;; without a sample site
+                                (spin (sp/savepoint smc/start-site nil)
+                                      (await model-task)))
+                              @root scope)))
          (catch #?(:clj Throwable :cljs :default) e
            (throw (if (= spin-core/spin-cancelled (:type (ex-data e)))
                     e
@@ -318,13 +317,42 @@
            (await-finalization (close-canonical! scope lease @root))))
        (with-world-descriptors @measure (world-scope/descriptors scope))))))
 
+(defn- canonical-options
+  "A savepoint driver's options in the canonical worlds `root` of `scope`:
+  particles (and enumeration's branches) are copies of worlds on the JVM, so
+  a world holding a system that may not be copied is refused and each copy
+  takes an even share of its world's budget; forks in ClojureScript."
+  [opts root scope]
+  (-> opts
+      (dissoc :world-policy :world-opts :executor :authority :grant)
+      (assoc :root root :scope scope :copy? #?(:clj true :cljs false))))
+
 (defn- particles
   "Savepoint SMC of `model-task` with `n` particles in the worlds `opts`'
   `:world-policy` names."
   [model-task n opts]
   (case (world-policy opts)
     :fresh (on-savepoints (smc/smc model-task n opts))
-    :fork (in-canonical-worlds model-task n opts)))
+    :fork (in-canonical-worlds model-task opts
+                               (fn [model root scope]
+                                 (smc/smc model n (canonical-options opts root scope))))))
+
+(def ^:private enumeration-options
+  #{:max-branches :policy :executor :seed :world-policy :world-opts :authority :grant})
+
+(defn- enumeration
+  "Exact enumeration (`foerster.enumerate`) of `model-task` in the worlds
+  `opts`' `:world-policy` names: under `:fork` the branches start from a
+  canonical fork of the caller's world, as SMC's particles do, see each
+  their own copy of its registered state, and are discarded before the
+  measure is delivered; its outcomes carry their worlds' descriptors."
+  [model-task opts]
+  (check-options! opts enumeration-options)
+  (case (world-policy opts)
+    :fresh (on-savepoints (enumerate/enumerate model-task (dissoc opts :world-policy)))
+    :fork (in-canonical-worlds model-task opts
+                               (fn [model root scope]
+                                 (enumerate/enumerate model (canonical-options opts root scope))))))
 
 (defn smc-infer
   "Sequential Monte Carlo: `num-particles` particles run `model-task` (a
@@ -923,7 +951,8 @@
 
   Methods and their sizes:
     :enumerate                          (exact; finite supports only,
-                                        :max-branches)
+                                        :max-branches; :policy, :seed,
+                                        :world-policy as for :smc)
     :importance :smc :tempered          :particles
     :parallel-tempering                 :chains (temperatures, default 10),
                                         :rounds; one block site
@@ -958,7 +987,7 @@
   (let [rest-opts (dissoc opts :method :particles :iterations :chains :burn :step-size :kernel)
         chain-output {:samples :all :burn (or burn 0)}]
     (case method
-      :enumerate (on-savepoints (enumerate/enumerate model rest-opts))
+      :enumerate (enumeration model rest-opts)
       :importance (importance-sampling model particles rest-opts)
       :smc (smc-infer model particles rest-opts)
       :tempered (tempered-infer model particles rest-opts)
