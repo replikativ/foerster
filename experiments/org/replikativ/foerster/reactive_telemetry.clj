@@ -138,10 +138,62 @@
         {:engine (:engine right) :minimum-ess (min (:minimum-ess left) (:minimum-ess right))
          :splits (+ 1 (:splits left) (:splits right))}))))
 
+(def snapshot-every
+  "Batches between persistent snapshots of the inference state."
+  4)
+
+(def max-snapshots
+  "Recent snapshots kept besides the prior's state."
+  8)
+
+(defn owner-state
+  "An owner's initial value: no observations, the prior's SCMC state, and
+  that state as the first snapshot."
+  [opts]
+  (let [engine (scmc/start model opts)]
+    {:revision 0 :rows [] :engine engine :receipt {:status :ready :revision 0}
+     :snapshots [{:index 0 :engine engine}] :canonical? true}))
+
+(defn advance-rows
+  "Advance `engine`, which has consumed `index` rows, by `rows` in batches
+  of `batch-size` (each split on low ESS by `advance-safely`). When
+  `canonical?` (the engine is what a replay from the prior in batches of
+  `batch-size` gives), every `snapshot-every`-th full batch boundary is
+  recorded as a snapshot: a split never moves a boundary, since a batch is
+  retried within its own rows."
+  [engine index rows canonical?]
+  (reduce (fn [{:keys [engine index minimum-ess splits snapshots]} batch]
+            (let [next (advance-safely engine batch)
+                  index (+ index (count batch))]
+              {:engine (:engine next) :index index
+               :minimum-ess (min minimum-ess (:minimum-ess next))
+               :splits (+ splits (:splits next))
+               :snapshots (cond-> snapshots
+                            (and canonical? (= batch-size (count batch))
+                                 (zero? (mod index (* snapshot-every batch-size))))
+                            (conj {:index index :engine (:engine next)}))}))
+          {:engine engine :index index :minimum-ess 1.0 :splits 0 :snapshots []}
+          (partition-all batch-size rows)))
+
+(defn first-change
+  "The first index at which `rows` differs from `old`."
+  [old rows]
+  (let [n (min (count old) (count rows))]
+    (or (first (filter #(not= (old %) (rows %)) (range n))) n)))
+
+(defn retained-snapshots
+  "The prior's snapshot and the `max-snapshots` most recent others."
+  [snapshots]
+  (into [(first snapshots)] (take-last max-snapshots (rest snapshots))))
+
 (defn update-owner!
   "Single synchronous tracked consumer only. All inference precedes reset!;
-  no RNG or inference in a CAS callback. Ownership is world-local."
-  [owner snapshot opts]
+  no RNG or inference in a CAS callback. Ownership is world-local.
+  An append advances the current state. A historical change replays the
+  corrected log from the last snapshot before its first changed row: the
+  result is `=` to a replay from the prior, at a cost that grows with the
+  replayed suffix."
+  [owner snapshot]
   (let [previous @owner
         {:keys [revision base-revision rows scorer]} snapshot
         reason (cond
@@ -158,28 +210,38 @@
         (let [old (:rows previous)
               append? (and (<= (count old) (count rows)) (= old (subvec rows 0 (count old))))
               operation (if append? :append :replay)
-              incoming (if append? (subvec rows (count old)) rows)
+              snapshots (or (:snapshots previous) [{:index 0 :engine (scmc/initial (:engine previous))}])
+              from (if append?
+                     {:index (count old) :engine (:engine previous)}
+                     (let [change (first-change old rows)]
+                       (last (filter #(<= (:index %) change) snapshots))))
+              ;; replay starts on the canonical batch grid; an append keeps
+              ;; it while the log so far ended on a batch boundary
+              canonical? (if append?
+                           (and (:canonical? previous true) (zero? (mod (count old) batch-size)))
+                           true)
               counter (volatile! 0)
               started (System/nanoTime)
               advanced (binding [*calls* counter]
-                         (reduce (fn [{:keys [engine minimum-ess splits]} batch]
-                                   (let [next (advance-safely engine batch)]
-                                     {:engine (:engine next) :minimum-ess (min minimum-ess (:minimum-ess next))
-                                      :splits (+ splits (:splits next))}))
-                                 {:engine (if append? (:engine previous) (scmc/start model opts)) :minimum-ess 1.0 :splits 0}
-                                 (partition-all batch-size incoming)))
+                         (advance-rows (:engine from) (:index from) (subvec rows (:index from)) canonical?))
               state (:engine advanced)
-              receipt {:status :updated :operation operation :revision revision
-                       :observations (count rows) :calls @counter
-                       :elapsed-seconds (/ (- (System/nanoTime) started) 1e9)
-                       :summary (particle-summary (:particles state))
-                       :minimum-ess-fraction (:minimum-ess advanced)
-                       :batch-splits (:splits advanced)
-                       :weight-health :adequate
-                       :posterior-accuracy :not-assessed
-                       :coreset-size (count (:coreset state)) :last-update (:last-update state)
-                       :inference-contract (:inference-contract (scmc/result state))}]
-          (reset! owner {:revision revision :rows rows :engine state :receipt receipt})
+              receipt (cond-> {:status :updated :operation operation :revision revision
+                               :observations (count rows) :calls @counter
+                               :elapsed-seconds (/ (- (System/nanoTime) started) 1e9)
+                               :summary (particle-summary (:particles state))
+                               :minimum-ess-fraction (:minimum-ess advanced)
+                               :batch-splits (:splits advanced)
+                               :weight-health :adequate
+                               :posterior-accuracy :not-assessed
+                               :coreset-size (count (:coreset state)) :last-update (:last-update state)
+                               :inference-contract (:inference-contract (scmc/result state))}
+                        (not append?) (assoc :replayed-from (:index from)
+                                             :replayed-observations (- (count rows) (:index from))))]
+          (reset! owner {:revision revision :rows rows :engine state :receipt receipt
+                         :canonical? canonical?
+                         :snapshots (retained-snapshots
+                                     (into (filterv #(<= (:index %) (:index from)) snapshots)
+                                           (:snapshots advanced)))})
           receipt)
         (catch clojure.lang.ExceptionInfo e
           (if (= ::low-ess (:type (ex-data e)))
@@ -197,9 +259,8 @@
       (binding [ec/*execution-context* context]
         (let [rows (observations)
               source (sig/signal {:revision 0 :base-revision 0 :rows [] :scorer scorer-id})
-              owner (sa/atom {:revision 0 :rows [] :engine (scmc/start model opts)
-                              :receipt {:status :ready :revision 0}})
-              consumer (spin (let [{:keys [new]} (track source)] (update-owner! owner new opts)))
+              owner (sa/atom (owner-state opts))
+              consumer (spin (let [{:keys [new]} (track source)] (update-owner! owner new)))
               _ @consumer
               publish (fn [snapshot]
                         (reset! source snapshot)
