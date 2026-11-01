@@ -42,7 +42,7 @@
 (defn- slot-of [world] (rtp/get-state world [:inference :slot]))
 (defn- weight-of [world] (or (rtp/get-state world [:inference :log-weight]) 0.0))
 
-(defn- sample-of
+(defn sample-of
   "The measure's particle for a world that returned `result`. A particle of a
   canonical world names it (`:world-id`), for its descriptor."
   [world result]
