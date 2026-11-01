@@ -4,17 +4,17 @@
   here, shared by savepoint and canonical-world drivers."
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]))
 
 (defn normalized
-  "Normalize a settled sweep for pooling. Impossible particles remain zero."
+  "Normalize a settled sweep for pooling (`weights/from-log`'s normalized log
+  weights). Impossible particles remain zero."
   [measure]
-  (let [ps (m/get-particles measure)
-        z (m/log-sum-exp (mapv second ps))]
-    (if (= ##-Inf z) ps
-        (mapv (fn [[s lw]] [s (- lw z)]) ps))))
+  (let [ps (m/get-particles measure)]
+    (mapv (fn [[s _] lw] [s lw]) ps (:log-weights (weights/from-log (mapv second ps))))))
 
 (defn retained-choices
   "Retained choices from a settled Sample trace, excluding deterministic and
