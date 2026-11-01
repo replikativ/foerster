@@ -918,19 +918,41 @@
                     reject)))]
          (step trace 0 0 0))))))
 
+(defn- legacy-entries
+  "A transducer from addresses of `trace` to [address legacy-entry] pairs."
+  [trace]
+  (keep (fn [address]
+          (let [{:keys [site value note]} (get-in trace [:trace/entries address])]
+            (condp = site
+              choose-site [address {:value value
+                                    :distribution (:dist note)
+                                    :log-prob (:log-prob note)
+                                    :observed? (boolean (:observed? note))}]
+              deterministic-site [address {:value value :deterministic? true}]
+              nil)))))
+
 (defn legacy-trace
   "`trace` in the legacy shape of a particle's trace (`[:inference :trace]`):
   {address {:value :distribution :log-prob :observed?}}, and
   {address {:value :deterministic? true}} for deterministic sites."
   [trace]
-  (into {}
-        (keep (fn [address]
-                (let [{:keys [site value note]} (get-in trace [:trace/entries address])]
-                  (condp = site
-                    choose-site [address {:value value
-                                          :distribution (:dist note)
-                                          :log-prob (:log-prob note)
-                                          :observed? (boolean (:observed? note))}]
-                    deterministic-site [address {:value value :deterministic? true}]
-                    nil))))
-        (:trace/order trace)))
+  (into {} (legacy-entries trace) (:trace/order trace)))
+
+(defn world-legacy-trace
+  "`legacy-trace` of the savepoint trace `world` has recorded so far, kept up
+  to date incrementally in the world itself: a run that asks at every site
+  converts each entry once instead of the whole trace each time. The cache
+  forks with the world, as the trace does; it is rebuilt if the trace no
+  longer extends the order it was built from."
+  [world]
+  (let [trace (rtp/get-state world [:savepoint/trace])
+        order (vec (:trace/order trace))
+        {:keys [n last-address legacy]} (rtp/get-state world [:inference ::legacy-cache])
+        extends? (and n (<= n (count order))
+                      (or (zero? n) (= last-address (nth order (dec n)))))
+        legacy (if extends?
+                 (into legacy (legacy-entries trace) (subvec order n))
+                 (legacy-trace trace))]
+    (rtp/swap-state! world [:inference ::legacy-cache]
+                     (constantly {:n (count order) :last-address (peek order) :legacy legacy}))
+    legacy))
