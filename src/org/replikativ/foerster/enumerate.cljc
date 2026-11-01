@@ -49,13 +49,28 @@
 
 (defn enumerate
   "Exact enumeration of `model` (a spin), see the namespace. Options:
-  `:max-branches`, `:policy` (a `foerster.trace/policy` for the sites that
-  are not enumerated: observations, factors, deterministic sites), `:executor`.
+
+    :max-branches  bound on the branches made (default 100000)
+    :policy        a `foerster.trace/policy`, the caller's: it decides every
+                   site, so its constraints, interventions and `:temperature`
+                   apply as under importance sampling. A latent site it fixes
+                   (a constraint, a `{:do v}` or `{:policy f}` intervention,
+                   the world's `intervene!`) is not branched on; any other
+                   latent site branches over the support of the law the
+                   policy draws it from (`trace/site-law`), each branch
+                   decided by the policy with the branch's value added to its
+                   constraints
+    :executor      the root world's executor
+
   Resolves an EmpiricalMeasure of `Sample`s, one per complete branch."
   [model & [{:keys [max-branches policy executor] :or {max-branches 100000}}]]
   (fn [resolve reject]
     (let [[resolve reject] (sp/in-callers-world resolve reject)
           policy (or policy (itrace/policy))
+          options (if (contains? (meta policy) :org.replikativ.foerster.trace/options)
+                    (itrace/policy-options policy)
+                    (throw (ex-info "Enumeration needs a policy made by foerster.trace/policy"
+                                    {:type ::opaque-policy})))
           root (if executor (ctx/create-execution-context :executor executor) (ctx/create-execution-context))
           session (sp/open! root {:purpose :enumerate
                                   :seed (random/fresh-seed)
@@ -90,37 +105,42 @@
                     (let [decision (p s nil)]
                       (trace/record! (:savepoint/world s) s decision nil)
                       decision))
-          branch! (fn [s]
-                    (let [{:keys [dist]} (:savepoint/payload s)
-                          values (dist/support dist)
-                          address (:savepoint/address s)]
-                      (cond
-                        (nil? values)
-                        (fail! (ex-info "Enumeration needs finite support at every latent site"
-                                        {:type ::infinite-support :address address :dist dist}))
-
-                        (> (+ (:made @state) (dec (count values))) max-branches)
+          ;; the caller's policy with one more constraint: the branch's value
+          branch-policy (fn [address v]
+                          (itrace/policy (update options :constraints assoc address v)))
+          branch! (fn [s values]
+                    (let [address (:savepoint/address s)
+                          k (count values)]
+                      (if (> (+ (:made @state) (dec k)) max-branches)
                         (fail! (ex-info "Enumeration exceeds :max-branches"
                                         {:type ::too-many-branches :max-branches max-branches}))
-
-                        :else
-                        (do (swap! state #(-> % (update :alive + (dec (count values)))
-                                              (update :made + (dec (count values)))))
-                            ((forks s (dec (count values)))
-                             (fn [children]
+                        (do (swap! state #(-> % (update :alive + (dec k))
+                                              (update :made + (dec k))))
+                            ((forks s (dec k))
+                             (fn [forked]
                                ;; each branch takes one value, its probability
                                ;; entering the weight as a constraint's does
-                               (doseq [[child v] (map vector (cons s children) values)]
+                               (doseq [[child v] (map vector (cons s forked) values)]
                                  (try
-                                   (let [{:keys [value]} (decide! child (itrace/policy {:constraints {address v}}))]
+                                   (let [{:keys [value]} (decide! child (branch-policy address v))]
                                      (continue! child value))
                                    (catch #?(:clj Throwable :cljs :default) e (fail! e)))))
                              fail!)))))
+          latent! (fn [s]
+                    (let [{:keys [fixed?] law :dist} (itrace/site-law policy s)]
+                      (if fixed?
+                        ;; the caller's policy sets the value: no branching
+                        (let [{:keys [value]} (decide! s policy)] (continue! s value))
+                        (if-let [values (seq (dist/support law))]
+                          (branch! s (vec values))
+                          (fail! (ex-info "Enumeration needs finite support at every latent site"
+                                          {:type ::infinite-support :address (:savepoint/address s)
+                                           :dist law}))))))
           run-site! (fn [s]
                       (try
                         (cond
                           (= smc/start-site (:savepoint/site s)) (sp/resume s nil)
-                          (latent-site? s) (branch! s)
+                          (latent-site? s) (latent! s)
                           :else (let [{:keys [value]} (decide! s policy)] (continue! s value)))
                         (catch #?(:clj Throwable :cljs :default) e (fail! e))))]
       (try
