@@ -5,6 +5,7 @@
   distribution, and its evidence the Kalman marginal likelihood."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.spindel.engine.context :as context]
@@ -106,3 +107,14 @@
         step (await-cps (smc/stream (random-walk root) 20 {:anchors :all}))]
     (is (nil? (:fork step)))
     ((:close step))))
+
+(deftest a-pushed-value-is-scored-under-the-particles-policy
+  ;; do(y_0 = 0): the stream site takes the intervened value and scores
+  ;; nothing, as an observed site does under the same policy; scoring the
+  ;; pushed 5.0 instead would give log N(5; 0, √2) ≈ −7.5
+  (let [root (context/create-execution-context)
+        step (await-cps (smc/stream (random-walk root) 50
+                                    {:policy (itrace/policy {:interventions {[:y 0] {:do 0.0}}})}))
+        step' (await-cps ((:push step) 5.0))]
+    (is (= 0.0 (m/log-marginal (:measure step'))))
+    ((:close step'))))
