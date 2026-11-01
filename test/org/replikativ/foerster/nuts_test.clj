@@ -351,3 +351,46 @@
                                                                  (double-array 2)])})]
         (is (every? #(< (Math/abs (- (first %) 0.0)) 1e-9)
                     (starts 54 pinned [0.0 0.0] {:chains 2 :seed 5})))))))
+
+(defn- dependent-blocks
+  "a ~ N(0, 1) as block :a; b ~ N(a, 1), y = 2 ~ N(b, 1) as block :b, whose
+  inputs are a: b's density depends on a, so a's block is not a complete
+  conditional."
+  []
+  (let [a-block (block/block {:block/id :a :block/target :complete-conditional
+                              :block/latents [{:name :a :shape [] :support :real}]}
+                             {:log-density (fn [^doubles th _] (* -0.5 (aget th 0) (aget th 0)))
+                              :value+grad (fn [^doubles th _] [(* -0.5 (aget th 0) (aget th 0)) (double-array [(- (aget th 0))])])})
+        b-lp (fn [b a] (+ (* -0.5 (- b a) (- b a)) (* -0.5 (- 2.0 b) (- 2.0 b))))
+        b-block (block/block {:block/id :b :block/target :complete-conditional
+                              :block/latents [{:name :b :shape [] :support :real}]}
+                             {:log-density (fn [^doubles th {:keys [a]}] (b-lp (aget th 0) a))
+                              :value+grad (fn [^doubles th {:keys [a]}]
+                                            (let [b (aget th 0)]
+                                              [(b-lp b a) (double-array [(+ (- a b) (- 2.0 b))])]))})]
+    (spin (let [[a] (sample (block/block-dist a-block nil) :id :a :init [0.0])
+                [b] (sample (block/block-dist b-block {:a a}) :id :b :init [0.0])]
+            [a b]))))
+
+(deftest a-block-other-sites-depend-on-is-refused-with-the-workarounds
+  (let [e (try (b/run-infer 128 #(infer/infer (dependent-blocks) {:method :nuts :iterations 5 :chains 1 :burn 0}))
+               nil
+               (catch Exception e
+                 (loop [e e] (cond (nil? e) nil
+                                   (= ::nuts/incomplete-target (:type (ex-data e))) e
+                                   :else (recur (ex-cause e))))))]
+    (is (some? e))
+    (is (= :a (:address (ex-data e))))
+    (is (= [:b] (:changed (ex-data e))))
+    (is (re-find #"complete conditional" (ex-message e)))
+    (is (re-find #"same block" (ex-message e)))
+    (is (re-find #"k/hmc-kernel" (ex-message e)))
+    (is (re-find #"k/delayed-acceptance-kernel" (ex-message e))))
+  (testing "HMC, a suggested workaround, samples the same model exactly"
+    ;; a ~ N(0,1), b | a ~ N(a,1), 2 | b ~ N(b,1): E[a | y] = y/3, E[b | y] = 2y/3
+    (let [measure (b/run-infer 129 #(infer/kernel-infer (dependent-blocks)
+                                                        (k/hmc-kernel 4000 {:step-size 0.3 :steps 5 :samples :all :burn 500})
+                                                        4))
+          s (fn [i] (d/summary measure #(nth % i)))]
+      (is (< (Math/abs (- (:mean (s 0)) (/ 2.0 3.0))) (* 4 (:mcse (s 0)))) (str (s 0)))
+      (is (< (Math/abs (- (:mean (s 1)) (/ 4.0 3.0))) (* 4 (:mcse (s 1)))) (str (s 1))))))

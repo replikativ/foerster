@@ -20,7 +20,8 @@ Methods: `:enumerate` (exact, see below); `:importance`, `:smc`, `:tempered` (`:
 `:parallel-tempering` (`:chains`, one block site); `:pimh`,
 `:pgibbs`, `:pgas`, `:ipmcmc`, `:bbvi` (`:particles`, `:iterations`); `:mh`,
 `:rmh`, `:nuts` (`:iterations` per chain, `:chains`, `:burn`; `:step-size` for
-`:rmh`; `:target-accept`, `:max-depth`, `:metric` for `:nuts`); `:kernel`
+`:rmh` and `:nuts`; `:target-accept`, `:max-depth`, `:metric`,
+`:inverse-metric`, `:jitter` for `:nuts`); `:kernel`
 (`:kernel`, `:chains`; the kernel carries its own `:burn` and output
 options); `:pmmh` (`:particles`, `:iterations`, `:burn`, `:params`). A size
 option a method does not take is refused; other options go to the method's
@@ -489,7 +490,7 @@ provided.
 | `(k/random-walk-mh-kernel iterations {:step-size 0.1})` | random-walk MH on continuous sites |
 | `(k/block-gibbs-kernel iterations selector block-kernels classifier opts)` | block Gibbs: `classifier` `(fn [address entry])` assigns sites to block ids, `selector` (`k/round-robin-selector`, `k/random-selector`) picks a block per iteration, `block-kernels` `{block-id kernel}` moves it (`k/prior-block-kernel`, `k/random-walk-block-kernel`) |
 | `(k/hmc-kernel iterations {:step-size 0.1 :steps 10})` | HMC-within-Gibbs on block sites ([blocks](https://replikativ.github.io/foerster/foerster.blocks.html)) |
-| `(k/nuts-kernel iterations {:burn … :target-accept 0.8 :max-depth 10 :metric :variance})` | the No-U-Turn sampler on block sites, Stan's algorithm: multinomial trajectories, the generalized U-turn criterion, divergences, and during `:burn` dual-averaging step size and windowed diagonal-metric adaptation. `:metric :fisher` estimates the metric from both the warm-up positions and their gradients, √(Var q / Var ∇log p), the diagonal metric minimizing the Fisher divergence (nutpie; Seyboldt, Carlson & Carpenter 2024). On posteriordb, `:fisher` gives 2.8× the ESS/s on wells (logistic, 3020 rows). The default `:variance` gives 1.5× on earnings, a regression with strongly correlated coefficients, and 1.2× on mesquite. Try both on your model; the block's target must be its complete conditional, and its gradient hand-written, compiled by foerster-raster (`defdensity`), or — an explicit opt-in for small blocks — numeric (`block/with-numeric-gradient`) ([nuts](https://cljdoc.org/d/org.replikativ/foerster/CURRENT/api/org.replikativ.foerster.nuts)) |
+| `(k/nuts-kernel iterations {:burn … :target-accept 0.8 :max-depth 10 :metric :variance})` | the No-U-Turn sampler on block sites, Stan's algorithm: multinomial trajectories, the generalized U-turn criterion, divergences, and during `:burn` dual-averaging step size and windowed diagonal-metric adaptation. `:metric :fisher` estimates the metric from both the warm-up positions and their gradients, √(Var q / Var ∇log p), the diagonal metric minimizing the Fisher divergence (nutpie; Seyboldt, Carlson & Carpenter 2024). On posteriordb, `:fisher` gives 2.8× the ESS/s on wells (logistic, 3020 rows). The default `:variance` gives 1.5× on earnings, a regression with strongly correlated coefficients, and 1.2× on mesquite. Try both on your model; the block's target must be its complete conditional (see below), and its gradient hand-written, compiled by foerster-raster (`defdensity`), or — an explicit opt-in for small blocks — numeric (`block/with-numeric-gradient`). Warm-up starts, and restarts after every metric window, from Stan's step size heuristic (`init_stepsize`). `:step-size` and `:inverse-metric` (diagonal, in θ) set where warm-up starts, or with `:burn 0` the fixed values NUTS runs at; every retained draw's `:sampler-stats` report the `:step-size` and `:inverse-metric` it ran with, so a warmed-up run's tuning starts a frozen one. Each chain starts at its block sites' `:init` plus U(−2, 2) per coordinate of θ (Stan's initialization radius, from the chain's seeded stream); `:jitter false` starts exactly at `:init` ([nuts](https://cljdoc.org/d/org.replikativ/foerster/CURRENT/api/org.replikativ.foerster.nuts)) |
 | `(k/delayed-acceptance-kernel iterations {address coarse} {:scales 0.1 :steps …})` | two-stage delayed acceptance on block sites (Christen & Fox 2005): a random walk on a cheap `coarse` log density of θ (a surrogate, a coarser model, a Laplace fit) proposes, one replay of the program decides on its own ratio corrected by the coarse one. The chain targets the program's exact posterior whatever `coarse` is (a poor one costs acceptance); the block need not be its complete conditional, since the replay scores every observation |
 | `(k/cycle iterations [k₁ k₂ …])` | each iteration runs k₁'s moves, then k₂'s, … — the composition K₂∘K₁ |
 | `(k/mixture iterations [[w₁ k₁] [w₂ k₂] …])` | each iteration runs one kᵢ, picked with probability ∝ wᵢ |
@@ -513,6 +514,34 @@ trace by one replay, as NUTS does. The per-coordinate scales adapt during
 its complete conditional; a write-back that changes the log probability of
 anything outside the block is refused (`::block-mh/incomplete-target`).
 Other latents take single-site random-walk moves as before.
+
+### NUTS within Gibbs needs complete conditionals
+
+NUTS and the random-walk block moves follow the block's own density and
+write the result back without a correction on the rest of the trace. That
+is exact only when the block's density is the complete conditional of its
+latents: every factor the latents touch is inside the block, and **no other
+site depends on them**. Latents upstream of the block (other blocks, or
+discrete sites moved by MH) may change its inputs; nothing may sit
+downstream. A block B whose inputs come from block A's latents makes A's
+move change B's score, and A's move is refused
+(`::nuts/incomplete-target`, `::block-mh/incomplete-target`; the error's
+`:changed` names the sites whose score moved). Adding p(B | A) to A's
+density would not help: the trace scores B's site too, so the factor would
+count twice.
+
+In practice NUTS within Gibbs is NUTS on blocks that are leaves of the
+dependency graph. For a hierarchical model:
+
+- put the dependent latents into **one block** — the whole hierarchy as one
+  density (as the radon model does with its 89 parameters); or
+- move the upstream block with **HMC** (`k/hmc-kernel`) or **delayed
+  acceptance** (`k/delayed-acceptance-kernel`): both accept on the whole
+  trace's joint density, so their blocks need not be complete conditionals.
+
+Lifting the restriction needs the gradient of the downstream factors with
+respect to the block (composing block densities, or differentiating through
+the replay); it is not implemented.
 
 ## Point estimates and the Laplace approximation
 

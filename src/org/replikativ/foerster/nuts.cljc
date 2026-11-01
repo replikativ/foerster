@@ -14,10 +14,18 @@
 
   NUTS samples the block's own density, so the block's target must be the
   complete conditional of its latents (`:block/target
-  :complete-conditional`): a replay that changes the log probability of
-  anything outside the block is refused (`::incomplete-target`) — HMC
-  (`foerster.hmc`), whose fixed trajectory allows a correction on the full
-  trace, handles incomplete targets.
+  :complete-conditional`): every factor they touch inside the block, and no
+  other site depending on them. A replay that changes the log probability
+  of anything outside the block is refused (`::incomplete-target`, its
+  `:changed` the sites whose score moved). Put a hierarchy into one block,
+  or move such a block with HMC (`foerster.hmc`) or delayed acceptance
+  (`foerster.block-mh`), which accept on the full trace (doc/algorithms.md,
+  section NUTS within Gibbs needs complete conditionals).
+
+  Each chain starts at its block sites' `:init` plus U(−2, 2) per
+  coordinate of θ (`jitter`), unless `:jitter false`. `:step-size` and
+  `:inverse-metric` set where warm-up starts, or with `:burn 0` the frozen
+  values NUTS runs at; the sampler statistics report them.
 
   The kernel is `(k/nuts-kernel iterations {:burn … :target-accept 0.8
   :max-depth 10})`: the first `:burn` iterations adapt and are dropped."
@@ -395,9 +403,9 @@
                          own (- (entry-score (get-in proposed [:trace/entries address]))
                                 (entry-score (get-in trace [:trace/entries address])))]
                      (when (or (:trace/error proposed) (> (Math/abs (double (- joint own))) 1e-6))
-                       (trace/release! proposed trace)
-                       (throw (ex-info "NUTS needs the block's complete conditional as its target: the move changed sites outside the block"
-                                       {:type ::incomplete-target :address address :outside (- joint own)})))
+                       (let [e (tc/incomplete-target "NUTS" ::incomplete-target context trace proposed address (- joint own))]
+                         (trace/release! proposed trace)
+                         (throw e)))
                      (tc/settle! context trace proposed true)
                      (resolve {:trace proposed :accepted? true :divergent? divergent? :stat tr}))
                    (catch #?(:clj Throwable :cljs :default) e (reject e))))
