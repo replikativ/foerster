@@ -883,7 +883,9 @@
 
 (defn- compiled-rmh
   "`:rmh` on the model compiled (`foerster.compiled`): the spin must come
-  from an `analysis/model` whose structure is static given its arguments."
+  from an `analysis/model` whose structure is static given its arguments.
+  Opt-in and JVM-only; continuous latents, single-site random-walk MH with
+  a fixed step; the chains run on `:executor` (see `foerster.compiled`)."
   #?(:clj [model iterations burn step-size chains opts]
      :cljs [_model _iterations _burn _step-size _chains _opts])
   #?(:clj
@@ -892,7 +894,7 @@
                                         {:type ::not-an-analysis-model})))]
        (on-savepoints (compiled/rmh (apply compiled/compile-model m args)
                                     (cond-> {:iterations iterations :burn (or burn 0) :chains (or chains 4)
-                                             :seed (:seed opts)}
+                                             :seed (:seed opts) :executor (:executor opts)}
                                       step-size (assoc :step-size step-size)))))
      :cljs (throw (ex-info ":compiled? runs on the JVM" {:type ::compiled-on-cljs}))))
 
