@@ -129,3 +129,20 @@
     (is (= 0 (:trips (-> {:last nil :trips 0} (visit 3 3) (visit 0 3)))))
     (is (= 1 (:trips (-> {:last nil :trips 0} (visit 0 3) (visit 3 3) (visit 0 3)))))
     (is (= 1 (:trips (-> {:last :reference :trips 0} (visit 2 3) (visit 3 3) (visit 1 3) (visit 0 3)))))))
+
+(deftest the-contracts-say-what-the-outputs-are
+  (let [model #(block-model (fn [[a b]] (+ (lnorm a 1.0 0.3) (lnorm b -0.5 0.3))))]
+    (testing "parallel tempering: one Markov chain, with a stepping-stone estimate"
+      (let [res (b/run-infer 6 #(pt/parallel-tempering (model) {:chains 6 :rounds 8}))
+            contract (:inference-contract res)]
+        (is (= :markov-chain (:semantics contract)))
+        (is (= {:status :estimate :estimator :stepping-stone} (:normalizer contract)))
+        (is (= [(count (m/get-particles res))] (:chain-lengths res)))
+        (is (< (Math/abs (- (m/log-marginal res) log-z)) 0.5))
+        (is (contains? (d/summary res :a) :ess-bulk) "the chain diagnostics apply")))
+    (testing "tempered SMC: a weighted population whose moves adapt to it"
+      (let [res (b/run-infer 7 #(tempering/tempered (model) 64 {:seed 3}))]
+        (is (= :weighted-population (get-in res [:inference-contract :semantics])))
+        (is (= :population (get-in res [:inference-contract :adaptation])))))
+    (testing "a plain chain has no evidence"
+      (is (nil? (m/log-marginal (m/markov-measure [[{} 0.0] [{} 0.0]])))))))
