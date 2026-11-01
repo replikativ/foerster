@@ -27,28 +27,34 @@
   "Translate a BlockGibbsKernel into `itrace/mh-step` options. The classifier
   and the selector see the trace in its legacy shape; only latent
   sites are classified, and a step whose block is empty or has no kernel moves
-  nothing. The selection probability is taken to be the same in both traces,
-  which holds when a move does not change which sites belong to the block."
+  nothing. Blocks are selected by id, independently of the trace; a move that
+  changes which sites belong to the selected block is rejected (its selection
+  term is −∞), because its reverse would move a different set of sites.
+  Rejecting it in both directions keeps detailed balance."
   [{:keys [block-selector block-kernels address-classifier]}]
-  (let [proposals (atom nil)]
+  (let [proposals (atom nil)
+        block-of (fn [t legacy block-id]
+                   (let [latent (set (itrace/latent-addresses t))]
+                     (into #{} (keep (fn [[address entry]]
+                                       (when (and (latent address)
+                                                  (= block-id (address-classifier address entry)))
+                                         address)))
+                           legacy)))]
     {:select
      (fn [current iteration]
        (let [legacy (itrace/legacy-trace current)
-             latent (set (itrace/latent-addresses current))
-             blocks (reduce-kv (fn [acc address entry]
-                                 (if-let [block-id (and (latent address)
-                                                        (address-classifier address entry))]
-                                   (update acc block-id (fnil conj #{}) address)
-                                   acc))
-                               {} legacy)
              block-id (k/select-block block-selector legacy iteration)
-             targets (get blocks block-id #{})
+             targets (block-of current legacy block-id)
              kernel (get block-kernels block-id)]
          (reset! proposals (when (and kernel (seq targets)
                                       (not (instance? org.replikativ.foerster.kernel.PriorBlockKernel kernel)))
                              (k/propose-block kernel legacy targets)))
-         ;; Blocks are selected by id, independently of the trace.
-         {:targets targets :log-selection (constantly 0.0)}))
+         {:targets targets
+          :log-selection (fn [t]
+                           (if (or (identical? t current)
+                                   (= targets (block-of t (itrace/legacy-trace t) block-id)))
+                             0.0
+                             ##-Inf))}))
      :propose
      (fn [sp-value old-entry]
        (if-let [proposed @proposals]
