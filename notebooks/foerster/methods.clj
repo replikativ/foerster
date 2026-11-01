@@ -788,7 +788,8 @@ exact
 ;; | MAP, Laplace, Pathfinder | (no worlds) | yes | via `random/set-seed!` |
 ;; | SCMC | (no worlds) | – | yes |
 ;;
-;; A canonical fork costs about three times a fresh world (spindel 0.1.112).
+;; Canonical-world costs depend on managed state and runtime revision; see
+;; the [worlds guide](https://github.com/replikativ/foerster/blob/main/doc/worlds.md#cost).
 ;; The sandbox offers what its sizes can bound and what fails loudly; see
 ;; the [algorithms guide](https://github.com/replikativ/foerster/blob/main/doc/algorithms.md#in-an-interpreter-sandbox).
 

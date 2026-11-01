@@ -1,4 +1,8 @@
-;; # Programmable Inference
+;; # Trace Programming and Custom Moves
+
+;; For composing weighted populations, target changes and Markov moves, see
+;; [Inference Programs](https://github.com/replikativ/foerster/blob/main/doc/inference-programs.org).
+;; This notebook covers the lower-level trace interface.
 
 ;; The inference algorithms of the other notebooks are ready-made. When a
 ;; model needs a custom move — a proposal that knows its structure, a jump

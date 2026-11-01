@@ -1,7 +1,12 @@
 # Extending
 
-The ready-made algorithms are handlers over the same traces and policies;
-you can write your own at each level. From least to most involved:
+Trace algorithms build on sites, traces and policies; numerical methods
+require explicit block capabilities. Custom population programs compose
+weighting, selection, Markov moves and transport under scoped ownership
+contracts; see [Inference Programs](inference-programs.org). A common result
+interface does not remove each method's model requirements.
+
+You can extend the system at each level. From least to most involved:
 
 ## A distribution
 

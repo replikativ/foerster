@@ -46,16 +46,15 @@
 (defn coin []
   (spin
    (let [p (sample (dist/beta 1.0 1.0) :id :p)]
-     (loop [[t & more] tosses]
-       (when (some? t)
-         (observe (dist/flip p) t)
-         (recur more)))
+     (doseq [t tosses]
+       (observe (dist/flip p) t))
      p)))
 
-;; A few rules come from spindel: the model is a `spin`, and inside it the
-;; sites are called directly — not from inside a function passed to `map`
-;; or `for`, which the spin macro cannot see into; loop with `loop`/`recur`
-;; instead (see the [Language](https://github.com/replikativ/foerster/blob/main/doc/language.md) guide).
+;; A few rules come from spindel: effects belong to an explicit `spin`
+;; scope. Native `doseq` and `loop`/`recur` work inside it. An effectful
+;; callback passed to a higher-order function needs its own `spin`, whose
+;; result the caller explicitly awaits. Lazy `for` keeps Clojure's ordinary
+;; semantics (see the [Language](https://github.com/replikativ/foerster/blob/main/doc/language.md) guide).
 
 ;; ## Inference
 ;;

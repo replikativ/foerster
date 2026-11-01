@@ -5,7 +5,10 @@
 ;; writes the systems of the world it runs in*. If a thousand particles
 ;; wrote to the real database, inference would corrupt it. With
 ;; `:world-policy :fork`, every particle runs in its own frozen copy of the
-;; caller's world instead, and nothing it writes reaches the caller.
+;; caller's world instead. Writes to forkable managed systems stay in that
+;; particle. Ordinary Clojure atoms, foreign arrays and arbitrary external I/O
+;; do not acquire isolation; they need a suitable system adapter or must stay
+;; outside speculative execution.
 
 (ns foerster.worlds
   (:require [org.replikativ.foerster.core :as infer]

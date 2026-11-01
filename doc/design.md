@@ -24,10 +24,12 @@ in handles their site, and simulate forward otherwise:
 | `:inference/choose` (`observe`) | `{:dist d :observed? true :value y}` | `y`, having added `log d(y)` |
 | `:inference/factor` | `{:log-weight w}` | `nil`, having added `w` |
 
-Every inference algorithm is a handler over these sites, and they share the
-same programs. This is Anglican's design — a model's `sample` and `observe`
-are checkpoints of a continuation-passing interpreter — with the
-continuation now a forkable world.
+Trace-based inference handles these sites. Numerical methods instead require
+explicit block densities, gradients or other capabilities; SCMC consumes a
+numeric model and data batches. A common measure interface does not make
+these model contracts interchangeable. The site interpretation follows
+Anglican's design: a model's `sample` and `observe` are checkpoints of a
+continuation-passing interpreter, with the continuation now a forkable world.
 
 ## Traces and policies
 
@@ -204,32 +206,27 @@ split), and every world is discarded before the result is delivered. See
 
 ## Incremental re-execution (Gen's combinators and argdiffs)
 
-Gen's `Map`, `Unfold` and argdiffs let an update re-run only the parts of a
-program whose inputs changed, which turns an MH sweep over n independent
-items from O(n²) into O(n). foerster's replay today restarts at the
-earliest changed site: the program before it is shared (the anchor is a
-forked world), the rest re-runs with every other site kept at its value. In
-a program that awaits one sub-spin per item, an update of item 1's site
-re-runs the bodies of items 2 … n though nothing they read changed — the
-result is right, the work is the rest of the program.
+Gen's `Map`, `Unfold` and argdiffs make incremental work explicit in its
+modeling interface. Foerster supports a narrower route through keyed child
+spins: on a complete trace, an admitted independent region can re-execute
+only selected keys. Ordinary MH and finite-support Gibbs use the shared
+trace re-execution operation; there is no separate incremental acceptance
+algorithm.
 
-spindel already reuses unchanged work across worlds: a replay names the old
-world its reuse source, and a computation spin registering again adopts the
-old node — result, deps and children — when its subtree is clean and every
-input outside it is identical. A spin that reached a savepoint is a reuse
-barrier, deliberately: its decisions belong in the new trace, and adopting
-the spin would skip recording them.
+Keys are an explicit independence and repeatability contract, not a proof
+that arbitrary application effects are safe to repeat. Partial streaming
+traces and SMC rejuvenation of partial keyed traces are not supported.
+Subsequent probability effects, unsupported control changes or nonlocal
+effects require prefix replay; without a valid preceding anchor the update
+fails rather than returning a stale trace. Trace and ownership bookkeeping
+can still scan the whole trace, so selected-key execution alone does not
+establish constant-time update cost.
 
-The increment is to adopt such a spin **with its trace**: when a sub-spin's
-captured inputs and outside deps are identical, copy its subtree's trace
-entries (addresses, values, notes) and their log-probability contributions
-into the new trace and world instead of re-running its body. The pieces it
-needs: the trace entries of a spin's subtree (spindel's trace knows which
-savepoint belongs to which spin), a world-level splice of those entries and
-of the weight they carry, and the reuse barrier relaxed to "adopt with
-trace" when the trace layer can splice. Per-item sub-spins then behave as
-`Map`, a loop of awaited steps as `Unfold`, and the captured-locals check is
-the argdiff.
+See [incremental trace inference](incremental-inference.org) for the admission
+rules, finite Gibbs contracts and validation fixtures. The same guide
+separates fixed-target trace updates from resumable SCMC over appended data.
+The latter has a manually reviewed reactive telemetry example; a general
+static update-plan validator and live inference controller remain future work.
 
 ## What else the same programs admit
 
