@@ -1,11 +1,10 @@
-{:jvm {:tests 409 :assertions 4771 :failures 0 :errors 0 :heap-mib 1024}
- :cljs-node {:tests 67 :assertions 1021 :failures 0 :errors 0}
- :telemetry {:tests 4 :assertions 72 :failures 0 :errors 0 :heap-mib 384}
- :focused-jvm {:tests 27 :assertions 118 :failures 0 :errors 0 :heap-mib 512}
+{:jvm {:tests 417 :assertions 4880 :failures 0 :errors 0 :heap-mib 3072}
+ :cljs-node :not-run
+ :telemetry {:tests 9 :assertions 144 :failures 0 :errors 0 :heap-mib 2048}
+ :focused-jvm {:tests 24 :assertions 183 :failures 0 :errors 0 :heap-mib 2048}
  :lint {:errors 0 :warnings 0}
  :format :passed
- :legacy-parity {:same-particles? true :same-coreset? true
-                 :normalizer-difference 0.0 :same-move-counts? true}
- :baseline-commit "e9b55fd982beaa30b27bc5994b5739565462b91e"
- :spindel-version "0.1.140"
- :note "The full JVM suite exhausted 512 MiB in an existing benchmark; retry at 1 GiB passed."}
+ :refit-none-parity {:same-particles? true :same-normalizer? true :reference-commit "24d9c1a"}
+ :baseline-commit "24d9c1a"
+ :spindel-version "0.1.191"
+ :note "Regenerated after the SCMC review (NNLS refit by default, likelihood cache, snapshot replay). ClojureScript not run: no node_modules in the review worktree."}
