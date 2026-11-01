@@ -30,6 +30,12 @@
                           {:samples :all :burn 150})
           measure (b/run-infer 82 #(infer/kernel-infer (model) kernel 1))]
       (is (= 150 (count (m/get-particles measure))))))
+  (testing "a non-adaptive component's :burn is not a warm-up"
+    (let [kernel (k/cycle 300 [(k/single-site-mh-kernel 1 {:burn 100})
+                               (k/single-site-mh-kernel 1)]
+                          {:samples :all})
+          measure (b/run-infer 84 #(infer/kernel-infer (model) kernel 1))]
+      (is (= 300 (count (m/get-particles measure))))))
   (testing "a chain that ends during a component's warm-up is refused"
     (let [kernel (k/cycle 50 [(k/random-walk-mh-kernel 1 {:step-size 0.5 :burn 100})
                               (k/single-site-mh-kernel 1)])

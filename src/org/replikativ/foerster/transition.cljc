@@ -96,6 +96,12 @@
   (if (#{:cycle :mixture} (k/transition-id tree))
     (mapcat leaves (:kernels tree)) [tree]))
 
+(defn- adaptive-leaf?
+  "Whether a leaf kernel tunes itself during its `:burn` (NUTS and the
+  adaptive random walk); other kernels' `:burn` only drops output."
+  [leaf]
+  (contains? #{:nuts :random-walk-mh} (k/transition-id leaf)))
+
 (defn prepare
   "Compile once per independently moving chain or particle. The result owns
   local tuning counters and must not be shared by resampled descendants.
@@ -106,8 +112,7 @@
     (throw (ex-info "Only Markov kernels can be prepared" {:type ::unsupported-kernel})))
   (let [tree (compile-tree kernel [])]
     {::tree tree
-     :adaptation? (boolean (some #(and (#{:nuts :random-walk-mh} (k/transition-id %))
-                                       (pos? (:burn % 0))) (leaves tree)))
+     :adaptation? (boolean (some #(and (adaptive-leaf? %) (pos? (:burn % 0))) (leaves tree)))
      :capabilities {:retention #{:keep-old? :shared-anchors?}
                     :tempering? (every? #(#{:single-site-mh :block-gibbs :finite-gibbs}
                                           (k/transition-id %)) (leaves tree))}}))
@@ -120,7 +125,7 @@
   leaf's local counter is the index of its latest move; the state after move
   `burn` − 1 is still warm-up."
   [tree]
-  (let [adaptive (filterv #(pos? (:burn % 0)) (leaves tree))]
+  (let [adaptive (filterv #(and (adaptive-leaf? %) (pos? (:burn % 0))) (leaves tree))]
     (fn [] (boolean (some #(< @(::local-counter %) (:burn %)) adaptive)))))
 
 (defn- validate-context! [prepared context]
