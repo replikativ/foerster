@@ -51,6 +51,36 @@
     (dotimes [i n] (aset out i (+ (* (double a) (aget x i)) (* (double b) (aget y i)))))
     out))
 
+(defn- lin!
+  "a·x + b·y into `out` (which may be x or y), computed as `lin` does."
+  ^doubles [^doubles out a ^doubles x b ^doubles y]
+  (let [a (double a) b (double b)]
+    (dotimes [i (alength out)] (aset out i (+ (* a (aget x i)) (* b (aget y i)))))
+    out))
+
+(defn- towards!
+  "The unit vector along the geodesic from the unit vector u to v, into
+  `out`; nil if there is none."
+  [^doubles out ^doubles v ^doubles u]
+  (let [d (lin! out 1.0 v (- (dot v u)) u) dn (norm d)]
+    (when (> dn 1e-12) (lin! out (/ 1.0 dn) d 0.0 d))))
+
+(defn- towards-score
+  "⟨d, towards(v, u)⟩ without building towards(v, u): ##-Inf if there is no
+  geodesic from u to v. Computes the same arithmetic as `towards!`."
+  ^double [^doubles d ^doubles v ^doubles u]
+  (let [n (alength v)
+        c (- (dot v u))
+        dd (fn ^double [^long i] (+ (* 1.0 (aget v i)) (* c (aget u i))))
+        dn (Math/sqrt (loop [i 0 s 0.0] (if (< i n) (recur (inc i) (let [x (dd i)] (+ s (* x x)))) s)))]
+    (if (> dn 1e-12)
+      (let [inv (/ 1.0 dn)]
+        (loop [i 0 s 0.0]
+          (if (< i n)
+            (recur (inc i) (+ s (* (aget d i) (let [x (dd i)] (+ (* inv x) (* 0.0 x))))))
+            s)))
+      ##-Inf)))
+
 (defn giga
   "Greedy iterative geodesic ascent (Campbell & Broderick 2018, Alg. 1):
   nonnegative weights w over the vectors `ls` (double arrays of one length),
@@ -60,7 +90,7 @@
   from the current direction best aligns with the geodesic to the target's
   direction, with the step that maximizes the alignment; the weights are
   scaled optimally at the end. A vector of norm 0 gets weight 0. Returns the
-  weights as a vector."
+  weights as a vector. Working storage is allocated once per call."
   [ls target m]
   (let [n (count ls)
         norms (mapv norm ls)
@@ -69,35 +99,38 @@
       (vec (repeat n 0.0))
       (let [ell (lin (/ 1.0 tn) target 0.0 target)
             ells (mapv (fn [l nl] (when (pos? nl) (lin (/ 1.0 nl) l 0.0 l))) ls norms)
-            ;; the unit vector along the geodesic from u to v, nil if none
-            towards (fn [^doubles v ^doubles u]
-                      (let [d (lin 1.0 v (- (dot v u)) u) dn (norm d)]
-                        (when (> dn 1e-12) (lin (/ 1.0 dn) d 0.0 d))))
-            finish (fn [w ^doubles lw]
+            k (alength ^doubles ell)
+            d (double-array k)
+            lw (double-array k)
+            lw' (double-array k)
+            w (double-array n)
+            finish (fn []
                      (let [align (max 0.0 (dot lw ell))]
                        (mapv (fn [wj nj] (if (pos? nj) (* wj (/ tn nj) align) 0.0)) w norms)))]
-        (loop [t 0 w (vec (repeat n 0.0)) lw (double-array (alength ^doubles ell))]
-          (let [d (when (< t m) (towards ell lw))
+        (loop [t 0]
+          (let [d (when (< t m) (towards! d ell lw))
                 [j score] (when d
-                            (reduce (fn [[_ best :as acc] j]
-                                      (let [dj (some-> (ells j) (towards lw))
-                                            s (if dj (dot d dj) ##-Inf)]
-                                        (if (> s best) [j s] acc)))
-                                    [nil ##-Inf] (range n)))]
+                            (loop [j 0 best nil score ##-Inf]
+                              (if (< j n)
+                                (let [ej (ells j)
+                                      s (if ej (towards-score d ej lw) ##-Inf)]
+                                  (if (> s score) (recur (inc j) j s) (recur (inc j) best score)))
+                                [best score])))]
             (if (or (nil? j) (= ##-Inf score))
-              (finish w lw)
-              (let [ej (ells j)
+              (finish)
+              (let [^doubles ej (ells j)
                     z0 (dot ell ej) z1 (dot ell lw) z2 (dot ej lw)
                     num (- z0 (* z1 z2))
                     den (+ num (- z1 (* z0 z2)))
                     gamma (if (pos? den) (min 1.0 (max 0.0 (/ num den))) 0.0)
-                    lw' (lin (- 1.0 gamma) lw gamma ej)
+                    _ (lin! lw' (- 1.0 gamma) lw gamma ej)
                     nn (norm lw')]
                 (if (or (zero? gamma) (zero? nn))
-                  (finish w lw)
-                  (recur (inc t)
-                         (update (mapv #(/ (* (- 1.0 gamma) %) nn) w) j + (/ gamma nn))
-                         (lin (/ 1.0 nn) lw' 0.0 lw')))))))))))
+                  (finish)
+                  (do (dotimes [i n] (aset w i (/ (* (- 1.0 gamma) (aget w i)) nn)))
+                      (aset w j (+ (aget w j) (/ gamma nn)))
+                      (lin! lw (/ 1.0 nn) lw' 0.0 lw')
+                      (recur (inc t))))))))))))
 
 ;; =============================================================================
 ;; NNLS refit on GIGA's support
@@ -231,25 +264,37 @@
 ;; =============================================================================
 
 (defn- recompress
-  "The core-set [[w datum] …] compressed to at most `m` points: GIGA on the
-  data's log-likelihoods at the particles `qs` (normalized log weights
-  `lw`), each centred by its population mean and scaled by √π_k, towards
-  the core-set's own weighted sum; then, unless `refit` is :none, the
-  weights refitted by NNLS on GIGA's support (`nnls-refit`)."
-  [qs lw coreset log-lik m refit]
+  "The indices of the core-set [[w datum] …] compressed to at most `m`
+  points, with their new weights, as [[j w'] …]: GIGA on the data's
+  log-likelihoods at the particles (`lls`: per particle, the log-likelihood
+  of each core-set datum; normalized log weights `lw`), each centred by its
+  population mean and scaled by √π_k, towards the core-set's own weighted
+  sum; then, unless `refit` is :none, the weights refitted by NNLS on GIGA's
+  support (`nnls-refit`)."
+  [lls lw coreset m refit]
   (let [pis (mapv #(Math/exp %) lw)
         roots (mapv #(Math/sqrt %) pis)
-        cols (mapv (fn [[_ u]]
-                     (let [f (mapv #(double (log-lik % u)) qs)
+        cols (mapv (fn [j]
+                     (let [f (mapv #(double (nth % j)) lls)
                            mean (reduce + (map * pis f))]
                        (double-array (map (fn [fk r] (* r (- fk mean))) f roots))))
-                   coreset)
+                   (range (count coreset)))
         target (reduce (fn [^doubles acc [^doubles col [w _]]] (lin 1.0 acc (double w) col))
-                       (double-array (count qs))
+                       (double-array (count lls))
                        (map vector cols coreset))
         w (cond->> (giga cols target m)
             (not= :none refit) (nnls-refit cols target))]
-    (into [] (keep (fn [[wj [_ u]]] (when (pos? wj) [wj u]))) (map vector w coreset))))
+    (into [] (keep-indexed (fn [j wj] (when (pos? wj) [j wj]))) w)))
+
+(defn- weighted-sum
+  "Σ_j w_j·ls_j over the core-set entries [[w datum] …], from 0.0 in order."
+  [coreset ls]
+  (reduce + 0.0 (map (fn [[w _] l] (* w l)) coreset ls)))
+
+(defn- row
+  "A particle's cached log-likelihoods: a compact persistent vector."
+  [xs]
+  #?(:clj (into (vector-of :double) xs) :cljs (vec xs)))
 
 (defn start
   "Initialize resumable numeric SCMC. model provides :prior-sample,
@@ -271,6 +316,7 @@
      :particles (mapv (fn [i] (random/with-stream* seed [::init i] #(vec (prior-sample))))
                       (range particles))
      :memory memory :scale scale :seed seed :refit refit :coreset [] :steps 0
+     :coreset-log-likelihoods (vec (repeat particles (row [])))
      :compressed? false :approximate? false :log-normalizer 0.0
      :max-coreset-size 0 :moves 0 :accepted 0}))
 
@@ -287,36 +333,65 @@
     (let [{:keys [prior-log-density log-lik]} model
           n (count particles)
           expanded (into coreset (map (fn [x] [1.0 x])) batch)
-          increments (mapv (fn [q] (reduce + 0.0 (map #(log-lik q %) batch))) particles)
+          ;; every particle's log-likelihood of each new datum; with the
+          ;; cached ones of the core-set, the density of the moves at a
+          ;; start state needs no new likelihood evaluation
+          batch-lls (mapv (fn [q] (mapv #(log-lik q %) batch)) particles)
+          increments (mapv #(reduce + 0.0 %) batch-lls)
           mass (weights/from-log increments)
           _ (when (= :zero-mass (:status mass))
               (throw (ex-info "Every particle has zero likelihood for a batch: no posterior population"
                               {:type ::zero-evidence :batch steps})))
           ess (m/compute-ess (weights/selection mass))
+          cached (let [c (:coreset-log-likelihoods state)]
+                   (when (and (= n (count c)) (every? #(= (count coreset) (count %)) c)) c))
+          start-lls (when cached (zipmap particles (map into cached batch-lls)))
+
+          ;; per evaluated state, the log-likelihood of each expanded datum:
+          ;; the projection's columns at the moved particles
+          seen (volatile! {})
+          counts (volatile! {:move 0 :projection 0})
+          evaluate (fn [phase q]
+                     (vswap! counts update phase + (count expanded))
+                     (mapv (fn [[_ u]] (log-lik q u)) expanded))
+          target (fn [q lp ls]
+                   (vswap! seen assoc q ls)
+                   (+ lp (weighted-sum expanded ls)))
           stats (atom {:moves 0 :accepted 0})
           path {:start 0 :done? pos?
                 :advance (fn [_ _ _] {:pos 1 :log-incr increments})
                 :density (fn [_]
                            (fn [q]
                              (let [lp (prior-log-density q)]
-                               (if (= ##-Inf lp) lp
-                                   (+ lp (reduce + 0.0
-                                                 (map (fn [[w u]] (* w (log-lik q u))) expanded)))))))
+                               (if (= ##-Inf lp) lp (target q lp (evaluate :move q))))))
+                :start-log-density (fn [_]
+                                     (fn [q]
+                                       (when-let [ls (get start-lls q)]
+                                         (let [lp (prior-log-density q)]
+                                           (if (= ##-Inf lp) lp (target q lp ls))))))
                 :exhausted (fn [_] (ex-info "SCMC single update exhausted" {:type ::exhausted}))}
           {:keys [qs log-z]} (pop/theta-smc particles path
                                             {:n n :scale scale :seed seed :max-steps 1 :step-offset steps
                                              :positions? false :stats stats
                                              :keys {:resample ::resample :move ::move}})
+          lls (mapv (fn [q] (or (get @seen q) (evaluate :projection q))) qs)
           compress? (> (count expanded) memory)
+          kept (if compress?
+                 (recompress lls (vec (repeat n (- (Math/log n)))) expanded memory (or refit :nnls))
+                 (mapv (fn [j] [j 1.0]) (range (count expanded))))
           coreset (if compress?
-                    (recompress qs (vec (repeat n (- (Math/log n)))) expanded log-lik memory (or refit :nnls))
+                    (mapv (fn [[j w]] [w (second (expanded j))]) kept)
                     expanded)]
       (-> state
           (assoc :particles qs :coreset coreset :steps (inc steps)
+                 :coreset-log-likelihoods (if compress?
+                                            (mapv (fn [ls] (row (map #(nth ls (first %)) kept))) lls)
+                                            (mapv row lls))
                  :compressed? (or compressed? compress?)
                  :approximate? (or (:approximate? state) compressed?)
                  :last-update {:ess ess :ess-fraction (/ ess n) :batch-size (count batch)
-                               :compressed? compress?})
+                               :compressed? compress?
+                               :likelihood-evaluations (assoc @counts :reweight (* n (count batch)))})
           (update :log-normalizer + log-z)
           (update :max-coreset-size max (count expanded))
           (update :moves + (:moves @stats))

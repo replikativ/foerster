@@ -241,9 +241,57 @@
     (is (= -231.1534641942093 (:log-normalizer state)))
     (is (= 28 (count (:coreset state))))
     (is (= 1500 (:moves state)))
+    ;; 111,950 before the likelihood cache
+    (is (= 68800 @calls))
     (testing "the default refits"
       (let [refit (reduce scmc/append-batch
                           (scmc/start (counting-model (atom 0)) {:particles 50 :memory 30 :seed [5]})
                           (partition 20 (regression 300 9)))]
         (is (= :nnls (:refit refit)))
-        (is (not= (:particles state) (:particles refit)))))))
+        (is (not= (:particles state) (:particles refit)))
+        ;; recorded with the refit, before the likelihood cache and the
+        ;; allocation-free GIGA: both leave every draw unchanged
+        (is (= 2013277641 (hash (:particles refit))))
+        (is (= -231.1888303894612 (:log-normalizer refit)))
+        (is (= 25 (count (:coreset refit))))))))
+
+(defn- counted-steps
+  "Each step's likelihood calls, the core-set size it started from and its
+  :last-update; `prepare` maps the state before each step."
+  [prepare opts batches]
+  (let [calls (atom 0)]
+    (loop [state (scmc/start (counting-model calls) opts) [b & more] batches out []]
+      (if b
+        (let [before (prepare state)
+              _ (reset! calls 0)
+              next (scmc/append-batch before b)]
+          (recur next more (conj out {:calls @calls :coreset (count (:coreset state))
+                                      :last-update (:last-update next) :state next})))
+        out))))
+
+(deftest each-likelihood-is-evaluated-once-per-state
+  ;; N = 20 particles of dimension 2, batches of 5, memory 8. A step scores
+  ;; the batch at every particle (N·b), and each move's two random-walk
+  ;; proposals score the expanded core-set E (2·N·|E|). The start states'
+  ;; likelihoods come from the step before and the batch's weights, and the
+  ;; projection reuses the moves' values. Without the cache a step also
+  ;; costs N·|E| for the start states, and N·|E| more when it compresses.
+  (let [opts {:particles 20 :memory 8 :seed [9]}
+        batches (partition 5 (regression 30 3))
+        cached (counted-steps identity opts batches)
+        uncached (counted-steps #(dissoc % :coreset-log-likelihoods) opts batches)]
+    (is (some #(get-in % [:last-update :compressed?]) cached))
+    (doseq [{:keys [calls coreset last-update]} cached]
+      (let [e (+ coreset 5)]
+        (is (= (+ (* 20 5) (* 2 20 e)) calls))
+        (is (= {:reweight (* 20 5) :move (* 2 20 e) :projection 0} (:likelihood-evaluations last-update)))
+        (is (= (> e 8) (:compressed? last-update)))))
+    (testing "without the cache, the same steps cost what they did before it"
+      (doseq [{:keys [calls coreset last-update]} uncached]
+        (let [e (+ coreset 5)
+              starts (* 20 e)]
+          (is (= (+ (* 20 5) (* 2 20 e) starts) calls))
+          (is (= (+ (* 2 20 e) starts) (get-in last-update [:likelihood-evaluations :move]))))))
+    (testing "and give the same states, bit for bit"
+      (is (= (mapv #(dissoc (:state %) :last-update :model) cached)
+             (mapv #(dissoc (:state %) :last-update :model) uncached))))))
