@@ -153,7 +153,8 @@
                sub (build-tree dist inv-metric eps (if forward? 1 -1) depth from h0)
                n (+ n (:n sub)) metro (+ metro (:metro sub))]
            (if-not (:valid? sub)
-             (result sample n metro (inc depth) (boolean (:divergent? sub)))
+             ;; Stan counts a subtree in the depth only when it is valid
+             (result sample n metro depth (boolean (:divergent? sub)))
              (let [sample (if (or (> (:log-w sub) log-w)
                                   (< (random/uniform01) (Math/exp (- (:log-w sub) log-w))))
                             (:z-propose sub)

@@ -198,3 +198,23 @@
     (is (= (inc leapfrogs) @gradients))
     ;; the initial state's score only
     (is (= 1 @densities))))
+
+(deftest an-invalid-subtree-does-not-count-as-depth
+  ;; Stan's base_nuts increments the depth only for a valid subtree: a tree
+  ;; that ends at depth d has 2^d − 1 leapfrog steps when it ends by a U-turn
+  ;; or the cap, and between 2^d and 2^(d+1) − 1 when its last subtree was
+  ;; invalid — a divergence at the first step is depth 0
+  (let [narrow (block/block {:block/id :narrow :block/target :complete-conditional
+                             :block/latents [{:name :x :shape [] :support :real}]}
+                            {:log-density (fn [x _] (* -5e3 (aget x 0) (aget x 0)))
+                             :value+grad (fn [x _] [(* -5e3 (aget x 0) (aget x 0))
+                                                    (double-array [(* -1e4 (aget x 0))])])})
+        result (b/run-infer 22 #(infer/infer (spin (sample (block/block-dist narrow nil) :id :x :init [0.01]))
+                                             {:method :nuts :seed 7 :iterations 50 :burn 0 :chains 2 :max-depth 6}))
+        stats (map (comp :sampler-stats first) (measure/get-particles result))]
+    (is (some :diverging stats))
+    (doseq [{:keys [tree-depth n-leapfrog diverging]} stats]
+      (is (<= (dec (bit-shift-left 1 tree-depth)) n-leapfrog (dec (bit-shift-left 1 (inc tree-depth))))
+          (str tree-depth " " n-leapfrog))
+      (when (and diverging (= 1 n-leapfrog))
+        (is (zero? tree-depth))))))
