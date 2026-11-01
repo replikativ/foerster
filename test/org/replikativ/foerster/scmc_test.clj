@@ -317,7 +317,7 @@
             (is (= (+ (* 30 5) (* 2 30 e) projection) calls))))))
     (testing "a likelihood that is not finite at a spread point is refused"
       (let [m (update (counting-model (atom 0)) :log-lik
-                      (fn [ll] (fn [[a b :as q] d] (if (> (Math/abs (double b)) 5.0) ##-Inf (ll q d)))))]
+                      (fn [ll] (fn [[_ b :as q] d] (if (> (Math/abs (double b)) 5.0) ##-Inf (ll q d)))))]
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not finite"
                               (reduce scmc/append-batch (scmc/start m (assoc opts :projection-inflation 1e3)) batches)))))
     (testing "refusals"
