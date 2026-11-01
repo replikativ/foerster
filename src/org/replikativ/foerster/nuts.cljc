@@ -8,9 +8,11 @@
   75/25/50 windows, scaled to short warm-ups). Stan's step size heuristic
   (`init_stepsize`: double or halve until one leapfrog step's acceptance
   crosses 0.8) runs as warm-up begins and after every metric window, and
-  dual averaging restarts from it, at μ = log 10ε. (Stan's first μ comes
-  from its configured step size instead; here it comes from the
-  heuristic's, as at every later restart.)
+  dual averaging restarts from it, at μ = log 10ε. As warm-up begins this
+  deliberately deviates from Stan, whose first μ is log 10ε of its
+  configured step size (default 1): here it comes from the heuristic's ε,
+  as at every later restart, so the first window does not start from a
+  scale-blind guess.
 
   NUTS samples the block's own density, so the block's target must be the
   complete conditional of its latents (`:block/target
@@ -23,7 +25,9 @@
   section NUTS within Gibbs needs complete conditionals).
 
   Each chain starts at its block sites' `:init` plus U(−2, 2) per
-  coordinate of θ (`jitter`), unless `:jitter false`. `:step-size` and
+  coordinate of θ (`jitter`), unless `:jitter false` — also with `:burn
+  0`, where every draw is kept: to resume a frozen chain from a posterior
+  draw, pass that draw as `:init` with `:jitter false`. `:step-size` and
   `:inverse-metric` set where warm-up starts, or with `:burn 0` the frozen
   values NUTS runs at; the sampler statistics report them.
 

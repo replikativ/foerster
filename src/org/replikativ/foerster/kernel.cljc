@@ -293,7 +293,10 @@
   `:jitter` (true) starts each chain driven by this kernel (`kernel-infer`,
   `infer :nuts`) at its block sites' values plus a uniform jitter in
   (−2, 2) per coordinate of θ, as Stan's random initialization; `false`
-  starts exactly at `:init`. A population move never jitters."
+  starts exactly at `:init`. It stays on with `:burn 0`, where every draw
+  is kept: resuming a frozen chain from a posterior draw (`:init` that
+  draw, the exported `:step-size` and `:inverse-metric`) needs `:jitter
+  false`. A population move never jitters."
   [num-iterations & [{:keys [target-accept max-depth metric step-size inverse-metric jitter]
                       :or {target-accept 0.8 max-depth 10 metric :variance jitter true} :as opts}]]
   {:pre [(pos-int? num-iterations) (#{:variance :fisher} metric)
