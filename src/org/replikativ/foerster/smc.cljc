@@ -360,6 +360,13 @@
     ;; move before the sweep: it needs the values of stream sites not yet seen
     (throw (ex-info ":rejuvenate with :retained needs the whole trajectory: not with smc/stream"
                     {:type ::rejuvenate-retained-stream})))
+  (when (and ancestor-sampling? policy
+             (not (contains? (meta policy) :org.replikativ.foerster.trace/options)))
+    ;; ancestor sampling re-scores futures under the policy's options: an
+    ;; opaque policy would silently score them without its temperature and
+    ;; interventions
+    (throw (ex-info ":ancestor-sampling? re-scores under the particles' policy: pass one made by foerster.trace/policy"
+                    {:type ::opaque-policy})))
   (when (and rejuvenate retained ancestor-sampling?)
     ;; PGAS redraws the retained particle's past from the particles' pre-move
     ;; states; its exact construction with moves is not implemented

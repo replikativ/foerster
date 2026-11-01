@@ -129,7 +129,8 @@
   (doseq [[label opts] [["opaque policy" {:policy (fn [_sp _old] nil)}]
                         ["fresh mechanism noise"
                          {:policy (itrace/policy {:interventions {:x {:dist (dist/flip 0.8) :coupling :fresh}}})}]
-                        ["unknown option" {:particles-per-branch 3}]]]
+                        ["unknown option" {:particles-per-branch 3}]
+                        ["predictive policy" {:policy (itrace/policy {:simulate-observed? true})}]]]
     (is (thrown? clojure.lang.ExceptionInfo
                  (b/run-infer 5 #(infer/infer (noisy-flip nil) (assoc opts :method :enumerate))))
         label)))

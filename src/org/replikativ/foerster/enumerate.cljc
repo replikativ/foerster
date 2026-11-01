@@ -88,6 +88,11 @@
                     (itrace/policy-options policy)
                     (throw (ex-info "Enumeration needs a policy made by foerster.trace/policy"
                                     {:type ::opaque-policy})))
+          _ (when (:simulate-observed? options)
+              ;; a predictive policy draws the observed sites at random:
+              ;; the result would be a sample, not an exact sum
+              (throw (ex-info "Enumeration sums the posterior: not with a predictive policy (:simulate-observed?)"
+                              {:type ::predictive-policy})))
           root (cond root root
                      executor (ctx/create-execution-context :executor executor)
                      :else (ctx/create-execution-context))
