@@ -242,7 +242,7 @@
   (with-root [root]
     (let [t (loop [i 0]
               (let [t (await-cps (gfi/simulate (nested-support root)))
-                    [x z] (:trace/result t)]
+                    [_ z] (:trace/result t)]
                 (if (or (> z 1.0) (> i 500)) t (do (await-cps (gfi/close! t)) (recur (inc i))))))
           z (get (itrace/choices t) :z)
           {t' :trace w :weight} (await-cps (gfi/update t {:x (/ z 2.0)}))]
