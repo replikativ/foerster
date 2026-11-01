@@ -10,6 +10,8 @@
             [org.replikativ.foerster.hmc :as hmc]
             [org.replikativ.foerster.nuts :as nuts]
             [org.replikativ.foerster.block-mh :as block-mh]
+            [org.replikativ.foerster.gfi :as gfi]
+            [org.replikativ.foerster.involutive :as involutive]
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.trace :as trace]
@@ -75,6 +77,8 @@
                                 (select-keys kernel [:coarse :scales :steps :step-size]))}
     :block-gibbs (block-gibbs-options kernel)
     :hmc {:step (hmc/within-gibbs (select-keys kernel [:step-size :steps]))}
+    :involutive {:step (fn [current _] (involutive/step current (:move kernel)))}
+    :proposal-mh {:step (fn [current _] (apply gfi/mh-proposal current (:proposal kernel) (:args kernel)))}
     :nuts {:step (nuts/within-gibbs {:burn (:burn kernel 0)
                                      :target-accept (:target-accept kernel)
                                      :max-depth (:max-depth kernel)
@@ -114,7 +118,11 @@
   (let [tree (compile-tree kernel [])]
     {::tree tree
      :adaptation? (boolean (some #(and (adaptive-leaf? %) (pos? (:burn % 0))) (leaves tree)))
-     :capabilities {:retention #{:keep-old? :shared-anchors?}
+     ;; programmable moves give back the state they leave: they cannot keep
+     ;; it alive for a population's other owners
+     :capabilities {:retention (if (some #(#{:involutive :proposal-mh} (k/transition-id %)) (leaves tree))
+                                 #{}
+                                 #{:keep-old? :shared-anchors?})
                     :tempering? (every? #(#{:single-site-mh :block-gibbs :finite-gibbs}
                                           (k/transition-id %)) (leaves tree))}}))
 
