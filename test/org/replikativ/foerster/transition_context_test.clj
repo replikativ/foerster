@@ -129,6 +129,6 @@
       #(b/run-infer 893 (fn []
                           (infer/kernel-infer
                            (spin (sample (block/block-dist gaussian nil) :id :x :init [0.2]))
-                           (k/cycle 10 [(k/single-site-mh-kernel 100)
+                           (k/cycle 11 [(k/single-site-mh-kernel 100)
                                         (k/nuts-kernel 1 {:burn 10})]) 1))))
     (is (= (range 10) @seen))))
