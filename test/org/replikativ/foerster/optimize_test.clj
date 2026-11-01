@@ -108,3 +108,18 @@
     (doseq [opts [{:paths 1 :draws 1} {:paths 2 :draws 10}]]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"zero target density"
                             (opt/pathfinder (block/block-dist gaussian nil) opts))))))
+
+(deftest the-reported-log-density-is-the-one-maximized
+  ;; Gamma(3, 1) in s: 2 log s − s, mode s = 2 with 2 log 2 − 2; in θ = log s
+  ;; the target gains the Jacobian θ: 3θ − eᶿ, mode s = 3 with 3 log 3 − 3
+  (let [gamma-3-1 (block/block {:block/id :s :block/coordinates :constrained
+                                :block/latents [{:name :s :shape [] :support :positive}]}
+                               {:log-density (fn [^doubles th _] (let [s (aget th 0)] (- (* 2.0 (Math/log s)) s)))
+                                :value+grad (fn [^doubles th _] (let [s (aget th 0)]
+                                                                  [(- (* 2.0 (Math/log s)) s) (double-array [(- (/ 2.0 s) 1.0)])]))})
+        natural (opt/map-estimate (block/block-dist gamma-3-1 nil) {:init [0.3]})
+        unconstrained (opt/map-estimate (block/block-dist gamma-3-1 nil) {:init [0.3] :jacobian? true})]
+    (is (close? (:s (:latents natural)) 2.0 1e-6))
+    (is (close? (:log-density natural) (- (* 2.0 (Math/log 2.0)) 2.0) 1e-9) (str natural))
+    (is (close? (:s (:latents unconstrained)) 3.0 1e-6))
+    (is (close? (:log-density unconstrained) (- (* 3.0 (Math/log 3.0)) 3.0) 1e-9) (str unconstrained))))

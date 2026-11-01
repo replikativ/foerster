@@ -100,14 +100,18 @@
   "The mode of the block site `d` (a `block/block-dist`), see the namespace.
   Options: `:init` θ0 (required unless the block can `:sample`),
   `:jacobian?` (false), `:max-iterations` (1000), `:tolerance` (1e-8, on
-  the gradient norm relative to |θ|), `:history` (10)."
+  the gradient norm relative to |θ|), `:history` (10). `:log-density` is
+  the maximized target at the mode: in the latents' own coordinates (no
+  Jacobian) unless `:jacobian?`."
   [d & [{:keys [init jacobian?] :as opts}]]
   (let [b (:block d)
         theta0 (or init (dist/draw d))
-        {:keys [theta grad iterations converged?]} (lbfgs (objective d jacobian?) theta0 opts)]
+        {:keys [theta f grad iterations converged?]} (lbfgs (objective d jacobian?) theta0 opts)]
     {:theta theta
      :latents (latents-of b (block/constrain b theta))
-     :log-density (first (block/value+grad d theta))
+     ;; f = −(the objective's log density) at θ, Jacobian taken out unless
+     ;; jacobian?
+     :log-density (- (double f))
      :iterations iterations
      :grad-norm (norm grad)
      :converged? converged?}))
