@@ -3,6 +3,7 @@
             [is.simm.partial-cps.async :as pcps]
             [is.simm.partial-cps.runtime :as cps-runtime]
             [org.replikativ.foerster.execution :as execution]
+            [org.replikativ.foerster.population :as pop]
             [org.replikativ.foerster.population.path :as path]
             [org.replikativ.foerster.weights :as weights]))
 
@@ -75,3 +76,35 @@
     (is (nil? @error))
     (is (= 2 (:steps @result)))
     (is (= 1.0 (get-in @result [:mass :log-mass])))))
+
+(deftest a-chain-carries-its-density-from-walk-to-walk
+  ;; A 2-d Gaussian path in four steps, waste-free with P = 5: eight chains of
+  ;; four walks of two random-walk steps per SMC step. A chain evaluates the
+  ;; density at its start state once, then carries it, so each step costs
+  ;; 8·(3 + 3·2) evaluations instead of 8·4·3; the draws are unchanged (the
+  ;; population and evidence recorded on origin/main 24d9c1a).
+  (let [evaluations (atom 0)
+        path {:start 0.0 :done? #(>= % 1.0)
+              :advance (fn [qs _ beta]
+                         (let [beta' (min 1.0 (+ beta 0.25))]
+                           {:pos beta' :log-incr (mapv (fn [[x y]] (* (- beta' beta) -0.5 (+ (* (- x 1) (- x 1)) (* 4 (- y 2) (- y 2))))) qs)}))
+              :density (fn [beta] (fn [[x y]]
+                                    (swap! evaluations inc)
+                                    (+ (* -0.5 (+ (* x x) (* y y)))
+                                       (* beta -0.5 (+ (* (- x 1) (- x 1)) (* 4 (- y 2) (- y 2)))))))
+              :exhausted (fn [_] (ex-info "exhausted" {}))}
+        run (fn [waste-free]
+              (reset! evaluations 0)
+              (pop/theta-smc (mapv (fn [i] [(Math/sin i) (Math/cos (* 3 i))]) (range 40)) path
+                             {:n 40 :waste-free waste-free :scale 2.38 :seed [77] :max-steps 10
+                              :stats (atom {:moves 0 :accepted 0})
+                              :keys {:resample :ws5.baseline/r :move :ws5.baseline/m}}))]
+    (let [{:keys [qs log-z]} (run 5)]
+      (is (= 288 @evaluations))
+      (is (= 2146367930 (hash qs)))
+      (is (= -3.154981289962682 log-z)))
+    (testing "one walk per chain evaluates its start state, as before"
+      (let [{:keys [qs log-z]} (run nil)]
+        (is (= (* 4 40 3) @evaluations))
+        (is (= -2007510409 (hash qs)))
+        (is (= -3.2636502794737403 log-z))))))

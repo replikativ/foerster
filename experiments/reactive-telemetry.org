@@ -51,9 +51,20 @@ Snapshots contain persistent vectors and pure model functions; they are
 in-memory values, not serialized model artifacts.
 
 Append updates retain the population and coreset. A replacement replays
-the corrected observation log from the prior. A weighted representative
-cannot generally be deleted as though it represented just one original
-window. The application deliberately retains its audit log for replay;
+the corrected observation log from the last persistent snapshot before its
+first changed window. The owner keeps the prior's state and the eight most
+recent snapshots, taken every four batches (60 windows) at batch boundaries
+of a replay from the prior. Randomness is keyed by global step, so the
+snapshot replay is equal (=) to a replay of the whole corrected log from the
+prior, with compression active and with low-ESS splits (a split retries
+within its batch and never moves a snapshot boundary); its likelihood cost
+is that of the replayed suffix. Appends that start inside a batch make the
+state depend on the append history; no snapshot is taken from such a state,
+and a later correction still replays from a snapshot on the grid. Replays
+start from snapshots, never from the caller's options, and scmc/initial
+reproduces a run's initial state with its recorded seed. A weighted
+representative cannot generally be deleted as though it represented just
+one original window. The application deliberately retains its audit log for replay;
 only the inference state's memory is bounded by population and coreset.
 The fixture's snapshot-prefix checks can scan the observation log; it makes
 no end-to-end O(delta) runtime claim.
@@ -72,8 +83,9 @@ smaller batches from the persistent parent state. It publishes the minimum
 accepted ESS fraction and the number of splits. This is adaptive scheduling,
 not an unbiased-evidence or convergence guarantee.
 
-Repairing undercounted failures in ten old windows requires five splits in
-the demonstration. An extreme single observation (10,000 requests with no
+Repairing undercounted failures in ten old windows (60-69) replays the 240
+windows from the snapshot at window 60 and requires five splits in the
+demonstration. An extreme single observation (10,000 requests with no
 failures at high load) produces :needs-recovery with :reason :low-ess; it
 does not commit a candidate revision. Tempered assimilation or a different
 proposal is future recovery work. Refusal does not imply the posterior is
@@ -88,23 +100,34 @@ streaming diagnostic or a general convergence certificate.
 
 * Accuracy and cost
 
-The sweep uses 800 particles, budgets 8, 32, 64, 128 and 300, and three
-inference seeds. Budget is the maximum retained number of representatives
-and the GIGA iteration budget; fewer distinct representatives may result.
+SCMC compresses with GIGA and then refits GIGA's weights by nonnegative
+least squares on the points it selected, as the reference implementation
+does (=:refit :nnls=, the default; =:refit :none= reproduces the earlier
+GIGA-only projection bit for bit). The sweep uses 800 particles, budgets 8,
+32, 64, 128 and 300, and three inference seeds. Budget is the maximum
+retained number of representatives and the GIGA iteration budget; fewer
+distinct representatives may result. Each step evaluates every likelihood
+once per particle state: the batch for the weights, the expanded coreset at
+each move proposal. Values at the particles are cached in the state for the
+next step's start states and for compression.
 
-On the original stream, budget 128 gives final mean errors below 0.11
-posterior SDs and SD errors below 5%. It retains 54-55 windows at the final
-revision and uses about 3.93-3.96 million likelihood evaluations, versus
-7.8 million for the uncompressed budget-300 runs. These counts include
-compression fitting but exclude the independent audit and quadrature.
-They are not a cross-system speed benchmark.
+On the original stream, budget 128 gives final mean errors below 0.09
+posterior SDs and SD errors below 3%. It retains 35-37 windows at the
+final revision (at most 127 between steps; 142 with a batch) and uses
+2.58-2.59 million likelihood evaluations, versus 5.28 million for the
+uncompressed budget-300 runs. These counts include compression fitting
+but exclude the independent audit and quadrature. They are not a
+cross-system speed benchmark. Before the refit and the likelihood cache
+the budget-128 runs used 3.93-3.96 million evaluations (errors below 0.11
+SD) and the budget-300 runs 7.8 million.
 
-Budgets 8 and 32 show systematic bias after the load coverage changes.
-Budget 8 has roughly one posterior SD of mean error despite final ESS
-above 70% of population. Budget 32 reaches about 0.64 SD. This failure case
-is retained in the validation; it should not be hidden by a favorable
-prediction metric or by high ESS. The nine-probe audit's centered RMS error
-is about 0.43-0.46 log units at budget 8, versus 0.037-0.049 at budget 128.
+Budget 8 still shows systematic bias after the load coverage changes:
+0.39-0.75 posterior SDs of mean error (1.03-1.12 without the refit)
+despite final ESS above 70% of population. Budget 32 is within 0.083 SD
+(0.54-0.64 without the refit). This failure case is retained in the
+validation; it should not be hidden by a favorable prediction metric or by
+high ESS. The nine-probe audit's centered RMS error is 0.31-0.42 log units
+at budget 8, versus 0.0003-0.008 at budget 128.
 
 The selected budget also passes posterior checks on two independently
 simulated streams. These checks establish behavior on this fixture, not
@@ -112,10 +135,49 @@ reliability for arbitrary nonlinear simulators or language-model factors.
 The normalizer remains explicitly unverified, and compressed SCMC results
 are labeled approximate populations.
 
+In the reactive demonstration the appends cost 0.29, 1.11 and 1.18
+million evaluations, the correction 3.45 million from the snapshot at
+window 60 (3.74 million replaying all 300 windows from the prior), and the
+speculative one-window append in a fork 0.06 million.
+
+* Long streams (experiment E1)
+
+The 300-window stream is only 2.3 times the budget, so total cost cannot
+show that SCMC's per-update cost is bounded. A longer pilot in the review
+found transient coreset-posterior bias of 1-2 posterior SDs at budgets
+64-256 in the middle of a 3000-window continuous-load stream, without the
+refit; the refit or a projection fitted on an inflated cloud reduced it.
+=reactive-telemetry-long= runs that experiment: a continuous-load stream
+(load uniform on [lo, lo+1), so no finite sufficient statistic over loads),
+6000 windows with coverage low 20%, mid 40%, high 40% (optionally returning
+to low), two data seeds, three inference seeds and 800 particles. Its arms
+share the SCMC engine: full-history resample-move (IBIS), SCMC at budgets
+32, 128 and 512, and a uniform reservoir of the same sizes. It records, per
+update, likelihood evaluations by phase, wall time, retained factors and
+pre-resample ESS, and at 20 checkpoints the error against a recentred
+121x121 quadrature. Variants are arms such as =[:scmc 128 {:refit :none}]=
+or =[:scmc 128 {:projection-inflation 3}]=.
+
+=:projection-inflation k= is a research option and a deviation from the
+UAI 2021 algorithm, off by default: GIGA is fitted at the particles spread
+by k about their mean. It costs N times the expanded coreset size in
+likelihood evaluations per compression.
+
+The full configuration takes about 1.5 hours and has not been run here. A
+smoke run (600 windows, 100 particles, one seed) finishes in 30 seconds:
+
+#+begin_src sh
+clojure -M:telemetry-long /tmp/telemetry-long.edn :windows 600 :particles 100 \
+  :data-seeds '[7]' :seeds '[1]' :checkpoints 4 \
+  :arms '[[:full] [:scmc 32] [:scmc 128] [:scmc 32 {:refit :none}] [:reservoir 32]]'
+#+end_src
+
+It writes the EDN result and a TSV summary (total and last-update
+evaluations, largest retained set, worst and final error over checkpoints).
+
 * Reproduction
 
-All exploration ran in the existing 384 MiB CPU REPL on port 42731. No
-Raster, Python bridge, language model or GPU is needed by this example.
+No Raster, Python bridge, language model or GPU is needed by this example.
 
 With src and experiments on the classpath:
 
@@ -128,10 +190,13 @@ With src and experiments on the classpath:
 ;; Full budget sweep, references and machine-readable receipts.
 (telemetry/-main "/tmp/reactive-telemetry.edn")
 
-;; Numerical and lifecycle validation, including independent streams.
-(require '[org.replikativ.foerster.reactive-telemetry-test])
+;; Numerical and lifecycle validation, including independent streams,
+;; snapshot replay and a smoke run of the long-stream experiment.
+(require '[org.replikativ.foerster.reactive-telemetry-test]
+         '[org.replikativ.foerster.reactive-telemetry-long-test])
 (clojure.test/run-tests
- 'org.replikativ.foerster.reactive-telemetry-test)
+ 'org.replikativ.foerster.reactive-telemetry-test
+ 'org.replikativ.foerster.reactive-telemetry-long-test)
 #+end_src
 
 The portable library tests live in test/.../scmc_stream_test.cljc.
@@ -150,14 +215,14 @@ The saved figure shows predictive means, parameter mean errors against
 quadrature, and inference likelihood-evaluation counts. It does not show
 credible intervals or assert convergence from the plotted means alone.
 
-Validation of the implementation: the experiment passes 4 tests / 72
-assertions; the full JVM suite passes 409 tests / 4,771 assertions; the
-directly affected JVM namespaces pass 27 tests / 118 assertions; Node passes
-67 tests / 1,021 assertions. Lint and formatting are clean. The
-inference REPL uses 384 MiB. The full JVM suite required a larger test heap
-after the existing benchmark exhausted 512 MiB; the successful suite used
-1 GiB. This is separate from the
-experiment's heap requirement.
+Validation of the implementation (review branch, SCMC refit, likelihood
+cache and snapshot replay): the experiment namespaces pass 9 tests / 144
+assertions; the full JVM suite passes 417 tests / 4,880 assertions with a
+3 GiB heap; the directly affected JVM namespaces (scmc, scmc-stream,
+population-path) pass 24 tests / 183 assertions. Lint and formatting are
+clean. The ClojureScript suite was not run (no node_modules in the
+review worktree). The receipts under experiments/results/reactive-telemetry/
+were regenerated with this code in a 2 GiB REPL.
 
 Production follow-up remains the ObservationUpdatePlan compiler: retain
 observation-value expressions and input/effect footprints, prove row-local

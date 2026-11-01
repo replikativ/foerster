@@ -109,6 +109,14 @@
                 position and every particle's incremental log weight to it
     :density    (fn [pos]) -> the log density of θ the moves at `pos` leave
                 invariant
+    :start-log-density  optional (fn [pos]) -> (fn [q]) the density at a
+                chain's start state q from values the path already holds,
+                or nil to evaluate it; a chain carries the density of its
+                state from one walk to the next
+    :kept       optional (fn [pos q]), called with the state a chain keeps
+                after each walk, before the next walk or chain evaluates
+                anything: a path that keeps values per evaluated state can
+                drop those of rejected proposals
     :exhausted  (fn [pos]) -> the exception thrown after `:max-steps`
 
   `opts`: `:n` particles, `:waste-free` P (resample n/P and keep every state
@@ -126,15 +134,18 @@
                      (try
                        (let [scales (theta-scales starts scale)
                              f ((:density path) position)
+                             start-f (if-let [g (:start-log-density path)] (g position) (constantly nil))
+                             kept (if-let [g (:kept path)] (partial g position) (constantly nil))
                              chains (mapv
                                      (fn [i q0]
                                        (random/with-stream* seed [(:move keys) k i]
-                                         #(loop [s 0 q q0 states []]
+                                         #(loop [s 0 q q0 lp (start-f q0) states []]
                                             (if (= s steps) states
-                                                (let [{q' :q accepted :accepted} (block-mh/walk f q scales dim)]
+                                                (let [{q' :q accepted :accepted lp' :lp} (block-mh/walk f q scales dim lp)]
                                                   (swap! stats (fn [st] (-> st (update :moves + dim)
                                                                             (update :accepted + accepted))))
-                                                  (recur (inc s) q' (conj states q')))))))
+                                                  (kept q')
+                                                  (recur (inc s) q' lp' (conj states q')))))))
                                      (range) starts)]
                          (resolve {:chains chains}))
                        (catch #?(:clj Throwable :cljs :default) e (reject e)))))}
