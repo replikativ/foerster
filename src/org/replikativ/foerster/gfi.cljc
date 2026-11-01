@@ -344,33 +344,33 @@
     (let [world (:trace/world trace)
           move (rtp/swap-state! world [:inference ::proposals] (fnil inc 0))
           seed-of (fn [role] (sp/derive-seed (sp/seed world) ::proposal [move role]))]
-    ((simulate (apply proposal (itrace/choices trace) args) {:seed (seed-of :forward)})
-     (fn [fwd]
-       (let [proposed (itrace/choices fwd)
-             fwd-score (itrace/log-joint fwd)]
-         ((close! fwd)
-          (fn [_]
-            ((update trace proposed)
-             (fn [{t' :trace w :weight discard :discard}]
-               ((assess-visiting (apply proposal (itrace/choices t') args) discard {:seed (seed-of :reverse)})
-                (fn [{bwd-score :weight visited :visited}]
+      ((simulate (apply proposal (itrace/choices trace) args) {:seed (seed-of :forward)})
+       (fn [fwd]
+         (let [proposed (itrace/choices fwd)
+               fwd-score (itrace/log-joint fwd)]
+           ((close! fwd)
+            (fn [_]
+              ((update trace proposed)
+               (fn [{t' :trace w :weight discard :discard}]
+                 ((assess-visiting (apply proposal (itrace/choices t') args) discard {:seed (seed-of :reverse)})
+                  (fn [{bwd-score :weight visited :visited}]
                   ;; a discarded site the reverse proposal does not propose
                   ;; would be drawn afresh by the reverse update, as a replay
                   ;; draws it (its prior, its site proposal or a block's
                   ;; :sample): that density belongs to the reverse move
-                  (let [old-by (entry-map trace)
-                        regenerated (reduce + 0.0 (for [[a v] discard
-                                                        :when (not (contains? visited a))]
-                                                    (itrace/redraw-log-density (get-in old-by [a :note]) v)))
-                        log-alpha (+ w (- (+ bwd-score regenerated) fwd-score))
-                        accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) log-alpha))
-                                     (or (>= log-alpha 0.0)
-                                         (< (Math/log (random/in-world-stream (:trace/world t') ::accept
-                                                                              m/uniform01))
-                                            log-alpha)))]
-                    (if accept? (trace/release! trace t') (trace/release! t' trace))
-                    (resolve {:trace (if accept? t' trace) :accepted? accept?})))
-                (fn [e] (trace/release! t' trace) (reject e))))
-             reject))
-          reject)))
-     reject))))
+                    (let [old-by (entry-map trace)
+                          regenerated (reduce + 0.0 (for [[a v] discard
+                                                          :when (not (contains? visited a))]
+                                                      (itrace/redraw-log-density (get-in old-by [a :note]) v)))
+                          log-alpha (+ w (- (+ bwd-score regenerated) fwd-score))
+                          accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) log-alpha))
+                                       (or (>= log-alpha 0.0)
+                                           (< (Math/log (random/in-world-stream (:trace/world t') ::accept
+                                                                                m/uniform01))
+                                              log-alpha)))]
+                      (if accept? (trace/release! trace t') (trace/release! t' trace))
+                      (resolve {:trace (if accept? t' trace) :accepted? accept?})))
+                  (fn [e] (trace/release! t' trace) (reject e))))
+               reject))
+            reject)))
+       reject))))

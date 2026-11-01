@@ -2,7 +2,7 @@
   "Block Gibbs against an exact posterior, and the conditions it needs:
   moves that keep the block's membership, symmetric block kernels and
   real-valued random-walk targets."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.dist :as dist]
