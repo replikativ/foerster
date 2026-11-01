@@ -583,7 +583,13 @@ the target with Pareto-smoothed weights:
 
 Its gradients are L-BFGS's own, one per optimizer step and line-search
 trial; on top, every iterate costs `:elbo-draws` (30) log densities without
-gradient, and the final draws one each. On posteriordb's
+gradient, and the final draws one each. The inverse Hessian is kept as a
+diagonal plus a low-rank term and drawn from by Zhang et al.'s Alg. 4, so
+an iterate costs O(d·m²) for m ≤ `:history` pairs rather than a dense d × d
+matrix and its Cholesky factor (at d = 100 about 4.7× faster than the dense
+version it replaced, with the same approximations). The diagonal is
+L-BFGS's own γ·I by default; `:diagonal :recovered` uses Zhang et al.'s
+Alg. 3 estimate, as Stan and BlackJAX do. On posteriordb's
 regressions its means and standard deviations come within a few percent of
 the reference. Where k̂ is high, use it to initialize a sampler, not as the
 posterior.
