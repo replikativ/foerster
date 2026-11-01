@@ -67,32 +67,63 @@
 
 (defn- mean-of [xs] (/ (reduce + xs) (count xs)))
 
+(def ^:private sigma
+  ;; P⁻¹, the target's covariance
+  [[0.27380952380952384 -0.09523809523809525 0.023809523809523808]
+   [-0.09523809523809525 0.38095238095238093 -0.09523809523809523]
+   [0.023809523809523808 -0.09523809523809523 0.5238095238095238]])
+
+(defn- resampled-se
+  "Monte Carlo standard error of the mean of resampled `draws` for a
+  coordinate of posterior sd `sd`: duplicates carry no information, and the
+  importance weights cost more, so the effective size is taken as half the
+  distinct draws."
+  [draws sd]
+  (/ sd (Math/sqrt (/ (count (set draws)) 2.0))))
+
+(defn- pathfinder-on-a-gaussian-holds? [seed]
+  ;; On a quadratic target the L-BFGS path ends at the mean. The best
+  ;; Gaussian is picked by an ELBO estimate from E draws: an iterate whose
+  ;; mean is off by δ posterior sds loses δ²/2 in ELBO, while its estimate's
+  ;; noise has sd ≈ δ/√E, so it wins only if δ < 2z/√E: with z ≤ 3 its mean
+  ;; is within 6/√E sds. The resampled draws' means are within 4 standard
+  ;; errors of the exact mean. A block without :sample and :init starts at 0.
+  (random/set-seed! seed)
+  (let [elbo-draws 400
+        {:keys [mean covariance draws elbo paths]}
+        (opt/pathfinder (block/block-dist gaussian nil) {:draws 4000 :elbo-draws elbo-draws})
+        sds (mapv #(Math/sqrt (get-in sigma [% %])) (range 3))]
+    {:mean (every? true? (map (fn [x mu sd] (< (Math/abs (- x mu)) (* (/ 6.0 (Math/sqrt elbo-draws)) sd))) mean m sds))
+     :covariance (every? true? (map #(close? %1 %2 0.1) (flatten covariance) (flatten sigma)))
+     :draws (and (= 4000 (count draws))
+                 (every? true? (map (fn [j mu sd] (< (Math/abs (- (mean-of (map #(nth % j) draws)) mu))
+                                                     (* 4 (resampled-se draws sd))))
+                                    (range 3) m sds)))
+     ;; the ELBO is at most log Z = 2.5346, up to Monte Carlo error
+     :elbo (< elbo 2.6)
+     :paths (= 4 (count paths))}))
+
 (deftest pathfinder-on-a-gaussian
-  ;; on a quadratic target the L-BFGS path ends at the mean with an inverse
-  ;; Hessian estimate close to the covariance; a block without :sample and
-  ;; without :init starts at 0
-  (random/set-seed! 4)
-  (let [{:keys [mean covariance draws elbo paths]} (opt/pathfinder (block/block-dist gaussian nil) {})
-        sigma [[0.27380952380952384 -0.09523809523809525 0.023809523809523808]
-               [-0.09523809523809525 0.38095238095238093 -0.09523809523809523]
-               [0.023809523809523808 -0.09523809523809523 0.5238095238095238]]]
-    (is (every? true? (map #(close? %1 %2 0.02) mean m)))
-    (is (every? true? (map #(close? %1 %2 0.1) (flatten covariance) (flatten sigma))))
-    (is (= 1000 (count draws)))
-    (is (every? true? (map #(close? (mean-of (map % draws)) %2 0.06) [first second #(nth % 2)] m)))
-    (testing "the ELBO is at most log Z = 2.5346, up to Monte Carlo error"
-      (is (< elbo 2.6)))
-    (is (= 4 (count paths)))))
+  (doseq [seed [4 5]]
+    (let [r (pathfinder-on-a-gaussian-holds? seed)]
+      (is (every? true? (vals r)) (str "seed " seed ": " r)))))
 
 (deftest pathfinder-resamples-towards-the-target
-  ;; in θ = log σ the Gamma(3, 2) target is skewed: the Gaussian's draws
-  ;; overshoot E σ = 1.5, the importance-resampled draws do not
+  ;; in θ = log σ the Gamma(3, 2) target is skewed, so no Gaussian in θ is
+  ;; exact: the importance-resampled draws still have E σ = 1.5 (sd √3/2),
+  ;; within Monte Carlo error. The Gaussian the ELBO picks is not checked
+  ;; against 1.5 (it may over- or undershoot, by seed); `draw` maps its own
+  ;; draws back, so their mean is its lognormal mean exp(μ + v/2)
   (random/set-seed! 3)
-  (let [{:keys [draws draw]} (opt/pathfinder (block/block-dist gamma-3-2 nil) {:draws 4000})
-        resampled (mean-of (map #(Math/exp (first %)) draws))
-        gaussian (mean-of (map :s (repeatedly 4000 draw)))]
-    (is (close? 1.5 resampled 0.05))
-    (is (> gaussian 1.65))))
+  (let [{:keys [draws draw mean covariance]} (opt/pathfinder (block/block-dist gamma-3-2 nil) {:draws 4000})
+        sigmas (map #(Math/exp (first %)) draws)
+        gaussian-draws (map :s (repeatedly 4000 draw))
+        gaussian (mean-of gaussian-draws)
+        gaussian-se (/ (Math/sqrt (/ (reduce + (map #(let [e (- % gaussian)] (* e e)) gaussian-draws)) 3999.0))
+                       (Math/sqrt 4000.0))]
+    (is (< (Math/abs (- 1.5 (mean-of sigmas))) (* 4 (resampled-se sigmas (/ (Math/sqrt 3.0) 2.0)))) (str (mean-of sigmas)))
+    (is (< (Math/abs (- gaussian (Math/exp (+ (first mean) (/ (ffirst covariance) 2.0))))) (* 4 gaussian-se))
+        (str gaussian " ± " gaussian-se))))
 
 (deftest pathfinder-options
   (random/set-seed! 5)
@@ -223,15 +254,16 @@
     [mean (Math/sqrt (/ (reduce + (map #(let [e (- % mean)] (* e e)) xs)) (dec n)))]))
 
 (deftest pathfinder-draws-agree-with-the-dense-version
-  ;; the same approximations, drawn differently: the resampled draws'
-  ;; means agree within Monte Carlo error, taking the distinct draws as the
-  ;; effective sample size; both against the target's exact means too
+  ;; with :diagonal :lbfgs, the same approximations, drawn differently: the
+  ;; resampled draws' means agree within Monte Carlo error, taking the
+  ;; distinct draws as the effective sample size; both against the target's
+  ;; exact means too
   (doseq [[label d exact] [["a correlated Gaussian" (block/block-dist gaussian nil) m]
                            ["Gamma(3, 2) in log σ" (block/block-dist gamma-3-2 nil) nil]]]
     (let [run (fn [approximation seed]
                 (random/set-seed! seed)
                 (with-redefs-fn {#'opt/approximation approximation}
-                  #(:draws (opt/pathfinder d {:draws 4000}))))
+                  #(:draws (opt/pathfinder d {:draws 4000 :diagonal :lbfgs}))))
           factored (run @#'opt/approximation 21)
           dense (run dense-approximation 22)]
       (doseq [j (range (count (first factored)))]
@@ -265,13 +297,12 @@
                          (dense-bfgs pairs d))
            1e-10))))
 
-(deftest pathfinder-can-recover-zhangs-diagonal
-  ;; :diagonal :recovered (Zhang et al.'s Alg. 3, as Stan and BlackJAX)
+(deftest pathfinder-can-keep-the-l-bfgs-diagonal
+  ;; :diagonal :lbfgs (L-BFGS's γI) against the exact means
   (random/set-seed! 23)
-  (let [{:keys [draws]} (opt/pathfinder (block/block-dist gaussian nil) {:draws 4000 :diagonal :recovered})
-        n (count (set draws))]
+  (let [{:keys [draws]} (opt/pathfinder (block/block-dist gaussian nil) {:draws 4000 :diagonal :lbfgs})]
     (doseq [j (range 3)]
-      (let [[mean sd] (draw-moments draws j)]
-        (is (< (Math/abs (- mean (nth m j))) (* 4 (/ sd (Math/sqrt n)))) (str j " " mean)))))
+      (let [sd (Math/sqrt (get-in sigma [j j]))]
+        (is (< (Math/abs (- (mean-of (map #(nth % j) draws)) (nth m j))) (* 4 (resampled-se draws sd))) (str j)))))
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #":diagonal"
                         (opt/pathfinder (block/block-dist gaussian nil) {:diagonal :dense}))))

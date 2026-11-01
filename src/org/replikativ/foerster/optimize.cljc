@@ -384,12 +384,12 @@
   compact form of the BFGS updates, and a Gaussian is drawn from and
   scored by Zhang et al.'s Alg. 4: O(d·m²) per iterate and O(d·m) per
   draw, no d × d matrix (only the returned `:covariance` is dense). Its
-  diagonal is L-BFGS's own γ·I (`:diagonal :lbfgs`, the default: the
-  inverse Hessian the optimizer used), or Zhang et al.'s Alg. 3 estimate
-  recovered along the path (`:diagonal :recovered`, as Stan and BlackJAX).
+  diagonal is Zhang et al.'s Alg. 3 estimate recovered along the path
+  (`:diagonal :recovered`, the default, as Stan and BlackJAX), or L-BFGS's
+  own γ·I (`:diagonal :lbfgs`: the inverse Hessian the optimizer used).
 
   Options: `:init`, `:paths` (4), `:draws` (1000), `:elbo-draws` (30),
-  `:history` (6, L-BFGS pairs), `:diagonal` (`:lbfgs`), `:max-iterations`
+  `:history` (6, L-BFGS pairs), `:diagonal` (`:recovered`), `:max-iterations`
   (1000), `:tolerance`,
   `:rel-obj-tolerance` (1e4·ε, as Stan: a step that changes the target by
   less, relatively, ends the path).
@@ -400,7 +400,7 @@
   sampler, not as the posterior. Throws `::no-approximation` when no path
   yields a Gaussian or none of its draws has positive target density."
   [d & [{:keys [init paths draws elbo-draws history diagonal]
-         :or {paths 4 draws 1000 elbo-draws 30 history 6 diagonal :lbfgs}
+         :or {paths 4 draws 1000 elbo-draws 30 history 6 diagonal :recovered}
          :as opts}]]
   (doseq [[k v] {:paths paths :draws draws :elbo-draws elbo-draws :history history}]
     (when-not (pos-int? v)

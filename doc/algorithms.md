@@ -588,8 +588,8 @@ diagonal plus a low-rank term and drawn from by Zhang et al.'s Alg. 4, so
 an iterate costs O(d·m²) for m ≤ `:history` pairs rather than a dense d × d
 matrix and its Cholesky factor (at d = 100 about 4.7× faster than the dense
 version it replaced, with the same approximations). The diagonal is
-L-BFGS's own γ·I by default; `:diagonal :recovered` uses Zhang et al.'s
-Alg. 3 estimate, as Stan and BlackJAX do. On posteriordb's
+Zhang et al.'s Alg. 3 estimate recovered along the path by default, as Stan
+and BlackJAX do; `:diagonal :lbfgs` uses L-BFGS's own γ·I. On posteriordb's
 regressions its means and standard deviations come within a few percent of
 the reference. Where k̂ is high, use it to initialize a sampler, not as the
 posterior.
