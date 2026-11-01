@@ -464,3 +464,15 @@
     (is (< (Math/abs (- (:mean z) p-z1)) (* 4 (:mcse z))) (str z " vs " p-z1))
     (is (< (Math/abs (- (:mean mu) e-mu)) (* 4 (:mcse mu))) (str mu " vs " e-mu))))
 
+(deftest the-step-size-heuristic-stops-on-nan
+  ;; current Stan's NaN guard: a NaN step size is returned, and a NaN log
+  ;; density at q (a NaN energy error) ends the search instead of halving
+  ;; for ever
+  (let [init @#'nuts/init-step-size
+        dd (block/block-dist (isotropic-gaussian 1 1.0) nil)
+        nan-target (block/block {:block/id :nan :block/latents [{:name :x :shape [] :support :real}]}
+                                {:log-density (fn [_ _] ##NaN) :value+grad (fn [_ _] [##NaN (double-array [##NaN])])})
+        within (fn [f] (deref (future (f)) 10000 ::hung))]
+    (is (NaN? (within #(init dd [1.0] [0.0] [-0.0 (double-array [0.0])] ##NaN))))
+    (is (= 0.1 (within #(random/with-stream* [1 2] ::nan
+                          (fn [] (init (block/block-dist nan-target nil) [1.0] [0.0] [##NaN (double-array [##NaN])] 0.1))))))))

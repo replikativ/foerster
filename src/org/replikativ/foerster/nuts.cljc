@@ -209,7 +209,8 @@
   while one leapfrog step from `q` with fresh momentum is accepted with
   probability above 0.8, or halve it while it is below, whichever the first
   step says, until that crosses. `start` is [log density, gradient] at `q`.
-  An extreme `eps` (0 or above 1e7) is returned as it is."
+  An extreme `eps` (0, NaN or above 1e7) is returned as it is, and a NaN
+  energy error stops the search."
   [dist inv-metric q start eps]
   (let [inv-metric (double-array inv-metric)
         q (double-array q)
@@ -219,12 +220,14 @@
                         h0 (hamiltonian z)
                         h (let [h (hamiltonian (leapfrog dist inv-metric eps 1 z))] (if (NaN? h) ##Inf h))]
                     (- h0 h)))]
-    (if (or (zero? eps) (> eps 1e7))
+    (if (or (NaN? eps) (zero? eps) (> eps 1e7))
       eps
       (let [direction (if (> (delta-h eps) log-0-8) 1 -1)]
         (loop [eps eps]
           (let [dh (delta-h eps)]
-            (if (if (= 1 direction) (not (> dh log-0-8)) (not (< dh log-0-8)))
+            ;; a NaN energy error (a NaN log density at q) ends the search, as
+            ;; current Stan's NaN guard does, instead of halving for ever
+            (if (or (NaN? dh) (if (= 1 direction) (not (> dh log-0-8)) (not (< dh log-0-8))))
               eps
               (let [eps (if (= 1 direction) (* 2.0 eps) (* 0.5 eps))]
                 (when (> eps 1e7)
