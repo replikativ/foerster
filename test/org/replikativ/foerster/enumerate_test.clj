@@ -4,9 +4,10 @@
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.dist :as dist]
-            [org.replikativ.foerster.effects :refer [observe sample factor]]
+            [org.replikativ.foerster.effects :refer [observe sample factor intervene!]]
             [org.replikativ.foerster.enumerate :as enumerate]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn- burglary
@@ -74,3 +75,60 @@
   (let [measure (b/run-infer 2 #(infer/infer (spin (observe (dist/categorical {nil 1.0 :a 3.0}) nil :id :y) :done)
                                              {:method :enumerate}))]
     (is (< (Math/abs (- (m/log-marginal measure) (Math/log 0.25))) 1e-12))))
+
+;; -----------------------------------------------------------------------------
+;; The caller's policy decides every site
+;; -----------------------------------------------------------------------------
+
+(defn- noisy-flip
+  "x ~ flip(0.3); observe flip(x ? 0.9 : 0.1) = true. With `world-do`, the
+  model first intervenes on x in its own world (`intervene!`)."
+  [world-do]
+  (spin
+   (when (some? world-do) (intervene! :x world-do))
+   (let [x (sample (dist/flip 0.3) :id :x)]
+     (observe (dist/flip (if x 0.9 0.1)) true :id :y)
+     x)))
+
+(defn- evidence-and-p-true [measure]
+  (let [ps (m/get-particles measure)
+        ws (m/normalize-log-weights (mapv second ps))]
+    [(Math/exp (m/log-marginal measure))
+     (reduce + (map (fn [[s _] w] (if (m/get-value s) w 0.0)) ps ws))]))
+
+(deftest the-caller-s-policy-decides-latent-sites
+  ;; [label world-do opts evidence P(x | y) branches]
+  (doseq [[label world-do opts z p-true branches]
+          [["plain" nil {} 0.34 (/ 0.27 0.34) 2]
+           ;; a constraint fixes x and scores it: p(x = true) · p(y | x)
+           ["constraint" nil {:policy (itrace/policy {:constraints {:x true}})} 0.27 1.0 1]
+           ;; do(x = true) fixes x and scores nothing
+           ["policy intervention" nil {:policy (itrace/policy {:interventions {:x true}})} 0.9 1.0 1]
+           ["world intervention" true {} 0.9 1.0 1]
+           ["world intervention, false" false {} 0.1 0.0 1]
+           ;; a new mechanism is summed over: 0.8·0.9 + 0.2·0.1
+           ["mechanism replacement" nil {:policy (itrace/policy {:interventions {:x {:dist (dist/flip 0.8)}}})}
+            0.74 (/ 0.72 0.74) 2]
+           ;; the temperature stays: 0.3·0.9^½ + 0.7·0.1^½
+           ["temperature" nil {:policy (itrace/policy {:temperature 0.5})}
+            (+ (* 0.3 (Math/sqrt 0.9)) (* 0.7 (Math/sqrt 0.1)))
+            (/ (* 0.3 (Math/sqrt 0.9)) (+ (* 0.3 (Math/sqrt 0.9)) (* 0.7 (Math/sqrt 0.1)))) 2]]]
+    (let [exact (b/run-infer 3 #(infer/infer (noisy-flip world-do) (assoc opts :method :enumerate)))
+          [ez ep] (evidence-and-p-true exact)
+          ;; importance sampling under the same policy agrees
+          [iz ip] (evidence-and-p-true
+                   (b/run-infer 4 #(infer/infer (noisy-flip world-do)
+                                                (assoc opts :method :importance :particles 4000 :seed 4))))]
+      (is (< (Math/abs (- ez z)) 1e-12) (str label ": evidence " ez))
+      (is (< (Math/abs (- ep p-true)) 1e-12) (str label ": posterior " ep))
+      (is (= branches (count (m/get-particles exact))) (str label ": branches"))
+      (is (< (Math/abs (- iz z)) 0.03) (str label ": importance sampling's evidence " iz))
+      (is (< (Math/abs (- ip p-true)) 0.03) (str label ": importance sampling's posterior " ip)))))
+
+(deftest unsummable-policies-are-refused
+  (doseq [[label opts] [["opaque policy" {:policy (fn [_sp _old] nil)}]
+                        ["fresh mechanism noise"
+                         {:policy (itrace/policy {:interventions {:x {:dist (dist/flip 0.8) :coupling :fresh}}})}]]]
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (b/run-infer 5 #(infer/infer (noisy-flip nil) (assoc opts :method :enumerate))))
+        label)))
