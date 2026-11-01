@@ -400,7 +400,6 @@
           cached (let [c (:coreset-log-likelihoods state)]
                    (when (and (= n (count c)) (every? #(= (count coreset) (count %)) c)) c))
           start-lls (when cached (zipmap particles (map into cached batch-lls)))
-
           ;; per evaluated state, the log-likelihood of each expanded datum:
           ;; the projection's columns at the moved particles
           seen (volatile! {})
@@ -430,7 +429,7 @@
                                              :keys {:resample ::resample :move ::move}})
           lls (mapv (fn [q] (or (get @seen q) (evaluate :projection q))) qs)
           compress? (> (count expanded) memory)
-          kept (if compress?
+          kept (when compress?
                  (recompress (if (inflated? projection-inflation)
                                (let [ls (mapv #(evaluate :projection %) (inflate qs projection-inflation))]
                                  (when-not (every? (fn [row] (every? #(< ##-Inf % ##Inf) row)) ls)
@@ -439,8 +438,7 @@
                                                     :projection-inflation projection-inflation})))
                                  ls)
                                lls)
-                             (vec (repeat n (- (Math/log n)))) expanded memory (or refit :nnls))
-                 (mapv (fn [j] [j 1.0]) (range (count expanded))))
+                             (vec (repeat n (- (Math/log n)))) expanded memory (or refit :nnls)))
           coreset (if compress?
                     (mapv (fn [[j w]] [w (second (expanded j))]) kept)
                     expanded)]
