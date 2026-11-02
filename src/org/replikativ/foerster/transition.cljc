@@ -263,7 +263,7 @@
        scope source nil
        (fn [{root :child-ctx}]
          (try
-           (rtp/swap-state! root [:inference :canonical?] (constantly true))
+           (itrace/mark-canonical! root)
            (resolve [root (sp/open! root {:purpose :mcmc :seed seed :scope scope})])
            (catch #?(:clj Throwable :cljs :default) error (give-up error))))
        give-up))))

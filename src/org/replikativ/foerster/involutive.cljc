@@ -131,9 +131,9 @@
             from (trace/earliest trace (keys changed))]
         (if-not from
           (resolve {:trace trace :accepted? false :log-ratio 0.0})
-          ;; in canonical worlds without adopting the replayed world's
-          ;; computations (`itrace/reexecute`)
-          ((trace/replay (cond-> trace (itrace/canonical? trace) (dissoc :trace/world)) from
+          ;; adopting the replayed world's computations only when sound
+          ;; (`itrace/replay-sound`)
+          ((itrace/replay-sound trace from
                          (itrace/policy {:keep? true
                                          :draw (fn [sp _]
                                                  (let [a (:savepoint/address sp)]

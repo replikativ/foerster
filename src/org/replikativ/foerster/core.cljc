@@ -38,7 +38,6 @@
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.spindel.engine.core :as rtc]
-            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.combinators :as comb]
@@ -301,7 +300,7 @@
                                             (let [[resolve reject] (sp/in-callers-world resolve reject)]
                                               (world-scope/fork! scope source {:grant grant}
                                                                  resolve reject))))))
-         (rtp/swap-state! @root [:inference :canonical?] (constantly true))
+         (itrace/mark-canonical! @root)
          (vreset! measure
                   (await (run (binding [rtc/*execution-context* @root]
                                 ;; every particle runs the whole model: a

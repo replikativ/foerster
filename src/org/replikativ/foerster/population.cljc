@@ -25,8 +25,7 @@
             [org.replikativ.foerster.execution :as execution]
             [org.replikativ.foerster.block-mh :as block-mh]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.trace :as itrace]
-            [org.replikativ.spindel.trace :as trace]))
+            [org.replikativ.foerster.trace :as itrace]))
 
 (defn relative-cess
   "The conditional ESS of the incremental weights exp(δ·ℓ) under the
@@ -90,7 +89,7 @@
           policy (fn [q] (itrace/policy {:constraints {address q}}))]
       ((execution/parallel (executor-of template) (count distinct-qs)
                            (fn [i res rej]
-                             ((trace/replay (cond-> template (itrace/canonical? template) (dissoc :trace/world))
+                             ((itrace/replay-sound template
                                             address (policy (nth distinct-qs i))
                                             {:anchor? (if (itrace/canonical? template) itrace/canonical-anchor? itrace/anchor?)})
                               res rej)))

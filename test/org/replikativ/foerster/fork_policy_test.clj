@@ -311,12 +311,12 @@
                                                      {:method :mh :iterations 10 :world-policy :fork
                                                       :authority :ledger :grant {:tokens 1}}))))))))
 
-;; A keyed model that writes state: under :fresh, an MH move on a keyed site
-;; re-runs its key in the world the trace ENDED in (`spindel.trace/update`),
-;; so the key's write is applied again on top of its earlier one, and the
-;; parent's continuation reads the doubled state (observed: 3 to 23 writes
-;; per state of a 3-key model). Under :fork reuse is off and every state
-;; holds exactly its own three writes.
+;; A keyed model that writes state. A keyed update re-runs its key in the
+;; world the trace ENDED in (`spindel.trace/update`), so the key's write
+;; would be applied again on top of its earlier one (before
+;; `itrace/wrote-state?`: 3 to 23 writes per state of this 3-key model under
+;; :fresh). A run that wrote state is moved by replay from an anchor instead,
+;; under either policy, and every state holds exactly its own three writes.
 
 (def ^:private keyed-reports [0.9 0.6 1.1])
 
@@ -338,15 +338,16 @@
                                        keyed-reports)))]
     (/ (lik 1.4) (+ (lik 0.8) (lik 1.4)))))
 
-(deftest keyed-models-that-write-state-stay-exact-under-fork
+(deftest keyed-models-that-write-state-stay-exact
   (in-root
-   (let [posterior @(spin (await (inference/infer (keyed-model)
-                                                  {:method :mh :iterations 2500 :chains 4 :burn 100
-                                                   :world-policy :fork :seed 11})))
-         values (map measure/get-value (measure/get-contexts posterior))]
-     (is (every? #(= 3 (:writes %)) values) "every state holds its own writes, once")
-     (is (< (Math/abs (- keyed-p-fast (fast-fraction posterior))) 0.06)
-         (str (fast-fraction posterior) " vs exact " keyed-p-fast)))))
+   (doseq [policy [:fresh :fork]]
+     (let [posterior @(spin (await (inference/infer (keyed-model)
+                                                    {:method :mh :iterations 2500 :chains 4 :burn 100
+                                                     :world-policy policy :seed 11})))
+           values (map measure/get-value (measure/get-contexts posterior))]
+       (is (every? #(= 3 (:writes %)) values) (str policy ": every state holds its own writes, once"))
+       (is (< (Math/abs (- keyed-p-fast (fast-fraction posterior))) 0.06)
+           (str policy ": " (fast-fraction posterior) " vs exact " keyed-p-fast))))))
 
 (deftest cancelling-a-chain-joins-and-discards-its-worlds
   (let [root (context/create-execution-context {:executor (executor/thread-pool-executor 2)})

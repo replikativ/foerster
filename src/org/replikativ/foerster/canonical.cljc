@@ -6,10 +6,10 @@
   and scope of its own; the scope's cleanup, its recovery capability, and
   the wallet arithmetic of `:authority`. See doc/worlds.md."
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.spindel.effects.savepoint :as sp]
+  (:require [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.spindel.engine.core :as rtc]
-            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await await-finalization]]))
@@ -111,7 +111,7 @@
                          (await (in-caller #(world-scope/copy! probes probe 1 %1 %2))))
                        (finally
                          (await-finalization (in-caller (world-scope/discard-when-quiescent! probes)))))))
-           (rtp/swap-state! @source [:inference :canonical?] (constantly true))
+           (itrace/mark-canonical! @source)
            (await (body (assoc opts :org.replikativ.foerster.core/source @source)))
            (catch #?(:clj Throwable :cljs :default) e
              (throw (if (#{spin-core/spin-cancelled :org.replikativ.foerster.core/inference-failed} (:type (ex-data e)))

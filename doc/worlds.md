@@ -105,21 +105,33 @@ however inference ends.
 
 ## Incremental reuse
 
-Pure inference reuses work between a trace and its proposals: a move on a
-site of a keyed loop re-runs only that key (`spindel.trace/update`), and a
+Inference reuses work between a trace and its proposals: a move on a site
+of a keyed loop re-runs only that key (`spindel.trace/update`), and a
 replay adopts computations of the replayed world that are unchanged. Both
 assume that a computation depends on its arguments and choices only. A
-model that reads state it — or a later part of it — wrote breaks that:
-a keyed update re-runs the key in the world the trace *ended* in, so the
-key's own earlier writes are applied again, and a replay may adopt a
-computation that read a value since changed. Spindel does not track which
-world state a computation read, so in canonical worlds foerster reuses
-nothing incrementally: a move replays from the latest anchor before its
-sites (the world as it was at that site), and a keyed model, whose sites
-take no anchors, re-executes from its start. Reuse returns when Spindel can
-tell which computations' state a world changed. (Under `:fresh` the same
-hazard applies to a keyed model that writes its own state; keep such
-writes out of keyed bodies, or run it under `:fork`.)
+model that writes world state breaks that: a keyed update re-runs the key
+in the world the trace *ended* in, so the key's own earlier writes (and
+those of its siblings and of later code) are still in place, and a replay
+may adopt a computation that read an atom whose value has since changed
+(Spindel records tracked signals as dependencies, not atom reads).
+
+So foerster reuses work only for runs that wrote no world state
+(`itrace/wrote-state?`): no Spindel atom holds another value than where the
+run started, and the run created none. Under `:fork` the start is the
+caller's state, so a model that only *reads* it keeps its incremental moves.
+A move on a run that wrote state replays from the latest anchor before its
+sites (the world as it was at that site), without adoption; under `:fork` a
+keyed model, whose sites take no anchors, re-executes from its start site.
+Under `:fresh` such a keyed model needs a sample site before its keyed
+region (an anchor); without one the move is refused
+(`::itrace/stateful-keyed-move`). A keyed update or an adopting replay that
+itself writes state is given back and replayed without reuse.
+
+Not detected: writes to registered systems (Yggdrasil) and to signals. A
+model that writes a signal and tracks it in a sub-run is re-run reactively
+once the write is published, and its trace refuses the repeated site; keep
+a model's own state in atoms. Keyed children run in no fixed order, so a key
+that reads a sibling's writes depends on scheduling.
 
 ## What cannot be copied
 
