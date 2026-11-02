@@ -380,8 +380,6 @@
     (spin (query (await (smc-infer (model) 1000)) identity))"
   [model-task num-particles & [opts]]
   (check-options! opts (conj (into particle-options smc-options) :batch))
-  (when (and (:batch opts) (not (on-savepoints? opts)))
-    (throw (ex-info ":batch runs in fresh worlds" {:type ::invalid-world-policy :batch (:batch opts)})))
   (particles model-task num-particles opts))
 
 (defn tempered-infer
@@ -933,7 +931,17 @@
   #?(:clj [model iterations burn step-size chains opts]
      :cljs [_model _iterations _burn _step-size _chains _opts])
   #?(:clj
-     (let [[m args] (or (analysis/applied model)
+     (let [_ (when-let [misplaced (seq (filter #{:world-policy :world-opts :authority :grant} (keys opts)))]
+               ;; Compiled code has no worlds: it cannot fork the caller's
+               ;; world, and an option it would ignore is refused. A model
+               ;; that needs application state reads it once and passes it
+               ;; in as data.
+               (when (or (not= #{:world-policy} (set misplaced)) (not= :fresh (:world-policy opts)))
+                 (throw (ex-info (str ":compiled? runs without worlds; read application state once and "
+                                      "pass it to the model as data. Refused: " (vec misplaced))
+                                 {:type ::invalid-world-policy :options (vec misplaced)
+                                  :world-policy (:world-policy opts) :supported #{:fresh}}))))
+           [m args] (or (analysis/applied model)
                         (throw (ex-info ":compiled? needs a model made by foerster.analysis/model"
                                         {:type ::not-an-analysis-model})))]
        (on-savepoints (compiled/rmh (apply compiled/compile-model m args)
