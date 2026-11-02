@@ -23,11 +23,15 @@
   `update` and `regenerate` replay inside the session of the trace they are
   given and leave that trace intact: the caller keeps one of the two and gives
   the other back with `spindel.trace/release!`."
-  (:refer-clojure :exclude [update])
+  (:refer-clojure :exclude [update await])
   (:require [org.replikativ.foerster.scope :as scope]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.effects.await :refer [await]]
+            [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.foerster.trace :as itrace]
@@ -40,12 +44,89 @@
                             (catch #?(:clj Throwable :cljs :default) e (reject e))))
                reject)))
 
+(defn- deliver-run
+  "Run `model` under `policy` in `session`; resolve its trace, or close the
+  session and reject when the program throws."
+  [session model policy anchor? resolve reject]
+  (let [fail (fn [error]
+               ((sp/close! session) (fn [_] (reject error)) (fn [_] (reject error))))]
+    ((trace/run session model policy {:anchor? anchor?})
+     (fn [t]
+       ;; a program that threw is a failed run, not a trace
+       (if-let [error (:trace/error t)]
+         (fail (ex-info "The model failed" {:type ::model-failed} error))
+         (resolve t)))
+     fail)))
+
+(defn- canonical-run*
+  "`run*` in a fork of `source`, a frozen fork of the caller's world
+  (`:world-policy :fork`): the run's root is forked from it into a world
+  scope of its own (`:world-opts`, `:executor`), which its session joins and
+  closing it discards. The model runs whole, from a start site its moves can
+  re-execute it from (`itrace/canonical-anchor?`). The session exists once
+  the fork resolves: `:session` is nil, and the run is released through
+  `:inference-scope`, or by closing the trace's session."
+  [model policy source {:keys [executor inference-scope world-opts] :as opts}]
+  (let [scope (world-scope/create {:purpose :gfi :retain-released? false
+                                   :fork-opts (cond-> (or world-opts {})
+                                                executor (assoc :executor executor))})
+        state (atom {:session nil :released? false})
+        release (fn [_]
+                  (fn [resolve reject]
+                    (let [{:keys [session]} (swap! state assoc :released? true)]
+                      (if session
+                        ((sp/close! session) resolve reject)
+                        ((world-scope/discard-when-quiescent! scope) resolve reject)))))
+        session-opts (merge {:purpose :gfi :seed (random/fresh-seed)}
+                            (dissoc opts :executor :inference-scope :world-opts :canonical-source
+                                    :fork-opts :retain-released?)
+                            {:scope scope})]
+    (when inference-scope
+      (scope/acquire! inference-scope (constantly state) release))
+    {:session nil
+     :operation
+     (fn [resolve reject]
+       (let [[resolve reject] (sp/in-callers-world resolve reject)
+             give-up (fn [error]
+                       ((world-scope/discard-when-quiescent! scope)
+                        (fn [_] (reject error)) (fn [_] (reject error))))]
+         (world-scope/fork!
+          scope source nil
+          (fn [{root :child-ctx}]
+            (if (:released? @state)
+              (give-up (ex-info "The run was released before it started" {:type ::released}))
+              (try
+                (rtp/swap-state! root [:inference :canonical?] (constantly true))
+                (let [session (sp/open! root session-opts)
+                      after (swap! state #(if (:released? %) % (assoc % :session session)))]
+                  (if (:released? after)
+                    ((sp/close! session)
+                     (fn [_] (reject (ex-info "The run was released before it started" {:type ::released})))
+                     reject)
+                    (deliver-run session
+                                 (binding [ec/*execution-context* root]
+                                   (spin (sp/savepoint :org.replikativ.foerster.smc/start nil)
+                                         (await model)))
+                                 policy itrace/canonical-anchor? resolve reject)))
+                (catch #?(:clj Throwable :cljs :default) error (give-up error)))))
+          give-up)))}))
+
+(declare run-fresh*)
+
 (defn- run*
   "{:session s :operation op}: `model` under `policy` in a new root world and
   session `s`, run by the CPS operation `op`. Options: `:executor` for the
   root world, the rest are session options (`effects.savepoint/open!`). A run
   that fails — the program throws — closes its session and rejects
-  (`::model-failed`, the program's error its cause)."
+  (`::model-failed`, the program's error its cause). With
+  `:canonical-source`, a frozen fork of the caller's world, the run forks
+  it instead (`canonical-run*`)."
+  [model policy {:keys [canonical-source] :as opts}]
+  (if canonical-source
+    (canonical-run* model policy canonical-source opts)
+    (run-fresh* model policy opts)))
+
+(defn- run-fresh*
   [model policy {:keys [executor inference-scope] :as opts}]
   (let [root (if executor
                (ctx/create-execution-context :executor executor)
@@ -60,15 +141,7 @@
                   (allocate))]
     {:session session
      :operation (fn [resolve reject]
-                  (let [fail (fn [error]
-                               ((sp/close! session) (fn [_] (reject error)) (fn [_] (reject error))))]
-                    ((trace/run session model policy {:anchor? itrace/anchor?})
-                     (fn [t]
-                       ;; a program that threw is a failed run, not a trace
-                       (if-let [error (:trace/error t)]
-                         (fail (ex-info "The model failed" {:type ::model-failed} error))
-                         (resolve t)))
-                     fail)))}))
+                  (deliver-run session model policy itrace/anchor? resolve reject))}))
 
 (defn- run [model policy opts]
   (:operation (run* model policy opts)))

@@ -11,6 +11,7 @@ protocol-only runtime access and `*in-trampoline*` apply here unchanged.
 src/org/replikativ/foerster/
 ├── core.cljc          # public entry: smc-infer, kernel-infer, pgibbs-infer, …
 │                      #   in-canonical-worlds (:world-policy :fork)
+├── canonical.cljc     # one frozen fork of the caller per inference of several runs
 ├── program.cljc       # scoped programmable populations; direct PMeasure results
 ├── weights.cljc       # normalized selection weights and total mass
 ├── population/path.cljc # shared numeric/trace weighting, selection, retention

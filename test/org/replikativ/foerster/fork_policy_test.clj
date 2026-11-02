@@ -12,6 +12,9 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as measure]
+            [org.replikativ.foerster.program :as ip]
+            [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.smc2 :as smc2]
             [org.replikativ.spindel.atom :as sa]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.engine.context :as context]
@@ -20,7 +23,9 @@
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.keyed :refer [keyed]]
-            [org.replikativ.spindel.world.scope :as world-scope]))
+            [org.replikativ.spindel.world.scope :as world-scope]
+            [org.replikativ.spindel.yggdrasil :as ygg]
+            [yggdrasil.convergent.gset :as g]))
 
 (defmacro ^:private capturing-scopes
   "Run `body` with every world scope created meanwhile collected in `scopes`."
@@ -135,9 +140,9 @@
            state (sa/atom :before)
            log (sa/atom [:root])
            runs (atom 0)
-           smc (var-get #'org.replikativ.foerster.smc/smc)]
+           smc (var-get #'smc/smc)]
        (capturing-scopes [scopes]
-                         (with-redefs [org.replikativ.foerster.smc/smc
+                         (with-redefs [smc/smc
                                        (fn [& args]
                                          (when (= 2 (swap! runs inc))
                                            (binding [ec/*execution-context* caller]
@@ -377,3 +382,166 @@
                             (is (settled? @scopes) "the frozen fork and every chain world are discarded"))))
       (finally
         (context/close-context! root)))))
+
+;; -----------------------------------------------------------------------------
+;; Tempered SMC, parallel tempering and inference programs
+;; -----------------------------------------------------------------------------
+
+(defn- weighted-fast [posterior]
+  (let [ps (measure/get-particles posterior)
+        ws (mapv #(Math/exp (second %)) ps)]
+    (/ (reduce + (map (fn [[s _] w] (if (= 1.4 (:speed (measure/get-value s))) w 0.0)) ps ws))
+       (reduce + ws))))
+
+(deftest tempered-smc-runs-on-the-caller-s-state
+  (in-root
+   (let [queue (sa/atom backlog)]
+     (capturing-scopes [scopes]
+                       (let [posterior @(spin (await (inference/tempered-infer (queue-model queue) 300
+                                                                               {:world-policy :fork :seed 5})))
+                             values (map measure/get-value (measure/get-contexts posterior))]
+                         (is (< (Math/abs (- p-fast (weighted-fast posterior))) 0.08)
+                             (str (weighted-fast posterior) " vs exact " p-fast))
+                         (is (every? #(= [:in-flight :a :b :c] (mapv :id (:jobs (:queue %)))) values))
+                         (is (= backlog @queue) "the caller's queue is unchanged")
+                         (is (settled? @scopes) "every particle's world is discarded"))))))
+
+(defn- lnorm [x mu s] (dist/logpdf (dist/normal mu s) x))
+
+(def ^:private pt-block
+  ;; θ = (a, b) ~ N(center, 0.3²) each; the reference N(0, 3²)
+  (block/block {:block/id :pt :block/target :complete-conditional
+                :block/latents [{:name :a :shape []} {:name :b :shape []}]}
+               (let [lp (fn [[a b] {:keys [center]}] (+ (lnorm a center 0.3) (lnorm b center 0.3)))]
+                 {:log-density (fn [th inputs] (lp (vec th) inputs))
+                  :value+grad (fn [th inputs]
+                                (let [th (vec th) f (lp th inputs) h 1e-6]
+                                  [f (double-array (map (fn [i] (/ (- (lp (update th i + h) inputs) f) h)) (range 2)))]))
+                  :sample (fn [_] [(* 3.0 (dist/draw (dist/normal 0.0 1.0))) (* 3.0 (dist/draw (dist/normal 0.0 1.0)))])
+                  :sample-log-density (fn [th _] (let [[a b] (vec th)] (+ (lnorm a 0.0 3.0) (lnorm b 0.0 3.0))))})))
+
+(deftest parallel-tempering-reads-the-caller-s-state
+  (in-root
+   (let [center (sa/atom 1.5)
+         log (sa/atom [])]
+     (capturing-scopes [scopes]
+                       (let [posterior @(spin (await (inference/parallel-tempering-infer
+                                                      (spin (let [[a b] (sample (block/block-dist pt-block {:center @center})
+                                                                                :id :theta :init [0.0 0.0])]
+                                                              (swap! log conj :mine)
+                                                              {:a a :b b :log @log}))
+                                                      6 {:world-policy :fork :rounds 8 :seed 3})))
+                             values (map measure/get-value (measure/get-contexts posterior))
+                             mean-a (/ (reduce + (map :a values)) (count values))]
+                         (is (< (Math/abs (- 1.5 mean-a)) 0.1) (str mean-a))
+                         (is (every? #(= [:mine] (:log %)) values) "every written-back state holds its own write")
+                         (is (= [] @log) "nothing reaches the caller")
+                         (is (settled? @scopes)))))))
+
+(deftest inference-programs-run-trace-targets-on-the-caller-s-state
+  (in-root
+   (let [queue (sa/atom backlog)]
+     (capturing-scopes [scopes]
+                       (let [posterior @(spin (await (ip/run {:seed 42 :world-policy :fork}
+                                                             (fn [scope]
+                                                               (spin
+                                                                ;; importance weights, then moves on the
+                                                                ;; weighted population; a separate small
+                                                                ;; run below resamples (copies) too
+                                                                (let [p (await (ip/initialize scope (ip/trace-target (queue-model queue)
+                                                                                                                     {:world-policy :fork})
+                                                                                              600))
+                                                                      p (ip/advance scope p (ip/temperature (:target p) 1.0))
+                                                                      p (await (ip/move scope p (kernel/single-site-mh-kernel 2)))]
+                                                                  (ip/finish scope p)))))))
+                             values (map measure/get-value (measure/get-contexts posterior))]
+                         (is (< (Math/abs (- p-fast (weighted-fast posterior))) 0.08)
+                             (str (weighted-fast posterior) " vs exact " p-fast))
+                         (is (every? #(= [:in-flight :a :b :c] (mapv :id (:jobs (:queue %)))) values))
+                         (is (= backlog @queue))
+                         (is (settled? @scopes)))))
+   (testing "resampling copies particles in their canonical worlds"
+     (let [queue (sa/atom backlog)]
+       (capturing-scopes [scopes]
+                         (let [posterior @(spin (await (ip/run {:seed 7 :world-policy :fork}
+                                                               (fn [scope]
+                                                                 (spin
+                                                                  (let [p (await (ip/initialize scope (ip/trace-target (queue-model queue)
+                                                                                                                       {:world-policy :fork})
+                                                                                                40))
+                                                                        p (ip/advance scope p (ip/temperature (:target p) 1.0))
+                                                                        p (await (ip/resample scope p))
+                                                                        p (await (ip/move scope p (kernel/single-site-mh-kernel 2)))]
+                                                                    (ip/finish scope p)))))))]
+                           (is (= 40 (count (measure/get-particles posterior))))
+                           (is (every? #(= [:in-flight :a :b :c] (mapv :id (:jobs (:queue (measure/get-value %)))))
+                                       (measure/get-contexts posterior)))
+                           (is (= backlog @queue))
+                           (is (settled? @scopes))))))
+   (testing "a :fork target needs a :fork program"
+     (is (thrown-with-msg? Exception #"world-policy :fork"
+                           (deref (spin (await (ip/run {:seed 1}
+                                                       (fn [scope]
+                                                         (spin (ip/finish scope (await (ip/initialize scope (ip/trace-target (queue-model (sa/atom backlog))
+                                                                                                                             {:world-policy :fork})
+                                                                                                      4))))))))
+                                  10000 ::timed-out))))))
+
+;; -----------------------------------------------------------------------------
+;; PMMH
+;; -----------------------------------------------------------------------------
+
+(deftest pmmh-runs-every-iteration-on-the-caller-s-state
+  ;; θ = the server's speed, the jitters filtered by SMC: P(speed = 1.4 | y)
+  (in-root
+   (let [queue (sa/atom backlog)
+         model (fn []
+                 (spin
+                  (let [speed (sample (dist/categorical {0.8 0.5, 1.4 0.5}) :id :speed)]
+                    (doseq [{:keys [id reported] :as job} readings]
+                      (let [jitter (sample (dist/categorical {0.8 0.5, 1.2 0.5}) :id [:jitter id])
+                            finish (serve! queue job speed jitter)]
+                        (observe (dist/normal finish 0.35) reported :id [:completion id])))
+                    {:speed speed :queue @queue})))]
+     (capturing-scopes [scopes]
+                       (let [posterior @(spin (await (inference/infer (model)
+                                                                      {:method :pmmh :particles 60 :iterations 600 :burn 50
+                                                                       :params #{:speed}
+                                                                       :propose (fn [{:keys [speed]}]
+                                                                                  {:theta {:speed (if (= speed 0.8) 1.4 0.8)}
+                                                                                   :log-ratio 0.0})
+                                                                       :world-policy :fork :seed 21})))
+                             values (map measure/get-value (measure/get-contexts posterior))]
+                         (is (< (Math/abs (- p-fast (fast-fraction posterior))) 0.1)
+                             (str (fast-fraction posterior) " vs exact " p-fast))
+                         (is (every? #(= [:in-flight :a :b :c] (mapv :id (:jobs (:queue %)))) values))
+                         (is (= backlog @queue) "the caller's queue is unchanged")
+                         (is (settled? @scopes) "every iteration's worlds are discarded"))))))
+
+(deftest smc2-still-refuses-fork
+  (in-root
+   (is (= ::smc2/unsupported-world-policy
+          (:type (ex-data (try ((smc2/smc2 (spin nil) {:params #{:theta} :world-policy :fork})
+                                identity identity)
+                               nil
+                               (catch clojure.lang.ExceptionInfo e e))))))))
+
+(deftest a-world-that-may-not-be-copied-is-refused-by-every-method
+  (doseq [[method run] {:mh #(inference/infer % {:method :mh :iterations 5 :chains 1 :world-policy :fork})
+                        :pimh #(inference/pimh-infer % 2 2 {:world-policy :fork})
+                        :tempered #(inference/tempered-infer % 4 {:world-policy :fork})}]
+    (in-root
+     (ygg/register!
+      (g/gset (str "live-handle-" (name method))
+                                      {:store-config {:backend :memory :id (random-uuid)}} {:sync? true})
+      {:grade :affine})
+     (let [ran? (atom false)]
+       (capturing-scopes [scopes]
+                         (let [result (failure #(run (spin (reset! ran? true)
+                                                           (sample (dist/normal 0.0 1.0) :id :x))))]
+                           (is (= ::inference/inference-failed (:type (ex-data result))) (str method))
+                           (is (some #(= ::ygg/copy-forbidden (:type (ex-data %)))
+                                     (take-while some? (iterate ex-cause result)))
+                               (str method))
+                           (is (not @ran?) (str method ": refused before the model runs"))
+                           (is (settled? @scopes) (str method))))))))

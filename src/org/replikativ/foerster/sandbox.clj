@@ -145,9 +145,9 @@
 
 (def ^:private particle-methods
   "The sandbox's methods that can run in canonical forks: the host's
-  `:world-policy` is their default. (`:bbvi` can too, but is not a sandbox
-  method; the Markov chains run in fresh worlds only.)"
-  #{:importance :smc :pimh :pgibbs :pgas :ipmcmc :enumerate})
+  `:world-policy` is their default. Every sandbox method can now (`:bbvi`,
+  tempering and parallel tempering can too, but are not sandbox methods)."
+  #{:importance :smc :pimh :pgibbs :pgas :ipmcmc :enumerate :mh :rmh :nuts :pmmh})
 
 (def ^:private run-options
   "Options a sandbox may pass: data only, no functions, kernels or worlds."
@@ -201,7 +201,6 @@
         (refuse (str "Inference larger than this sandbox allows: " work " > " max-work)
                 {:type ::too-large :work work :max-work max-work})))
     (cond-> (assoc opts :seed (next-seed (:seed opts)))
-      ;; Markov chains run in fresh worlds of their own (foerster.core)
       (and world-policy (particle-methods method) (not (contains? opts :world-policy)))
       (assoc :world-policy world-policy))))
 
@@ -374,8 +373,7 @@
 
 (defn namespaces
   "{ns-sym {sym value}} for a sandbox. Host options: `:world-policy` (the
-  default for particle runs that do not choose one; Markov chains always
-  run in fresh worlds), `:max-work` (the largest
+  default for runs that do not choose one), `:max-work` (the largest
   particles or iterations × chains a run may ask for), `:max-optimizer-work`
   (the same for optimizers, in target evaluations, `optimizer-work`),
   `:seed` (the

@@ -170,13 +170,16 @@
     :steps    random-walk steps per chain per scan (default the dimension)
     :executor the worlds' executor
     :seed     fixes every draw (default: one from the process generator)
+    :canonical-source, :world-opts  the program runs in a fork of this
+              frozen fork of the caller's world (`foerster.canonical`)
 
   Returns a CPS operation resolving a Markov-chain measure of the target
   chain's `Sample`s (one chain, `:chain-lengths`), each written back to a
   trace once per distinct θ. Its contract names the stepping-stone evidence
   estimate, which `m/log-marginal` returns; `:temperatures`, `:barrier` Λ, `:local-barrier`
   [[β r] …], `:round-trips` and `:swap-acceptance` diagnose the run."
-  [model & [{:keys [chains steps executor seed] n-rounds :rounds :or {chains 10 n-rounds 10}}]]
+  [model & [{:keys [chains steps executor seed canonical-source world-opts] n-rounds :rounds
+             :or {chains 10 n-rounds 10}}]]
   (when-not (and (int? chains) (>= chains 2))
     (throw (ex-info ":chains is at least 2" {:type ::invalid-chains :chains chains})))
   (when-not (pos-int? n-rounds)
@@ -189,7 +192,9 @@
        (let [seed (or seed (random/fresh-seed))
              {:keys [operation]} (gfi/run-policy* model (itrace/policy {:temperature 0.0})
                                                   (cond-> {:inference-scope resources :seed (sp/derive-seed seed ::run 0)}
-                                                    executor (assoc :executor executor)))]
+                                                    executor (assoc :executor executor)
+                                                    canonical-source (assoc :canonical-source canonical-source
+                                                                            :world-opts world-opts)))]
          (operation
           (fn [template]
             (try

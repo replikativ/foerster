@@ -68,13 +68,13 @@
         mean (reduce + (map * (:posterior/values post) (:posterior/weights post)))]
     (is (< (Math/abs (- mean 1.125)) 0.15))))
 
-(deftest the-host-world-policy-is-for-particle-methods
+(deftest the-host-world-policy-is-every-method-s-default
   (let [seen (atom [])]
     (with-redefs [infer/infer (fn [_ opts] (swap! seen conj opts) (spin nil))]
       (let [nss (sb/namespaces {:world-policy :fork})]
         (in-context #(do ((get-in nss ['infer 'run]) (conjugate) {:method :smc :particles 10})
                          ((get-in nss ['infer 'run]) (conjugate) {:method :nuts :iterations 10 :chains 1})))))
-    (is (= [:fork nil] (map :world-policy @seen)))))
+    (is (= [:fork :fork] (map :world-policy @seen)) "Markov chains run in canonical forks too")))
 
 (deftest the-host-sets-defaults-and-limits
   (in-context
