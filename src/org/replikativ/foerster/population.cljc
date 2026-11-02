@@ -90,8 +90,8 @@
       ((execution/parallel (executor-of template) (count distinct-qs)
                            (fn [i res rej]
                              ((itrace/replay-sound template
-                                            address (policy (nth distinct-qs i))
-                                            {:anchor? (if (itrace/canonical? template) itrace/canonical-anchor? itrace/anchor?)})
+                                                   address (policy (nth distinct-qs i))
+                                                   {:anchor? (if (itrace/canonical? template) itrace/canonical-anchor? itrace/anchor?)})
                               res rej)))
        (fn [ts]
          (if-let [error (some :trace/error ts)]

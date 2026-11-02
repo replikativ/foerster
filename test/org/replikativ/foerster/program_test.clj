@@ -46,6 +46,21 @@
         (is (= [:advance :resample :move] (mapv :operation (:history result))))
         (is (= :unverified (get-in result [:inference-contract :normalizer :status])))))))
 
+(deftest resampling-many-trace-particles-does-not-nest-their-copies
+  ;; Each copy resolves synchronously from inside its fork; resuming the copy
+  ;; loop there nested every copy in the previous one's stack, which
+  ;; overflowed at about 130 particles (and hung: the error was raised in a
+  ;; callback). The 128-particle program above sat at that edge.
+  (let [result (run #(ip/run {:seed 5}
+                             (fn [scope]
+                               (spin
+                                (let [p (await (ip/initialize scope (ip/trace-target (coin-model)) 1000))
+                                      p (ip/advance scope p (ip/temperature (:target p) 1.0))
+                                      p (await (ip/resample scope p))]
+                                  (ip/finish scope p))))))]
+    (is (= 1000 (count (m/get-particles result))))
+    (is (< (Math/abs (- (Math/log 0.41) (:log-mass result))) 0.1))))
+
 (deftest value-and-trace-programs-share-the-mass-convention
   (let [prior (d/flip 0.3)
         result (run #(ip/run {:seed 7}

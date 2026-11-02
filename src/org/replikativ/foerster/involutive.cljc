@@ -134,12 +134,12 @@
           ;; adopting the replayed world's computations only when sound
           ;; (`itrace/replay-sound`)
           ((itrace/replay-sound trace from
-                         (itrace/policy {:keep? true
-                                         :draw (fn [sp _]
-                                                 (let [a (:savepoint/address sp)]
-                                                   (when (contains? changed a)
-                                                     {:value (get changed a) :symmetric? true})))})
-                         {:anchor? (if (itrace/canonical? trace) itrace/canonical-anchor? itrace/anchor?)})
+                                (itrace/policy {:keep? true
+                                                :draw (fn [sp _]
+                                                        (let [a (:savepoint/address sp)]
+                                                          (when (contains? changed a)
+                                                            {:value (get changed a) :symmetric? true})))})
+                                {:anchor? (if (itrace/canonical? trace) itrace/canonical-anchor? itrace/anchor?)})
            (fn [t']
              (try
                (when (and check? (not (:trace/error t')))

@@ -87,17 +87,17 @@
   a race: keyed children run in no fixed order.)"
   []
   (spin
-     (let [slots (sa/atom {})
-           m (sample (dist/normal 0.0 1.0) :id :m)]
-       (aw/await (keyed :jobs [:a :b]
-                        (fn [k]
-                          (spin
-                           (let [x (sample (dist/normal m 1.0) :id [:x k])]
-                             (swap! slots assoc k x)
-                             (observe (dist/normal (get @slots k) 0.1)
-                                      1.0 :id [:y k])
-                             x)))))
-       @slots)))
+   (let [slots (sa/atom {})
+         m (sample (dist/normal 0.0 1.0) :id :m)]
+     (aw/await (keyed :jobs [:a :b]
+                      (fn [k]
+                        (spin
+                         (let [x (sample (dist/normal m 1.0) :id [:x k])]
+                           (swap! slots assoc k x)
+                           (observe (dist/normal (get @slots k) 0.1)
+                                    1.0 :id [:y k])
+                           x)))))
+     @slots)))
 
 (defn- summary
   "A site-free sub-run sums an atom the model appended to."

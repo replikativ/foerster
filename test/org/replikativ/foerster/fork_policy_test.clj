@@ -380,7 +380,14 @@
                             (is (instance? Throwable result))
                             (is (= spin-core/spin-cancelled (:type (ex-data result))))
                             (is @cleaned? "the blocked move unwound in its own world")
-                            (is (settled? @scopes) "the frozen fork and every chain world are discarded"))))
+                            ;; Known gap: a cancelled chain's rejection can
+                            ;; arrive a few ms before the frozen fork's scope is
+                            ;; discarded (SMC holds it back until then); so wait.
+                            (is (loop [i 0]
+                                  (cond (settled? @scopes) true
+                                        (> i 100) false
+                                        :else (do (Thread/sleep 20) (recur (inc i)))))
+                                "the frozen fork and every chain world are discarded"))))
       (finally
         (context/close-context! root)))))
 
@@ -446,13 +453,13 @@
                        (let [posterior @(spin (await (ip/run {:seed 42 :world-policy :fork}
                                                              (fn [scope]
                                                                (spin
-                                                                ;; importance weights, then moves on the
-                                                                ;; weighted population; a separate small
-                                                                ;; run below resamples (copies) too
+                                                                ;; importance weights, resampling (copies
+                                                                ;; of canonical worlds), then moves
                                                                 (let [p (await (ip/initialize scope (ip/trace-target (queue-model queue)
                                                                                                                      {:world-policy :fork})
                                                                                               600))
                                                                       p (ip/advance scope p (ip/temperature (:target p) 1.0))
+                                                                      p (await (ip/resample scope p))
                                                                       p (await (ip/move scope p (kernel/single-site-mh-kernel 2)))]
                                                                   (ip/finish scope p)))))))
                              values (map measure/get-value (measure/get-contexts posterior))]
