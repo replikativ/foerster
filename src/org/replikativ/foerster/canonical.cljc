@@ -123,7 +123,6 @@
            (finally
              (await-finalization (close-canonical! scope lease nil)))))))))
 
-
 (defn run-options
   "`opts` for a driver whose runs are `foerster.gfi` runs: inside
   `with-frozen-caller`, `:canonical-source` names the frozen fork each run

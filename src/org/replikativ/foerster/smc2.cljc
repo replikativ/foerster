@@ -188,7 +188,7 @@
           ;; the posterior of one noise draw
           run (fn [theta key]
                 (or-impossible (run-filter model n (assoc (conditioned theta smc-opts)
-                                                      :seed (sp/derive-seed seed ::inner key)))))
+                                                          :seed (sp/derive-seed seed ::inner key)))))
           pick (fn [measure k]
                  (let [ps (m/get-particles measure)
                        i (random/with-stream* seed [::pick k]

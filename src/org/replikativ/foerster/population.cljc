@@ -91,8 +91,8 @@
       ((execution/parallel (executor-of template) (count distinct-qs)
                            (fn [i res rej]
                              ((trace/replay (cond-> template (itrace/canonical? template) (dissoc :trace/world))
-                                           address (policy (nth distinct-qs i))
-                                           {:anchor? (if (itrace/canonical? template) itrace/canonical-anchor? itrace/anchor?)})
+                                            address (policy (nth distinct-qs i))
+                                            {:anchor? (if (itrace/canonical? template) itrace/canonical-anchor? itrace/anchor?)})
                               res rej)))
        (fn [ts]
          (if-let [error (some :trace/error ts)]

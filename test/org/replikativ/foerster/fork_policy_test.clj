@@ -334,7 +334,7 @@
 
 (def ^:private keyed-p-fast
   (let [lik (fn [speed] (reduce * (map (fn [y] (reduce + (map #(* 0.5 (Math/exp (dist/logpdf (dist/normal (/ % speed) 0.35) y)))
-                                                                   [0.8 1.2])))
+                                                              [0.8 1.2])))
                                        keyed-reports)))]
     (/ (lik 1.4) (+ (lik 0.8) (lik 1.4)))))
 
@@ -533,7 +533,7 @@
     (in-root
      (ygg/register!
       (g/gset (str "live-handle-" (name method))
-                                      {:store-config {:backend :memory :id (random-uuid)}} {:sync? true})
+              {:store-config {:backend :memory :id (random-uuid)}} {:sync? true})
       {:grade :affine})
      (let [ran? (atom false)]
        (capturing-scopes [scopes]
