@@ -179,16 +179,20 @@
                                          {:barrier-policy :none}))]
         (query measure identity)))"
   [model-task kernel num-particles & [opts]]
+  (when (and (k/markov-kernel? kernel) (some #(contains? opts %) [:authority :grant]))
+    (throw (ex-info "Markov chains do not take :authority or :grant yet: every move forks a world"
+                    {:type ::invalid-world-policy :options (vec (filter #(contains? opts %) [:authority :grant]))})))
   (check-options! opts (if (k/markov-kernel? kernel)
-                         #{:executor :world-policy :seed}
+                         #{:executor :world-policy :world-opts :seed}
                          (conj particle-options :barrier-policy)))
   (let [smc-opts (cond-> (dissoc opts :barrier-policy)
                    (= :none (:barrier-policy opts)) (assoc :resample-threshold 0.0))]
     (cond
       (k/markov-kernel? kernel)
       ;; Markov-chain kernels are replay plus accept over traces; each of the
-      ;; `num-particles` is an independent chain.
-      (transition/infer model-task kernel num-particles opts)
+      ;; `num-particles` is an independent chain. Under :fork every chain
+      ;; forks the inference's one frozen fork of the caller's world.
+      (with-frozen-caller opts #(transition/infer model-task kernel num-particles %))
 
       (= :prior (k/kernel-id kernel))
       (particles model-task num-particles smc-opts)

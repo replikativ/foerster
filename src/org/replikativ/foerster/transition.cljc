@@ -18,6 +18,8 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.state-backend :as backend]
+            [org.replikativ.spindel.world.scope :as world-scope]
+            [org.replikativ.spindel.engine.core :as ec]
             #?(:clj [org.replikativ.spindel.engine.executor :as sched])
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -242,14 +244,41 @@
          :running nil
          :drain-active nil))
 
+(defn- canonical-session
+  "CPS: a chain's session in a world of its own, forked from `source` (the
+  inference's frozen fork of the caller's world, `:world-policy :fork`),
+  with a scope of its own that keeps no descriptor of released worlds (a
+  chain releases one per move). Closing the session discards the scope, the
+  chain's root included. Resolves [root session]."
+  [source world-opts executor seed]
+  (fn [resolve reject]
+    (let [[resolve reject] (sp/in-callers-world resolve reject)
+          scope (world-scope/create {:purpose :mcmc :retain-released? false
+                                     :fork-opts (cond-> (or world-opts {})
+                                                  executor (assoc :executor executor))})
+          give-up (fn [error]
+                    ((world-scope/discard-when-quiescent! scope)
+                     (fn [_] (reject error)) (fn [_] (reject error))))]
+      (world-scope/fork!
+       scope source nil
+       (fn [{root :child-ctx}]
+         (try
+           (rtp/swap-state! root [:inference :canonical?] (constantly true))
+           (resolve [root (sp/open! root {:purpose :mcmc :seed seed :scope scope})])
+           (catch #?(:clj Throwable :cljs :default) error (give-up error))))
+       give-up))))
+
 (defn- run-markov-chain
   "One chain in its own world: run the model, move it `iterations` times,
   give every world back. Returns the chain's particles: its projected final
   state, or (kernel `:samples :all`) every state after `:burn` as a Sample.
   A state is never a draw while a component kernel is still in its own
   warm-up (a NUTS or adaptive random-walk leaf's `:burn` inside a `cycle` or
-  `mixture`); a chain that ends before every warm-up finished is an error."
-  [model-task kernel executor seed]
+  `mixture`); a chain that ends before every warm-up finished is an error.
+  With `source` (`:world-policy :fork`) the chain's world is a fork of it
+  and the model runs from a start site, the anchor a move re-executes it
+  from when no later one precedes its sites."
+  [model-task kernel executor seed source world-opts]
   (spin-core/with-causal-descendant-egress
     (spin
      (let [;; per chain: a block Gibbs description closes over its own state
@@ -258,12 +287,21 @@
            _ (when (and (= :all (:samples kernel)) (>= (:burn kernel 0) iterations))
                (throw (ex-info ":burn leaves no draws: it must be below :iterations"
                                {:type :org.replikativ.foerster.core/burn-exceeds-iterations :burn (:burn kernel) :iterations iterations})))
-           root (ctx/create-execution-context :executor executor)
-           session (sp/open! root {:purpose :mcmc :seed seed :fork-opts {:systems :none}
-                                   :retain-released? false})]
+           [root session] (if source
+                            (await (canonical-session source world-opts executor seed))
+                            (let [root (ctx/create-execution-context :executor executor)]
+                              [root (sp/open! root {:purpose :mcmc :seed seed :fork-opts {:systems :none}
+                                                    :retain-released? false})]))
+           model-task (if source
+                        (binding [ec/*execution-context* root]
+                          ;; every chain runs the whole model, from a site a
+                          ;; move can re-execute it from (`itrace/reexecute`)
+                          (spin (sp/savepoint :org.replikativ.foerster.smc/start nil)
+                                (await model-task)))
+                        model-task)]
        (try
          (let [initial (await (trace/run session model-task (itrace/policy {:init? true})
-                                         {:anchor? itrace/anchor?}))
+                                         {:anchor? (if source itrace/canonical-anchor? itrace/anchor?)}))
                _ (when (contains? initial :trace/error)
                    (throw (ex-info "Inference failed during model execution"
                                    {:type :org.replikativ.foerster.core/inference-failed}
@@ -319,15 +357,16 @@
            (await-finalization (sp/close! session))))))))
 
 (defn infer
+  "`num-chains` chains of the Markov `kernel` on `model-task`, each in fresh
+  worlds of its own, or, with `:org.replikativ.foerster.core/source` (a
+  frozen fork of the caller's world, `:world-policy :fork`; see
+  `foerster.core/kernel-infer`), each in a fork of that source with
+  `:world-opts`. Returns a spin resolving the chains' measure."
   [model-task kernel num-chains opts]
-  ;; Chains run in fresh worlds of their own. Running them in forks of the
-  ;; caller's world, as `:world-policy :fork` does for particles, is not
-  ;; implemented; refuse it, do not ignore it.
-  (when (or (= :fork (:world-policy opts)) (some? (:world-opts opts)))
-    (throw (ex-info "Markov-chain kernels run in fresh worlds"
+  (when (and (= :fork (:world-policy opts)) (not (:org.replikativ.foerster.core/source opts)))
+    (throw (ex-info "Markov chains under :world-policy :fork need the caller's frozen fork (foerster.core/kernel-infer)"
                     {:type :org.replikativ.foerster.core/invalid-world-policy
-                     :world-policy (:world-policy opts)
-                     :supported #{:fresh}})))
+                     :world-policy :fork})))
   (spin-core/with-causal-descendant-egress
     (spin
      (let [own-executor (when-not (:executor opts)
@@ -340,7 +379,10 @@
                        (mapv #(sp/derive-seed seed :org.replikativ.foerster.core/chain %) (range num-chains))
                        (vec (repeatedly num-chains random/fresh-seed)))
                chains (await (apply comb/parallel
-                                    (mapv #(run-markov-chain model-task kernel executor %) seeds)))]
+                                    (mapv #(run-markov-chain model-task kernel executor %
+                                                             (:org.replikativ.foerster.core/source opts)
+                                                             (:world-opts opts))
+                                          seeds)))]
            ;; the draws in chain order, each chain's count kept: the
            ;; convergence diagnostics need them by chain (`foerster.diagnostics`)
            (cond-> (assoc (m/markov-measure (into [] cat chains))

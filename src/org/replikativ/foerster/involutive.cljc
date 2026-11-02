@@ -131,13 +131,15 @@
             from (trace/earliest trace (keys changed))]
         (if-not from
           (resolve {:trace trace :accepted? false :log-ratio 0.0})
-          ((trace/replay trace from
+          ;; in canonical worlds without adopting the replayed world's
+          ;; computations (`itrace/reexecute`)
+          ((trace/replay (cond-> trace (itrace/canonical? trace) (dissoc :trace/world)) from
                          (itrace/policy {:keep? true
                                          :draw (fn [sp _]
                                                  (let [a (:savepoint/address sp)]
                                                    (when (contains? changed a)
                                                      {:value (get changed a) :symmetric? true})))})
-                         {:anchor? itrace/anchor?})
+                         {:anchor? (if (itrace/canonical? trace) itrace/canonical-anchor? itrace/anchor?)})
            (fn [t']
              (try
                (when (and check? (not (:trace/error t')))

@@ -472,6 +472,24 @@
        (not (:observed? (:savepoint/payload sp)))
        (empty? (rtp/get-state (:savepoint/world sp) [:keyed/spins]))))
 
+(def ^:private canonical-start
+  "`foerster.smc/start-site`, the savepoint a canonical model publishes
+  before anything else (named here: smc requires this namespace)."
+  :org.replikativ.foerster.smc/start)
+
+(defn canonical?
+  "Whether `trace` runs in canonical worlds (`:world-policy :fork`): forks
+  of a caller's world whose state the model may read and write."
+  [trace]
+  (boolean (some-> (:trace/world trace) (rtp/get-state [:inference :canonical?]))))
+
+(defn canonical-anchor?
+  "`anchor?` for a run in canonical worlds: also the start site, so a move
+  can re-execute the model from its start when no later anchor precedes
+  its sites (a keyed model, whose sites take no anchors)."
+  [sp]
+  (or (= canonical-start (:savepoint/site sp)) (anchor? sp)))
+
 (defn latent?
   "Whether a trace entry is a sample site inference may move: not observed,
   not constrained."
@@ -750,7 +768,18 @@
   keyed regions re-run their owning keys; other moves replay from the latest
   valid preceding anchor. Incremental parent-side inference effects and keyed
   streaming frontiers are refused unless safe prefix replay is available.
-  Result metadata ::changed / ::restart describes the score delta to compare."
+  Result metadata ::changed / ::restart describes the score delta to compare.
+
+  In canonical worlds (`canonical?`) nothing is reused incrementally: a
+  keyed update re-runs a key in the world the trace ENDED in, and a replay
+  may adopt a finished computation from the replayed world, and both are
+  sound only for code that depends on its arguments and choices alone; a
+  model that reads state it (or a later part of it) wrote breaks both, and
+  Spindel does not track which state a computation read. So a move there
+  replays from the latest anchor before its sites (the world as it was at
+  that site), without adoption, and a keyed model re-executes from its start
+  (`canonical-anchor?`). Incremental reuse returns when Spindel can tell
+  which worlds' state a computation wrote."
   [t targets move opts]
   (pcps/async
    (when-let [missing (seq (remove #(contains? (:trace/entries t) %) targets))]
@@ -774,7 +803,8 @@
          ;; Only siblings of the SAME keyed collection are independent here.
          ;; A resumed parent can drop a whole later keyed collection, whose
          ;; dead sites the released runtime would otherwise retain.
-         local? (and keyed? region (not overlap?)
+         canonical (canonical? t)
+         local? (and keyed? region (not overlap?) (not canonical)
                      (not-any? #(not (contains? region (get-in t [:trace/entries % :spin]))) suffix))
          replay (fn []
                   (let [from (replay-origin t targets)]
@@ -784,8 +814,9 @@
                     (fn [deliver fail]
                       ;; A replay beginning before a key must visit that key,
                       ;; even when its captured inputs are unchanged.
-                      ((trace/replay (if (= #{from} (set targets)) t (dissoc t :trace/world))
-                                     from move (assoc opts :anchor? (or (:anchor? opts) anchor?)))
+                      ((trace/replay (if (and (= #{from} (set targets)) (not canonical)) t (dissoc t :trace/world))
+                                     from move (assoc opts :anchor? (or (:anchor? opts)
+                                                                        (if canonical canonical-anchor? anchor?))))
                        #(deliver (assoc % ::restart from)) fail))))]
      (if-not local?
        (pcps/await (replay))

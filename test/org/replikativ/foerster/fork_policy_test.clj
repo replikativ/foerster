@@ -6,6 +6,8 @@
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.analysis :as a]
+            [org.replikativ.foerster.block :as block]
+            [org.replikativ.foerster.kernel :as kernel]
             [org.replikativ.foerster.core :as inference]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
@@ -15,7 +17,9 @@
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as executor]
+            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.spin.keyed :refer [keyed]]
             [org.replikativ.spindel.world.scope :as world-scope]))
 
 (defmacro ^:private capturing-scopes
@@ -211,3 +215,165 @@
                        (is (some? (:world/recovery (ex-data result))))
                        (is (= {:stage :model} (ex-data (ex-cause result))))
                        (is (settled? @scopes))))))
+
+;; -----------------------------------------------------------------------------
+;; Markov chains in forks of the caller's world
+;; -----------------------------------------------------------------------------
+
+(def ^:private backlog {:free-at 1.0 :jobs [{:id :in-flight :finish 1.0}]})
+
+(def ^:private readings [{:id :a :arrival 0.5 :work 1.0 :reported 1.9}
+                         {:id :b :arrival 1.2 :work 0.7 :reported 2.7}
+                         {:id :c :arrival 3.0 :work 1.2 :reported 4.1}])
+
+(def ^:private p-fast
+  "P(speed = 1.4 | y) on the caller's backlog: the exact enumeration of
+  `world-particles-test` (and the paper's independent sum)."
+  0.5659282411891152)
+
+(defn- serve! [queue {:keys [id arrival work]} speed jitter]
+  (let [start (max arrival (:free-at @queue))
+        finish (+ start (/ (* work jitter) speed))]
+    (swap! queue (fn [state]
+                   (-> state
+                       (assoc :free-at finish)
+                       (update :jobs conj {:id id :start start :finish finish}))))
+    finish))
+
+(defn- queue-model
+  "The paper's queue, served on the caller's `queue`: every job's
+  completion depends on what the model wrote for the jobs before it."
+  [queue]
+  (spin
+   (let [speed (sample (dist/categorical {0.8 0.5, 1.4 0.5}) :id :speed)]
+     (doseq [{:keys [id reported] :as job} readings]
+       (let [jitter (sample (dist/categorical {0.8 0.5, 1.2 0.5}) :id [:jitter id])
+             finish (serve! queue job speed jitter)]
+         (observe (dist/normal finish 0.35) reported :id [:completion id])))
+     {:speed speed :queue @queue})))
+
+(defn- fast-fraction [posterior]
+  (let [values (map measure/get-value (measure/get-contexts posterior))]
+    (/ (count (filter #(= 1.4 (:speed %)) values)) (double (count values)))))
+
+(def ^:private gibbs-sweep
+  (kernel/cycle 600 (mapv #(kernel/finite-gibbs-kernel 1 %) [:speed [:jitter :a] [:jitter :b] [:jitter :c]])
+                {:samples :all :burn 20}))
+
+(deftest markov-chains-run-on-the-caller-s-state
+  (doseq [[method run] [[:mh #(inference/infer % {:method :mh :iterations 2500 :chains 4 :burn 100
+                                                  :world-policy :fork :seed %2})]
+                        [:gibbs #(inference/kernel-infer % gibbs-sweep 4 {:world-policy :fork :seed %2})]]
+          seed [1 2]]
+    (in-root
+     (let [queue (sa/atom backlog)]
+       (capturing-scopes [scopes]
+                         (let [posterior @(spin (await (run (queue-model queue) seed)))
+                               values (map measure/get-value (measure/get-contexts posterior))]
+                           (is (< (Math/abs (- p-fast (fast-fraction posterior))) 0.06)
+                               (str method " " seed ": " (fast-fraction posterior) " vs exact " p-fast))
+                           (is (every? #(= [:in-flight :a :b :c] (mapv :id (:jobs (:queue %)))) values)
+                               (str method ": every state served the caller's backlog, once"))
+                           (is (= backlog @queue) (str method ": the caller's queue is unchanged"))
+                           (is (settled? @scopes) (str method ": every chain's worlds are discarded"))))))))
+
+(def ^:private centred
+  (block/block {:block/id :centred :block/target :complete-conditional
+                :block/latents [{:name :x :shape [] :support :real}]}
+               {:log-density (fn [th {:keys [center]}] (let [d (- (aget ^doubles th 0) center)] (* -0.5 d d)))
+                :value+grad (fn [th {:keys [center]}]
+                              (let [d (- (aget ^doubles th 0) center)]
+                                [(* -0.5 d d) (double-array [(- d)])]))}))
+
+(deftest nuts-reads-the-caller-s-state-as-block-inputs
+  (in-root
+   (let [center (sa/atom 3.0)
+         log (sa/atom [])
+         posterior @(spin (await (inference/infer (spin (let [[x] (sample (block/block-dist centred {:center @center})
+                                                                          :id :x :init [0.0])]
+                                                          (swap! log conj x)
+                                                          x))
+                                                  {:method :nuts :iterations 600 :chains 2 :burn 300
+                                                   :world-policy :fork :seed 7})))
+         xs (map measure/get-value (measure/get-contexts posterior))]
+     (is (< (Math/abs (- 3.0 (/ (reduce + xs) (count xs)))) 0.2))
+     (is (= [] @log) "nothing reaches the caller"))))
+
+(deftest chains-refuse-authority-for-now
+  (in-root
+   (is (= ::inference/invalid-world-policy
+          (:type (ex-data (failure #(inference/infer (queue-model (sa/atom backlog))
+                                                     {:method :mh :iterations 10 :world-policy :fork
+                                                      :authority :ledger :grant {:tokens 1}}))))))))
+
+;; A keyed model that writes state: under :fresh, an MH move on a keyed site
+;; re-runs its key in the world the trace ENDED in (`spindel.trace/update`),
+;; so the key's write is applied again on top of its earlier one, and the
+;; parent's continuation reads the doubled state (observed: 3 to 23 writes
+;; per state of a 3-key model). Under :fork reuse is off and every state
+;; holds exactly its own three writes.
+
+(def ^:private keyed-reports [0.9 0.6 1.1])
+
+(defn- keyed-model []
+  (spin
+   (let [log (sa/atom [])
+         speed (sample (dist/categorical {0.8 0.5, 1.4 0.5}) :id :speed)
+         _ (await (keyed :jobs [0 1 2]
+                         (fn [i]
+                           (spin (let [jitter (sample (dist/categorical {0.8 0.5, 1.2 0.5}) :id [:jitter i])]
+                                   (swap! log conj i)
+                                   (observe (dist/normal (/ jitter speed) 0.35) (nth keyed-reports i) :id [:obs i])
+                                   jitter)))))]
+     {:speed speed :writes (count @log)})))
+
+(def ^:private keyed-p-fast
+  (let [lik (fn [speed] (reduce * (map (fn [y] (reduce + (map #(* 0.5 (Math/exp (dist/logpdf (dist/normal (/ % speed) 0.35) y)))
+                                                                   [0.8 1.2])))
+                                       keyed-reports)))]
+    (/ (lik 1.4) (+ (lik 0.8) (lik 1.4)))))
+
+(deftest keyed-models-that-write-state-stay-exact-under-fork
+  (in-root
+   (let [posterior @(spin (await (inference/infer (keyed-model)
+                                                  {:method :mh :iterations 2500 :chains 4 :burn 100
+                                                   :world-policy :fork :seed 11})))
+         values (map measure/get-value (measure/get-contexts posterior))]
+     (is (every? #(= 3 (:writes %)) values) "every state holds its own writes, once")
+     (is (< (Math/abs (- keyed-p-fast (fast-fraction posterior))) 0.06)
+         (str (fast-fraction posterior) " vs exact " keyed-p-fast)))))
+
+(deftest cancelling-a-chain-joins-and-discards-its-worlds
+  (let [root (context/create-execution-context {:executor (executor/thread-pool-executor 2)})
+        task* (atom nil)
+        runs (atom 0)
+        entered (promise)
+        cleaned? (atom false)]
+    (try
+      (capturing-scopes [scopes]
+                        (let [outcome (future
+                                        (binding [ec/*execution-context* root]
+                                          (let [task (inference/infer
+                                                      (spin
+                                                       (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+                                                         (observe (dist/normal x 1.0) 0.5 :id :y)
+                                                         (when (= 5 (swap! runs inc))
+                                                           (try
+                                                             (deliver entered true)
+                                                             (await (fn [_resolve _reject] nil))
+                                                             (finally (reset! cleaned? true))))
+                                                         x))
+                                                      {:method :mh :iterations 50 :chains 1
+                                                       :world-policy :fork :executor (:executor root)})]
+                                            (reset! task* task)
+                                            (try @task (catch Throwable error error)))))]
+                          (is (= true (deref entered 5000 ::timed-out)))
+                          (binding [ec/*execution-context* root]
+                            (spin-core/cancel-spin! @task*))
+                          (let [result (deref outcome 10000 ::timed-out)]
+                            (is (instance? Throwable result))
+                            (is (= spin-core/spin-cancelled (:type (ex-data result))))
+                            (is @cleaned? "the blocked move unwound in its own world")
+                            (is (settled? @scopes) "the frozen fork and every chain world are discarded"))))
+      (finally
+        (context/close-context! root)))))
