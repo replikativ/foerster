@@ -199,9 +199,10 @@ SCMC keeps at most `:memory` past points with weights, a core-set whose
 weighted log-likelihood approximates that of all data so far. The particles
 move against the core-set. After each step, the core-set plus the new batch
 is recompressed with GIGA (Campbell & Broderick 2018), fitted where the
-current particles are, and, as in the reference implementation, GIGA's
-weights are refitted by nonnegative least squares on the points it chose
-(`:refit :nnls`, the default; `:refit :none` keeps GIGA's weights):
+current particles are. GIGA's weights are then refitted by nonnegative
+least squares on the points it chose, the fully corrective update of
+Campbell & Beronov (2019) (`:refit :nnls`, the default; `:refit :none` keeps
+GIGA's weights, as in the UAI 2021 algorithm):
 
 ```clojure
 (def posterior
@@ -225,8 +226,8 @@ fields describe approximation and execution.
 
 Each batch reweights the particles by its exact likelihood, but the
 particles were moved against the core-set before the last compression, and
-nothing corrects for the switch to the compressed one (as in the reference
-implementation); the moves then target the compressed core-set. The result
+nothing corrects for the switch to the compressed one (as in the paper's
+Algorithm 1); the moves then target the compressed core-set. The result
 therefore carries the core-set's approximation error, which is small when
 the log-likelihoods compress well (few parameters, exchangeable data). With
 `:memory` at least the amount of data, nothing is compressed and SCMC is

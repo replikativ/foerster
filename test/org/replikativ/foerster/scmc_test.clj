@@ -40,9 +40,10 @@
   (testing "a zero target"
     (is (= [0.0 0.0] (scmc/giga [(double-array [1 0]) (double-array [0 1])] (double-array [0 0]) 2)))))
 
-;; NNLS and the refit after GIGA, against SciPy's `nnls` and the reference
-;; implementation's `GIGA.build(m); GIGA.optimize()` (bayesian-coresets as
-;; vendored by ~/Development/scmc), whose outputs are recorded here.
+;; NNLS and the refit after GIGA, against SciPy's `nnls` and the GIGA of
+;; Campbell's bayesian-coresets library (`build(m)` then `optimize()`, the
+;; fully corrective update of Campbell & Beronov 2019), whose outputs are
+;; recorded here.
 
 (deftest nnls-matches-scipy
   (testing "SciPy's documented example"
@@ -83,7 +84,7 @@
 (defn- abs-error [w ls ^doubles target]
   (Math/sqrt (reduce + (map #(let [e (- %1 %2)] (* e e)) (combine w ls) target))))
 
-(deftest the-refit-matches-the-reference-implementation
+(deftest the-refit-matches-bayesian-coresets
   (testing "a 3-vector instance: GIGA stops short, NNLS on its support is exact"
     (let [ls [(double-array [1 0 0]) (double-array [0 1 0]) (double-array [1 1 0.5])]
           target (double-array [1 2 0.2])
@@ -305,7 +306,7 @@
         batches (partition 5 (regression 60 13))
         run (fn [opts] (reduce scmc/append-batch (scmc/start (counting-model (atom 0)) opts) batches))
         default (run opts)]
-    (testing "k = 1 is the reference projection"
+    (testing "k = 1 is the UAI 2021 projection"
       (let [strip #(-> % (dissoc :model :projection-inflation) (update :coreset-log-likelihoods :rows))]
         (is (= (strip default)
                (strip (run (assoc opts :projection-inflation 1)))
