@@ -271,6 +271,75 @@
                        w])
                     particles)))))
 
+(defn- fork-scope-options
+  "The world-scope options of a canonical inference's worlds."
+  [opts purpose]
+  {:purpose purpose
+   :authority (:authority opts)
+   :fork-opts (cond-> (or (:world-opts opts) {})
+                (:executor opts) (assoc :executor (:executor opts)))})
+
+(defn- share
+  "One of `k` even shares of the wallet `resources`: integer amounts rounded
+  down, as `world.scope/copy!` splits a world's budget."
+  [resources k]
+  (when resources
+    (into {} (map (fn [[r amount]] [r (if (integer? amount) (quot amount k) (/ amount k))]))
+          resources)))
+
+(defn- balance-op
+  "CPS: what is left in `world`'s wallet under `authority`, resolved in the
+  caller's world."
+  [authority world]
+  (fn [resolve reject]
+    (let [[resolve reject] (sp/in-callers-world resolve reject)]
+      (try
+        (let [left (world-scope/balance authority world)]
+          (if (or (nil? left) (map? left)) (resolve left) (left resolve reject)))
+        (catch #?(:clj Throwable :cljs :default) e (reject e))))))
+
+(defn- frozen-source
+  "The frozen fork of the caller's world a multi-run inference runs every
+  run from (`with-frozen-caller`), or nil."
+  [opts]
+  (::source opts))
+
+(defn- with-frozen-caller
+  "Under `:world-policy :fork`, `(body opts')` with `opts'` naming one frozen
+  fork of the caller's world, made once for the whole inference: every run
+  of a method that runs several (a particle-MCMC sweep, a BBVI iteration, an
+  IPMCMC node, a Markov chain) forks its own world from it, so all of them
+  see the caller's state as it was when inference started, whatever the
+  caller does meanwhile, and the inference draws `:grant` from the caller's
+  wallet once. The fork is owned by a scope of its own, discarded (its
+  wallet given back) after `body` ends, however it ends. `body` returns a
+  spin. Under `:fresh`, or inside such an inference already, `(body opts)`."
+  [opts body]
+  (if (or (= :fresh (world-policy opts)) (frozen-source opts))
+    (body opts)
+    (spin-core/with-causal-descendant-egress
+      (spin
+       (let [caller rtc/*execution-context*
+             scope (world-scope/create (fork-scope-options opts :inference))
+             lease (world-scope/begin-activity! scope :inference)
+             source (volatile! nil)]
+         (try
+           (vreset! source (:child-ctx (await (fn [resolve reject]
+                                                (let [[resolve reject] (sp/in-callers-world resolve reject)]
+                                                  (world-scope/fork! scope caller {:grant (:grant opts)}
+                                                                     resolve reject))))))
+           (rtp/swap-state! @source [:inference :canonical?] (constantly true))
+           (await (body (assoc opts ::source @source)))
+           (catch #?(:clj Throwable :cljs :default) e
+             (throw (if (#{spin-core/spin-cancelled ::inference-failed} (:type (ex-data e)))
+                      e
+                      (ex-info "Inference failed during particle execution"
+                               {:type ::inference-failed
+                                :world/recovery (canonical-recovery scope lease nil)}
+                               e))))
+           (finally
+             (await-finalization (close-canonical! scope lease nil)))))))))
+
 (defn- in-canonical-worlds
   "A savepoint driver's run of `model-task` in canonical worlds of the
   caller's (see above): `(run model root scope)` is a CPS operation resolving
@@ -279,11 +348,19 @@
   `:world-opts` are the forks' options (`:systems`, `:rights`,
   `:snapshots`); `:executor` the worlds' executor; `:authority` a
   `world.scope/PResourceAuthority` and `:grant` what the inference may spend
-  of the caller's wallet."
+  of the caller's wallet. Inside `with-frozen-caller` the root is forked
+  from the inference's frozen fork instead of the caller's world, and takes
+  `::grant` of its wallet, or all that is left of it."
   [model-task opts run]
   (spin-core/with-causal-descendant-egress
     (spin
-     (let [caller rtc/*execution-context*
+     (let [source (or (frozen-source opts) rtc/*execution-context*)
+           grant (if (frozen-source opts)
+                   (when (:authority opts)
+                     (if (contains? opts ::grant)
+                       (::grant opts)
+                       (await (balance-op (:authority opts) source))))
+                   (:grant opts))
            world-opts (or (:world-opts opts) {})
            scope (world-scope/create {:purpose :particle
                                       :authority (:authority opts)
@@ -294,9 +371,12 @@
            root (volatile! nil)
            measure (volatile! nil)]
        (try
+         ;; the fork resolves in its source's world: resume this spin in
+         ;; the caller's, also when the source is a frozen fork
          (vreset! root (:child-ctx (await (fn [resolve reject]
-                                            (world-scope/fork! scope caller {:grant (:grant opts)}
-                                                               resolve reject)))))
+                                            (let [[resolve reject] (sp/in-callers-world resolve reject)]
+                                              (world-scope/fork! scope source {:grant grant}
+                                                                 resolve reject))))))
          (rtp/swap-state! @root [:inference :canonical?] (constantly true))
          (vreset! measure
                   (await (run (binding [rtc/*execution-context* @root]
@@ -324,7 +404,7 @@
   takes an even share of its world's budget; forks in ClojureScript."
   [opts root scope]
   (-> opts
-      (dissoc :world-policy :world-opts :executor :authority :grant)
+      (dissoc :world-policy :world-opts :executor :authority :grant ::source ::grant)
       (assoc :root root :scope scope :copy? #?(:clj true :cljs false))))
 
 (defn- particles
@@ -528,9 +608,11 @@
   (check-options! opts (into particle-options smc-options))
   (if (on-savepoints? opts)
     (on-savepoints (smc/pimh model-task num-particles num-iterations opts))
-    (pmcmc/pimh
-     (particle-sweep model-task num-particles opts)
-     num-iterations {:seed (:seed opts) :accept-key ::pimh-accept})))
+    (with-frozen-caller opts
+      (fn [opts]
+        (pmcmc/pimh
+         (particle-sweep model-task num-particles opts)
+         num-iterations {:seed (:seed opts) :accept-key ::pimh-accept})))))
 
 (defn pgibbs-infer
   "Particle Gibbs (conditional SMC, Andrieu et al. 2010).
@@ -548,9 +630,11 @@
   (check-options! opts (into particle-options #{:anchors :rejuvenate}))
   (if (on-savepoints? opts)
     (on-savepoints (smc/pgibbs model-task num-particles num-iterations opts))
-    (pmcmc/pgibbs
-     (particle-sweep model-task num-particles opts)
-     num-iterations {:seed (:seed opts) :pick-key ::pick})))
+    (with-frozen-caller opts
+      (fn [opts]
+        (pmcmc/pgibbs
+         (particle-sweep model-task num-particles opts)
+         num-iterations {:seed (:seed opts) :pick-key ::pick})))))
 
 ;; =============================================================================
 ;; IPMCMC - Interacting Particle MCMC
@@ -646,6 +730,8 @@
     ;; Use parallel combinator to run all sweeps concurrently
     (apply comb/parallel sweep-spins)))
 
+(declare ipmcmc)
+
 (defn ipmcmc-infer
   "Interacting Particle MCMC inference.
 
@@ -695,6 +781,10 @@
                     {:type ::unknown-options :unknown [:resample-threshold]})))
   (check-options! opts (into (disj particle-options :resample-threshold)
                              #{:num-nodes :num-csmc-nodes :all-particles?}))
+  (with-frozen-caller opts #(ipmcmc model-task num-particles num-iterations %)))
+
+(defn- ipmcmc
+  [model-task num-particles num-iterations opts]
   (spin
    (let [num-nodes (or (:num-nodes opts) 8)
          num-csmc-nodes (or (:num-csmc-nodes opts) (quot num-nodes 2))
@@ -704,13 +794,22 @@
          ;; every node resamples at every barrier (ESS ≤ N < ∞·N),
          ;; multinomially, as conditional SMC does (`smc/smc` :retained)
          node-opts (assoc opts :resample-threshold ##Inf :resampling :multinomial)
-         sweep-opts #(assoc node-opts :seed (sp/derive-seed seed ::sweep %))]
+         ;; the nodes of a sweep run at once: in a frozen fork of the
+         ;; caller's world with an authority, each takes an even share of
+         ;; what is left, decided before any of them starts
+         node-grant (fn [opts]
+                      (spin (when (and (frozen-source opts) (:authority opts))
+                              (share (await (balance-op (:authority opts) (frozen-source opts))) num-nodes))))
+         sweep-opts (fn [iteration grant]
+                      (cond-> (assoc node-opts :seed (sp/derive-seed seed ::sweep iteration))
+                        grant (assoc ::grant grant)))]
      (assert (> num-csmc-nodes 0) ":num-csmc-nodes must be > 0")
      (assert (< num-csmc-nodes num-nodes) ":num-csmc-nodes must be < :num-nodes")
      (loop [iteration 0
             ;; iteration 0 runs plain SMC on every node
             measures (await (run-parallel-sweeps model-task num-particles
-                                                 (vec (repeat num-nodes nil)) (sweep-opts :initial)))
+                                                 (vec (repeat num-nodes nil))
+                                                 (sweep-opts :initial (await (node-grant opts)))))
             all-samples []]
        (if (>= iteration num-iterations)
          (m/markov-measure all-samples)
@@ -745,7 +844,8 @@
                      [csmc-indices zeta-sums samples retained-traces])))]
            (log/trace :ipmcmc/gibbs-update {:iteration iteration :csmc-indices csmc-indices})
            (recur (inc iteration)
-                  (await (run-parallel-sweeps model-task num-particles retained-traces (sweep-opts iteration)))
+                  (await (run-parallel-sweeps model-task num-particles retained-traces
+                                              (sweep-opts iteration (await (node-grant opts)))))
                   (into all-samples samples))))))))
 
 (defn pgas-infer
@@ -763,8 +863,10 @@
   (check-options! opts particle-options)
   (if (on-savepoints? opts)
     (on-savepoints (smc/pgas model-task num-particles num-iterations opts))
-    (pmcmc/pgibbs (particle-sweep model-task num-particles (assoc opts :ancestor-sampling? true))
-                  num-iterations {:seed (:seed opts) :pick-key ::pick})))
+    (with-frozen-caller opts
+      (fn [opts]
+        (pmcmc/pgibbs (particle-sweep model-task num-particles (assoc opts :ancestor-sampling? true))
+                      num-iterations {:seed (:seed opts) :pick-key ::pick})))))
 
 ;; =============================================================================
 ;; Black Box Variational Inference (BBVI)
@@ -846,6 +948,8 @@
           (swap! accumulators assoc addr acc)
           (swap! q-dists assoc addr (grad/grad-step dist g rate)))))))
 
+(declare bbvi)
+
 (defn bbvi-infer
   "Black Box Variational Inference (Ranganath et al., AISTATS 2014).
 
@@ -872,6 +976,10 @@
   (check-options! opts (-> particle-options
                            (disj :policy :resample-threshold)
                            (into #{:base-lr :robbins-monro :adagrad})))
+  (with-frozen-caller opts #(bbvi model-task num-particles num-iterations %)))
+
+(defn- bbvi
+  [model-task num-particles num-iterations opts]
   (spin
    (let [base-lr (or (:base-lr opts) 1.0)
          robbins-monro (or (:robbins-monro opts) 0.0)

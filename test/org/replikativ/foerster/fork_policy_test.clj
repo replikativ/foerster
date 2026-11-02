@@ -101,3 +101,113 @@
                              (is (every? #(= :discarded (:fork/status %)) (measure/world-descriptors posterior)))
                              (is (settled? @scopes))))))
       (finally (.close ^java.lang.AutoCloseable exec)))))
+
+;; -----------------------------------------------------------------------------
+;; Methods of several runs fork the caller once
+;; -----------------------------------------------------------------------------
+
+(defn- latent-reader
+  "A model that reads the caller's `state` and writes its own `log`."
+  [state log]
+  (spin
+   (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+     (observe (dist/normal x 1.0) 0.5 :id :y)
+     (swap! log conj :mine)
+     [@state @log])))
+
+(def ^:private sweep-methods
+  {:pimh #(inference/pimh-infer %1 3 3 %2)
+   :pgibbs #(inference/pgibbs-infer %1 3 3 %2)
+   :pgas #(inference/pgas-infer %1 3 3 %2)
+   :ipmcmc #(inference/ipmcmc-infer %1 3 2 (assoc %2 :num-nodes 2 :num-csmc-nodes 1))
+   :bbvi #(inference/bbvi-infer %1 3 2 %2)})
+
+(deftest every-run-sees-the-caller-s-state-as-inference-started
+  ;; the caller's state changes after the first run: no later run sees it,
+  ;; since every run forks the inference's one frozen fork of the caller
+  (doseq [[method run] sweep-methods]
+    (in-root
+     (let [caller ec/*execution-context*
+           state (sa/atom :before)
+           log (sa/atom [:root])
+           runs (atom 0)
+           smc (var-get #'org.replikativ.foerster.smc/smc)]
+       (capturing-scopes [scopes]
+                         (with-redefs [org.replikativ.foerster.smc/smc
+                                       (fn [& args]
+                                         (when (= 2 (swap! runs inc))
+                                           (binding [ec/*execution-context* caller]
+                                             (reset! state :changed)))
+                                         (apply smc args))]
+                           (let [posterior @(spin (await (run (latent-reader state log) {:world-policy :fork})))
+                                 values (mapv measure/get-value (measure/get-contexts posterior))]
+                             (is (> @runs 1) (str method ": several runs"))
+                             (is (= :changed @state) (str method ": the caller changed meanwhile"))
+                             (is (every? #{[:before [:root :mine]]} values)
+                                 (str method ": every run sees the state as inference started, and its own write"))
+                             (is (= [:root] @log) (str method ": nothing reaches the caller"))
+                             (is (every? #(= :discarded (:fork/status %)) (measure/world-descriptors posterior))
+                                 (str method))
+                             (is (settled? @scopes) (str method ": every world, the frozen fork included, is discarded")))))))))
+
+(defn- wallet-authority
+  "A ledger outside every world: {world-id {:wallet {resource n} :from id}};
+  `grants` counts the grants each source world made."
+  [ledger grants]
+  (reify world-scope/PResourceAuthority
+    (grant! [_ source child grant]
+      (swap! grants update (:fork-id source) (fnil inc 0))
+      (swap! ledger
+             (fn [book]
+               (let [left (merge-with - (get-in book [(:fork-id source) :wallet]) grant)]
+                 (when (some neg? (vals left))
+                   (throw (ex-info "Insufficient funds" {})))
+                 (-> book
+                     (assoc-in [(:fork-id source) :wallet] left)
+                     (assoc (:fork-id child) {:wallet grant :from (:fork-id source)})))))
+      nil)
+    (return! [_ context]
+      (swap! ledger
+             (fn [book]
+               (if-let [{:keys [wallet from]} (get book (:fork-id context))]
+                 (-> book
+                     (update-in [from :wallet] #(merge-with + % wallet))
+                     (dissoc (:fork-id context)))
+                 book)))
+      nil)
+    (balance [_ context] (get-in @ledger [(:fork-id context) :wallet]))))
+
+(deftest a-multi-run-inference-draws-its-grant-once
+  (doseq [[method run share] [[:pimh #(inference/pimh-infer %1 4 3 %2) 3]
+                              [:ipmcmc #(inference/ipmcmc-infer %1 2 2 (assoc %2 :num-nodes 2 :num-csmc-nodes 1)) 3]]]
+    (in-root
+     (let [root ec/*execution-context*
+           ledger (atom {(:fork-id root) {:wallet {:tokens 100}}})
+           grants (atom {})
+           tokens #(get-in @ledger [(:fork-id ec/*execution-context*) :wallet :tokens])
+           posterior @(spin (await (run (spin (let [at-start (tokens)]
+                                                (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
+                                                at-start))
+                                        {:world-policy :fork :authority (wallet-authority ledger grants)
+                                         :grant {:tokens 12}})))]
+       (is (every? #(= share %) (map measure/get-value (measure/get-contexts posterior)))
+           (str method ": every particle of every run starts with its share of the one grant"))
+       (is (= 1 (get @grants (:fork-id root))) (str method ": the caller's wallet is drawn once"))
+       (is (= {(:fork-id root) {:wallet {:tokens 100}}} @ledger)
+           (str method ": every world gives back what it has left"))))))
+
+(deftest a-failing-run-exposes-recovery-and-discards-every-world
+  (in-root
+   (capturing-scopes [scopes]
+                     (let [runs (atom 0)
+                           result (failure #(inference/pimh-infer
+                                             (spin
+                                              (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
+                                              (when (= 4 (swap! runs inc))
+                                                (throw (ex-info "model failed" {:stage :model})))
+                                              :ok)
+                                             3 3 {:world-policy :fork}))]
+                       (is (= ::inference/inference-failed (:type (ex-data result))))
+                       (is (some? (:world/recovery (ex-data result))))
+                       (is (= {:stage :model} (ex-data (ex-cause result))))
+                       (is (settled? @scopes))))))
