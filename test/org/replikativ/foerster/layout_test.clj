@@ -32,7 +32,10 @@
         :let [form (with-open [r (java.io.PushbackReader. (io/reader f))]
                      (binding [*read-eval* false]
                        (read {:read-cond :allow :features #{:clj}} r)))
-              requires (->> (tree-seq coll? seq form)
+              ;; an :as-alias libspec loads nothing (it names keywords): not
+              ;; a dependency, so it is not descended into
+              requires (->> (tree-seq #(and (coll? %) (not (and (vector? %) (some #{:as-alias} %))))
+                                      seq form)
                             (filter symbol?)
                             (map str)
                             (filter #(str/starts-with? % prefix))

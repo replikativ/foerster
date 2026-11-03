@@ -9,8 +9,8 @@ protocol-only runtime access and `*in-trampoline*` apply here unchanged.
 
 ```
 src/org/replikativ/foerster/
-├── core.cljc           # public entry: infer, smc-infer, kernel-infer, … ;
-│                       #   :world-policy, options, dispatch
+├── core.cljc           # public entry: infer and every method's entry point;
+│                       #   errors carry core's keywords wherever raised
 ├── dist.cljc effects.cljc block.cljc   # what models are written with
 ├── measure.cljc diagnostics.cljc random.cljc weights.cljc
 │                       #   results, checks, seeding, population mass
@@ -24,8 +24,10 @@ src/org/replikativ/foerster/
 │                       #   (populations on θ vectors)
 ├── moves/              # kernel transition transition_context transport involutive
 │                       #   block_mh hmc nuts: Markov moves and their interpreter
-├── inference/          # smc smc2 enumerate cascade particle_mcmc tempering
-│                       #   parallel_tempering scmc optimize gradient compiled steer
+├── inference/          # worlds (world policy, options, canonical runs) smc smc2
+│                       #   enumerate cascade particle_mcmc pmcmc tempering
+│                       #   parallel_tempering scmc bbvi gradient optimize compiled
+│                       #   posterior (query, predict, predictive) steer
 ├── diagnostics/arviz.cljc
 ├── causal/             # identification model counterfactual attribution
 ├── amortized/          # compiler learn

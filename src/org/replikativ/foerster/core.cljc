@@ -1,52 +1,47 @@
 (ns org.replikativ.foerster.core
-  "Compositional probabilistic inference algorithms.
+  "The public entry to inference: one call shape for every method (`infer`),
+  the methods' own entry points, and the modelling primitives re-exported.
 
   Every method runs a probabilistic program as a savepoint handler: SMC
   (`foerster.inference.smc`) for the particle methods — smc-infer,
-  importance-sampling, pimh-infer, pgibbs-infer, pgas-infer, ipmcmc-infer,
-  bbvi-infer and kernel-infer with a PInferenceKernel — and replay plus
-  accept over traces (`foerster.runtime.trace`) for the Markov-chain kernels.
+  importance-sampling, pimh-infer, pgibbs-infer, pgas-infer, ipmcmc-infer
+  (`foerster.inference.pmcmc`), bbvi-infer (`foerster.inference.bbvi`) and
+  kernel-infer with a PInferenceKernel — and replay plus accept over traces
+  (`foerster.runtime.trace`) for the Markov-chain kernels.
 
   Pure inference (`:world-policy :fresh`, the default) runs in fresh worlds;
-  `:world-policy :fork` in canonical forks of the caller's world (see
-  `in-canonical-worlds`; methods that run several times fork the caller
-  once, `foerster.runtime.canonical`). Particle measures hold `Sample`s (result, trace,
-  and a canonical particle's world descriptor).
+  `:world-policy :fork` in canonical forks of the caller's world
+  (`foerster.inference.worlds`; methods that run several times fork the
+  caller once, `foerster.runtime.canonical`). Particle measures hold
+  `Sample`s (result, trace, and a canonical particle's world descriptor).
+  Errors keep this namespace's keywords wherever they are raised.
 
   All functions return Spin<EmpiricalMeasure> for composability;
-  post-processing is measure-centric (query, predict)."
+  post-processing is measure-centric (query, predict:
+  `foerster.inference.posterior`)."
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.foerster.block :as block]
-            [org.replikativ.foerster.measure :as m]
+  (:require [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
-            [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.moves.transition :as transition]
-            [org.replikativ.foerster.inference.smc :as smc]
-            [org.replikativ.foerster.inference.particle-mcmc :as pmcmc]
             [org.replikativ.foerster.inference.smc2 :as smc2]
-            [org.replikativ.foerster.inference.enumerate :as enumerate]
-            [org.replikativ.foerster.runtime.gfi :as gfi]
+            [org.replikativ.foerster.inference.worlds
+             :refer [check-options! refuse-authority! particle-options smc-options
+                     on-savepoints particles enumeration]]
+            [org.replikativ.foerster.inference.pmcmc :as pmcmc]
+            [org.replikativ.foerster.inference.bbvi :as bbvi]
+            [org.replikativ.foerster.inference.posterior :as posterior]
             [org.replikativ.foerster.inference.parallel-tempering :as parallel-tempering]
             [org.replikativ.foerster.inference.tempering :as tempering]
-            [org.replikativ.foerster.inference.gradient :as grad]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.foerster.runtime.canonical :as canonical :refer [close-canonical! canonical-recovery share
-                                                                             balance-op frozen-source with-frozen-caller]]
+            [org.replikativ.foerster.runtime.canonical :as canonical :refer [frozen-source with-frozen-caller]]
             #?(:clj [org.replikativ.foerster.analysis :as analysis])
             #?(:clj [org.replikativ.foerster.inference.compiled :as compiled])
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.world.scope :as world-scope]
-            [org.replikativ.spindel.engine.core :as rtc]
-            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.spin.combinators :as comb]
-            [org.replikativ.spindel.effects.await :refer [await await-finalization]]
-            [replikativ.logging :as log]
+            [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :as effects]
-            [org.replikativ.spindel.engine.effects :as eff]
-            [clojure.set :as set]))
+            [org.replikativ.spindel.engine.effects :as eff]))
 
 ;; =============================================================================
 ;; Modelling primitives
@@ -75,67 +70,8 @@
  'org.replikativ.foerster.core/deterministic effects/deterministic-handler effects/deterministic-adapter)
 
 ;; =============================================================================
-;; Markov chains: replay plus accept
+;; Kernels: Markov chains and site proposal policies
 ;; =============================================================================
-
-(defn- world-policy
-  "The `:world-policy` of `opts`, :fresh by default; refuses any other."
-  [opts]
-  (let [policy (get opts :world-policy :fresh)]
-    (when-not (#{:fresh :fork} policy)
-      (throw (ex-info "Unknown inference world policy"
-                      {:type ::invalid-world-policy
-                       :world-policy policy
-                       :supported #{:fresh :fork}})))
-    policy))
-
-(def ^:private particle-options
-  "What every particle method takes."
-  #{:world-policy :world-opts :authority :grant :executor :resample-threshold :policy :seed})
-
-(def ^:private rejuvenation-options
-  "Resample-move and SMCP3 (`foerster.inference.smc`): SMC and PIMH in fresh worlds
-  only."
-  #{:anchors :rejuvenate :smcp3})
-
-(def ^:private smc-options
-  "What SMC and PIMH take beyond every particle method's options."
-  (into #{:resampling :genealogy?} rejuvenation-options))
-
-(def ^:private fork-options
-  "What applies to canonical worlds only (`:world-policy :fork`)."
-  #{:world-opts :authority :grant})
-
-(defn- check-options!
-  "Refuse options `allowed` does not name, and canonical-world options under
-  `:world-policy :fresh`: an option that would be ignored is a mistake."
-  [opts allowed]
-  (when-let [unknown (seq (remove allowed (keys opts)))]
-    (throw (ex-info (str "Unknown inference options: " (vec unknown))
-                    {:type ::unknown-options
-                     :unknown (vec unknown)
-                     :allowed allowed})))
-  (when (= :fresh (world-policy opts))
-    (when-let [misplaced (seq (filter fork-options (keys opts)))]
-      (throw (ex-info (str "Options for :world-policy :fork only: " (vec misplaced))
-                      {:type ::fork-only-options
-                       :options (vec misplaced)}))))
-  (when (= :fork (world-policy opts))
-    (when-let [misplaced (seq (filter rejuvenation-options (keys opts)))]
-      (throw (ex-info (str "Options for :world-policy :fresh only: " (vec misplaced))
-                      {:type ::fresh-only-options
-                       :options (vec misplaced)}))))
-  opts)
-
-(declare particles)
-
-(defn- refuse-authority!
-  "Methods whose runs fork worlds per move (chains, tempered particles)
-  take no `:authority` or `:grant` yet."
-  [opts what]
-  (when-let [given (seq (filter #(contains? opts %) [:authority :grant]))]
-    (throw (ex-info (str what " does not take :authority or :grant yet: every move forks a world")
-                    {:type ::invalid-world-policy :options (vec given)}))))
 
 (defn- kernel-policy
   "An `foerster.runtime.trace` policy that asks `kernel` (a PInferenceKernel) for
@@ -213,149 +149,8 @@
       (particles model-task num-particles (assoc smc-opts :policy (kernel-policy kernel))))))
 
 ;; =============================================================================
-;; Convenience Functions (Delegate to kernel-infer)
+;; Particle methods (worlds and options: `foerster.inference.worlds`)
 ;; =============================================================================
-
-(defn- on-savepoints?
-  "Whether a particle method whose canonical worlds are not on savepoints
-  yet runs on savepoint SMC: pure inference in fresh worlds does."
-  [opts]
-  (= :fresh (world-policy opts)))
-
-(defn- on-savepoints
-  "A spin resolving the savepoint CPS `operation`, a failure reported as
-  `::inference-failed` with the model's error as its cause."
-  [operation]
-  (spin-core/with-causal-descendant-egress
-    (spin
-     (try
-       (await operation)
-       (catch #?(:clj Throwable :cljs :default) e
-         (throw (ex-info "Inference failed during particle execution"
-                         {:type ::inference-failed} e)))))))
-
-;; -----------------------------------------------------------------------------
-;; Canonical particle worlds (`:world-policy :fork`)
-;; -----------------------------------------------------------------------------
-;;
-;; The model runs in a frozen fork of the caller's world, the root, owned by
-;; a world scope of the inference; savepoint SMC opens its session there and
-;; its worlds join that scope, so every particle world descends from the root,
-;; sees the caller's systems as they were, and nothing a particle writes
-;; reaches the caller. Each particle runs the whole model (`smc/start-site`).
-;; Particles are made by copying worlds (JVM): a world holding a system that
-;; may not be copied is refused, and with an `:authority` the root is granted
-;; `:grant` from the caller's wallet and every copy an even share of its
-;; world's. When inference ends, however it ends, the session is closed and
-;; every world discarded before the result or error is delivered; particles
-;; keep their worlds' descriptors.
-
-(defn- with-world-descriptors
-  "`measure` whose particles carry their worlds' settled descriptors."
-  [measure descriptors]
-  (let [by-id (into {} (map (juxt :fork/id identity)) descriptors)]
-    (update measure :particles
-            (fn [particles]
-              (mapv (fn [[s w]]
-                      [(if-let [id (:world-id s)]
-                         (-> s (dissoc :world-id) (assoc :world-descriptor (get by-id id)))
-                         s)
-                       w])
-                    particles)))))
-
-(defn- in-canonical-worlds
-  "A savepoint driver's run of `model-task` in canonical worlds of the
-  caller's (see above): `(run model root scope)` is a CPS operation resolving
-  the measure of `model` run in `root` by a session joining `scope` —
-  savepoint SMC (`smc/smc`) or enumeration (`enumerate/enumerate`).
-  `:world-opts` are the forks' options (`:systems`, `:rights`,
-  `:snapshots`); `:executor` the worlds' executor; `:authority` a
-  `world.scope/PResourceAuthority` and `:grant` what the inference may spend
-  of the caller's wallet. Inside `with-frozen-caller` the root is forked
-  from the inference's frozen fork instead of the caller's world, and takes
-  `::grant` of its wallet, or all that is left of it."
-  [model-task opts run]
-  (spin-core/with-causal-descendant-egress
-    (spin
-     (let [source (or (frozen-source opts) rtc/*execution-context*)
-           grant (if (frozen-source opts)
-                   (when (:authority opts)
-                     (if (contains? opts ::grant)
-                       (::grant opts)
-                       (await (balance-op (:authority opts) source))))
-                   (:grant opts))
-           world-opts (or (:world-opts opts) {})
-           scope (world-scope/create {:purpose :particle
-                                      :authority (:authority opts)
-                                      :fork-opts (cond-> world-opts
-                                                   (:executor opts) (assoc :executor (:executor opts)))})
-         ;; holds the scope open until the session joins it
-           lease (world-scope/begin-activity! scope :inference)
-           root (volatile! nil)
-           measure (volatile! nil)]
-       (try
-         ;; the fork resolves in its source's world: resume this spin in
-         ;; the caller's, also when the source is a frozen fork
-         (vreset! root (:child-ctx (await (fn [resolve reject]
-                                            (let [[resolve reject] (sp/in-callers-world resolve reject)]
-                                              (world-scope/fork! scope source {:grant grant}
-                                                                 resolve reject))))))
-         (itrace/mark-canonical! @root)
-         (vreset! measure
-                  (await (run (binding [rtc/*execution-context* @root]
-                                ;; every particle runs the whole model: a
-                                ;; canonical model's effects may be random
-                                ;; without a sample site
-                                (spin (sp/savepoint smc/start-site nil)
-                                      (await model-task)))
-                              @root scope)))
-         (catch #?(:clj Throwable :cljs :default) e
-           (throw (if (= spin-core/spin-cancelled (:type (ex-data e)))
-                    e
-                    (ex-info "Inference failed during particle execution"
-                             {:type ::inference-failed
-                              :world/recovery (canonical-recovery scope lease @root)}
-                             e))))
-         (finally
-           (await-finalization (close-canonical! scope lease @root))))
-       (with-world-descriptors @measure (world-scope/descriptors scope))))))
-
-(defn- canonical-options
-  "A savepoint driver's options in the canonical worlds `root` of `scope`:
-  particles (and enumeration's branches) are copies of worlds on the JVM, so
-  a world holding a system that may not be copied is refused and each copy
-  takes an even share of its world's budget; forks in ClojureScript."
-  [opts root scope]
-  (-> opts
-      (dissoc :world-policy :world-opts :executor :authority :grant ::source ::grant)
-      (assoc :root root :scope scope :copy? #?(:clj true :cljs false))))
-
-(defn- particles
-  "Savepoint SMC of `model-task` with `n` particles in the worlds `opts`'
-  `:world-policy` names."
-  [model-task n opts]
-  (case (world-policy opts)
-    :fresh (on-savepoints (smc/smc model-task n opts))
-    :fork (in-canonical-worlds model-task opts
-                               (fn [model root scope]
-                                 (smc/smc model n (canonical-options opts root scope))))))
-
-(def ^:private enumeration-options
-  #{:max-branches :policy :executor :seed :world-policy :world-opts :authority :grant})
-
-(defn- enumeration
-  "Exact enumeration (`foerster.inference.enumerate`) of `model-task` in the worlds
-  `opts`' `:world-policy` names: under `:fork` the branches start from a
-  canonical fork of the caller's world, as SMC's particles do, see each
-  their own copy of its registered state, and are discarded before the
-  measure is delivered; its outcomes carry their worlds' descriptors."
-  [model-task opts]
-  (check-options! opts enumeration-options)
-  (case (world-policy opts)
-    :fresh (on-savepoints (enumerate/enumerate model-task (dissoc opts :world-policy)))
-    :fork (in-canonical-worlds model-task opts
-                               (fn [model root scope]
-                                 (enumerate/enumerate model (canonical-options opts root scope))))))
 
 (defn smc-infer
   "Sequential Monte Carlo: `num-particles` particles run `model-task` (a
@@ -437,502 +232,45 @@
   ;; savepoint SMC that never resamples: ESS never falls below 0
   (particles model-task num-samples (assoc opts :resample-threshold 0.0)))
 
-;; =============================================================================
-;; Helper Functions
-;; =============================================================================
+(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} pimh-infer
+  "Particle independent Metropolis-Hastings. See `org.replikativ.foerster.inference.pmcmc/pimh-infer`."
+  pmcmc/pimh-infer)
 
-(defn query
-  "Weighted statistics of a numeric function of the program's value over
-  `measure`: `query-fn` is `identity` (the value itself), a keyword (a field
-  of a map value) or a function of the value.
+(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} pgibbs-infer
+  "Particle Gibbs (conditional SMC). See `org.replikativ.foerster.inference.pmcmc/pgibbs-infer`."
+  pmcmc/pgibbs-infer)
 
-  Returns {:mean :variance :std-dev :quantiles :samples :weights :type};
-  `:samples` and `:weights` are the particles' values and normalized
-  weights."
-  [measure query-fn]
-  (let [extract-fn (cond
-                     ;; identity means "get the main result"
-                     (= query-fn identity) m/get-value
-                     ;; keyword means "extract field from result"
-                     (keyword? query-fn) (fn [ctx] (get (m/get-value ctx) query-fn))
-                     ;; function: compose with get-value
-                     :else (fn [ctx] (query-fn (m/get-value ctx))))]
-    (m/measure-stats measure extract-fn)))
+(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} pgas-infer
+  "Particle Gibbs with ancestor sampling. See `org.replikativ.foerster.inference.pmcmc/pgas-infer`."
+  pmcmc/pgas-infer)
 
-(defn predict
-  "`num-samples` draws from `measure`, resampled by weight, each passed to
-  `pred-fn` — which gets the particle (a `Sample`, or a context), so
-  `m/get-value` reads its program value and `m/get-trace` its trace."
-  [measure pred-fn num-samples]
-  (let [samples (m/sample-measure measure num-samples)]
-    (mapv (fn [[ctx _]] (pred-fn ctx)) samples)))
+(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} ipmcmc-infer
+  "Interacting particle MCMC. See `org.replikativ.foerster.inference.pmcmc/ipmcmc-infer`."
+  pmcmc/ipmcmc-infer)
 
-(defn predictive
-  "`n` posterior predictive draws: particles of `measure` drawn by weight,
-  each replayed through `model` with its latent choices held and its
-  observed sites drawing fresh values instead of scoring the data. A prior
-  predictive draw runs `model` with `(itrace/policy {:simulate-observed?
-  true})` (`gfi/run-policy`); `gfi/simulate` would score the data instead.
+(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} bbvi-infer
+  "Black-box variational inference. See `org.replikativ.foerster.inference.bbvi/bbvi-infer`."
+  bbvi/bbvi-infer)
 
-  `model` need not be the program that was conditioned: the same program on
-  new inputs (more weeks, other covariates) predicts them, its latent sites
-  held where the posterior has them and drawn from their prior where it
-  does not (a new group's effect). `:interventions` ({selector transform},
-  as `foerster.runtime.trace/policy` takes them) sets sites by the do-operator
-  first — a scenario under the posterior.
-
-  Returns a spin resolving a vector of {:value v :observations {address x}}:
-  the program's value and what each observed site drew."
-  [model measure n & [{:keys [interventions]}]]
-  (spin
-   (loop [[[particle _] & more] (m/sample-measure measure n) out []]
-     (if-not particle
-       out
-       (let [_ (when (nil? (m/get-trace particle))
-                 (throw (ex-info "Posterior predictive replay needs traces; use amortized/predictive with an explicit forward binding for learned draws"
-                                 {:type ::missing-predictive-trace})))
-             latents (into {} (keep (fn [[address {:keys [value observed? deterministic?]}]]
-                                      (when-not (or observed? deterministic?) [address value])))
-                           (m/get-trace particle))
-             t (await (gfi/run-policy model (itrace/policy {:constraints latents
-                                                            :interventions interventions
-                                                            :simulate-observed? true})))
-             drawn (into {} (mapcat (fn [[address {:keys [value note]}]]
-                                      (cond
-                                        (:simulated? note) [[address value]]
-                                        ;; a block's own observations, when it can draw them
-                                        (block/block-dist? (:dist note))
-                                        (when-let [simulate (block/capability (:block (:dist note)) :simulate)]
-                                          (map (fn [[k v]] [[address k] v])
-                                               (simulate (double-array value) (:inputs (:dist note))))))))
-                         (:trace/entries t))]
-         (await (gfi/close! t))
-         (recur more (conj out {:value (:trace/result t) :observations drawn})))))))
+(def ^{:arglists '([measure])} get-variational-dists
+  "The learned {address distribution} of a `bbvi-infer` result. See `org.replikativ.foerster.inference.bbvi/get-variational-dists`."
+  bbvi/get-variational-dists)
 
 ;; =============================================================================
-;; Particle MCMC Methods
+;; Reading a posterior (`foerster.inference.posterior`)
 ;; =============================================================================
 
-(defn- particle-sweep [model n opts]
-  (fn [key retained seed]
-    (particles model n (cond-> (assoc opts :seed (sp/derive-seed seed ::sweep key))
-                         retained (assoc :retained retained)))))
+(def ^{:arglists '([measure query-fn])} query
+  "Weighted statistics of a function of the program's value. See `org.replikativ.foerster.inference.posterior/query`."
+  posterior/query)
 
-(defn pimh-infer
-  "Particle Independent Metropolis-Hastings (Andrieu et al. 2010).
+(def ^{:arglists '([measure pred-fn num-samples])} predict
+  "Draws from a measure, each passed to `pred-fn`. See `org.replikativ.foerster.inference.posterior/predict`."
+  posterior/predict)
 
-  Each iteration proposes a fresh SMC sweep and accepts it with probability
-  min(1, Ẑ_new / Ẑ_current); the current sweep's particles, normalized, are
-  emitted every iteration.
-
-  Args:
-    model-task, num-particles (per sweep), num-iterations
-    opts: :executor, :resample-threshold
-
-  Returns: Spin<EmpiricalMeasure>"
-  [model-task num-particles num-iterations & [opts]]
-  (check-options! opts (into particle-options smc-options))
-  (if (on-savepoints? opts)
-    (on-savepoints (smc/pimh model-task num-particles num-iterations opts))
-    (with-frozen-caller opts
-      (fn [opts]
-        (pmcmc/pimh
-         (particle-sweep model-task num-particles opts)
-         num-iterations {:seed (:seed opts) :accept-key ::pimh-accept})))))
-
-(defn pgibbs-infer
-  "Particle Gibbs (conditional SMC, Andrieu et al. 2010).
-
-  Args:
-    model-task, num-particles (per sweep, including the retained one),
-    num-iterations (sweeps)
-    opts: the particle methods' options, and :anchors, :rejuvenate for
-          resample-move inside each sweep, the retained particle included
-          (`foerster.inference.smc/smc`; :fresh only)
-
-  Returns: Spin<EmpiricalMeasure> of every sweep's particles, each sweep
-  normalized to total weight one."
-  [model-task num-particles num-iterations & [opts]]
-  (check-options! opts (into particle-options #{:anchors :rejuvenate}))
-  (if (on-savepoints? opts)
-    (on-savepoints (smc/pgibbs model-task num-particles num-iterations opts))
-    (with-frozen-caller opts
-      (fn [opts]
-        (pmcmc/pgibbs
-         (particle-sweep model-task num-particles opts)
-         num-iterations {:seed (:seed opts) :pick-key ::pick})))))
-
-;; =============================================================================
-;; IPMCMC - Interacting Particle MCMC
-;; =============================================================================
-
-(defn- gibbs-update-csmc-indices
-  "Perform Gibbs sweep on CSMC node indices.
-
-   For each CSMC slot, consider swapping with an SMC node based on log-Z values.
-   Returns [new-csmc-indices zeta-sums] where zeta-sums are weights for
-   Rao-Blackwellization.
-
-   Args:
-     log-Zs - Vector of log marginal likelihood estimates from all nodes
-     num-csmc-nodes - Number of CSMC nodes
-
-   Returns:
-     [csmc-indices zeta-sums]"
-  [log-Zs num-csmc-nodes]
-  (let [num-nodes (count log-Zs)]
-    (loop [i 0
-           csmc-indices (vec (range num-csmc-nodes))
-           smc-indices (vec (range num-csmc-nodes num-nodes))
-           zeta-sums (vec (repeat num-nodes 0.0))]
-      (if (= i num-csmc-nodes)
-        [csmc-indices zeta-sums]
-        ;; Consider swapping CSMC node i with an SMC node
-        (let [;; Candidate indices: current SMC nodes + current CSMC node i
-              proposal-indices (conj smc-indices (csmc-indices i))
-              proposal-log-Zs (mapv #(nth log-Zs %) proposal-indices)
-              probs (m/normalize-log-weights proposal-log-Zs)
-
-              ;; Update zeta sums for Rao-Blackwellization
-              new-zeta-sums (reduce (fn [zs [idx p]]
-                                      (update zs idx + p))
-                                    zeta-sums
-                                    (map vector proposal-indices probs))
-
-              ;; Sample which node to use as CSMC
-              k (m/sample-categorical probs)]
-
-          (if (= k (count smc-indices))
-            ;; Keep current CSMC node (k points to the appended csmc index)
-            (recur (inc i) csmc-indices smc-indices new-zeta-sums)
-            ;; Swap: SMC node k becomes CSMC, current CSMC becomes SMC
-            (recur (inc i)
-                   (assoc csmc-indices i (smc-indices k))
-                   (assoc smc-indices k (csmc-indices i))
-                   new-zeta-sums)))))))
-
-(defn- run-sweep
-  "Run a single SMC or CSMC sweep.
-
-   Args:
-     model-task - The probabilistic program
-     num-particles - Particles per sweep
-     retained-trace - Retained trace for CSMC (nil for plain SMC)
-     opts - Inference options
-
-   Returns: Spin<Measure>"
-  [model-task num-particles retained-trace opts]
-  (cond
-    ;; SMC sweep (no retained trace)
-    (nil? retained-trace)
-    (particles model-task num-particles opts)
-
-    ;; CSMC sweep with retained trace
-    :else
-    (particles model-task num-particles
-               (assoc opts :retained (pmcmc/retained-choices retained-trace)))))
-
-(defn- run-parallel-sweeps
-  "Run SMC/CSMC sweeps in parallel across all nodes.
-
-   Uses the parallel combinator to launch all sweeps concurrently,
-   scaling with the underlying executor.
-
-   Args:
-     model-task - The probabilistic program
-     num-particles - Particles per sweep
-     retained-traces - Vector of retained traces (nil for SMC, trace for CSMC)
-     opts - Inference options
-
-   Returns: Spin<Vector<Measure>> - A spin that completes with all sweep measures"
-  [model-task num-particles retained-traces opts]
-  ;; Create individual sweep spins for each node
-  ;; each node's seed derives from the sweep's (`:seed`) and its index, so
-  ;; the nodes do not depend on the order in which they run
-  (let [sweep-spins (vec (map-indexed (fn [i retained-trace]
-                                        (run-sweep model-task num-particles retained-trace
-                                                   (assoc opts :seed (sp/derive-seed (:seed opts) ::node i))))
-                                      retained-traces))]
-    ;; Use parallel combinator to run all sweeps concurrently
-    (apply comb/parallel sweep-spins)))
-
-(declare ipmcmc)
-
-(defn ipmcmc-infer
-  "Interacting Particle MCMC inference.
-
-   Runs M nodes in parallel, where M_c nodes run conditional SMC (with retained
-   particles) and M_s nodes run plain SMC. After each sweep, performs Gibbs
-   updates on which nodes become CSMC based on marginal likelihood estimates.
-
-   This creates 'interaction' between parallel chains: nodes with higher log-Z
-   are more likely to have their particles retained in future sweeps.
-
-   Algorithm:
-   1. Initialize: Run SMC on all nodes
-   2. For each iteration:
-      a. Run CSMC on M_c nodes (with retained particles from previous sweep)
-      b. Run SMC on M_s nodes (fresh)
-      c. Collect log-Z estimates from each node
-      d. Gibbs update: sample which nodes become CSMC for next sweep
-      e. Extract retained particles for selected CSMC nodes
-   3. Output: Weighted samples from all nodes with Rao-Blackwellized weights
-
-   Args:
-     model-task - Spin representing probabilistic program
-     num-particles - Number of particles per sweep (per node)
-     num-iterations - Number of IPMCMC iterations
-     opts - Optional map with:
-       :num-nodes - Total number of nodes (default 8)
-       :num-csmc-nodes - Number of CSMC nodes (default num-nodes/2)
-       :executor - Shared executor
-       :all-particles? - Return all particles or one per node (default true)
-       and the other particle methods' options except :resample-threshold
-
-   Every node, conditional or not, resamples at every barrier by multinomial
-   draws: iPMCMC's extended target needs each conditional node to be the
-   conditional of the very SMC the free nodes run, since the Gibbs draw of
-   the conditional nodes compares their evidence estimates (Rainforth et al.
-   2016, §3; Anglican's ipmcmc.clj runs both node types alike). An
-   ESS-adaptive free node would not be, so `:resample-threshold` is refused.
-
-   Returns: Spin<EmpiricalMeasure>
-
-   Reference:
-     Rainforth et al., 'Interacting Particle Markov Chain Monte Carlo', ICML 2016"
-  [model-task num-particles num-iterations & [opts]]
-  (when (contains? opts :resample-threshold)
-    (throw (ex-info (str "IPMCMC resamples every node at every barrier (the conditional nodes "
-                         "must be conditionals of the free nodes' SMC): :resample-threshold does not apply")
-                    {:type ::unknown-options :unknown [:resample-threshold]})))
-  (check-options! opts (into (disj particle-options :resample-threshold)
-                             #{:num-nodes :num-csmc-nodes :all-particles?}))
-  (with-frozen-caller opts #(ipmcmc model-task num-particles num-iterations %)))
-
-(defn- ipmcmc
-  [model-task num-particles num-iterations opts]
-  (spin
-   (let [num-nodes (or (:num-nodes opts) 8)
-         num-csmc-nodes (or (:num-csmc-nodes opts) (quot num-nodes 2))
-         num-smc-nodes (- num-nodes num-csmc-nodes)
-         all-particles? (get opts :all-particles? true)
-         seed (or (:seed opts) (random/fresh-seed))
-         ;; every node resamples at every barrier (ESS ≤ N < ∞·N),
-         ;; multinomially, as conditional SMC does (`smc/smc` :retained)
-         node-opts (assoc opts :resample-threshold ##Inf :resampling :multinomial)
-         ;; the nodes of a sweep run at once: in a frozen fork of the
-         ;; caller's world with an authority, each takes an even share of
-         ;; what is left, decided before any of them starts
-         node-grant (fn [opts]
-                      (spin (when (and (frozen-source opts) (:authority opts))
-                              (share (await (balance-op (:authority opts) (frozen-source opts))) num-nodes))))
-         sweep-opts (fn [iteration grant]
-                      (cond-> (assoc node-opts :seed (sp/derive-seed seed ::sweep iteration))
-                        grant (assoc ::grant grant)))]
-     (assert (> num-csmc-nodes 0) ":num-csmc-nodes must be > 0")
-     (assert (< num-csmc-nodes num-nodes) ":num-csmc-nodes must be < :num-nodes")
-     (loop [iteration 0
-            ;; iteration 0 runs plain SMC on every node
-            measures (await (run-parallel-sweeps model-task num-particles
-                                                 (vec (repeat num-nodes nil))
-                                                 (sweep-opts :initial (await (node-grant opts)))))
-            all-samples []]
-       (if (>= iteration num-iterations)
-         (m/markov-measure all-samples)
-         (let [log-Zs (mapv m/log-marginal measures)
-               ;; the iteration's Gibbs draws from its own stream of the run's seed
-               [csmc-indices _zeta-sums samples retained-traces]
-               (random/with-stream*
-                 seed [::gibbs iteration]
-                 (fn []
-                   (let [[csmc-indices zeta-sums] (gibbs-update-csmc-indices log-Zs num-csmc-nodes)
-                   ;; emit THESE sweeps, each node weighted by its Rao-Blackwellized
-                   ;; probability of being a conditional node (ζ_j), particles
-                   ;; normalized within the node
-                         samples (vec (mapcat
-                                       (fn [node-idx]
-                                         (let [zeta (nth zeta-sums node-idx)
-                                               node (pmcmc/normalized (nth measures node-idx))]
-                                           (when (pos? zeta)
-                                             (if all-particles?
-                                               (map (fn [[smp lw]] [smp (+ lw (Math/log zeta))]) node)
-                                               [[(first (nth node (m/sample-categorical
-                                                                   (m/normalize-log-weights (mapv second node)))))
-                                                 (Math/log zeta)]]))))
-                                       (range num-nodes)))
-                         retained-traces (vec (concat
-                                               (map (fn [node-idx]
-                                                      (let [ps (m/get-particles (nth measures node-idx))]
-                                                        (m/get-trace (first (nth ps (m/sample-categorical
-                                                                                     (m/normalize-log-weights (mapv second ps))))))))
-                                                    csmc-indices)
-                                               (repeat num-smc-nodes nil)))]
-                     [csmc-indices zeta-sums samples retained-traces])))]
-           (log/trace :ipmcmc/gibbs-update {:iteration iteration :csmc-indices csmc-indices})
-           (recur (inc iteration)
-                  (await (run-parallel-sweeps model-task num-particles retained-traces
-                                              (sweep-opts iteration (await (node-grant opts)))))
-                  (into all-samples samples))))))))
-
-(defn pgas-infer
-  "Particle Gibbs with Ancestor Sampling (Lindsten et al. 2014).
-
-  Like `pgibbs-infer`, but at every barrier the retained particle redraws
-  which particle's past it continues from, with weights
-  w_i · p(retained future | particle i's past) computed by re-running each
-  particle's future on the retained values. Improves mixing on state-space
-  models; costs a forward re-run per particle per barrier.
-
-  Returns: Spin<EmpiricalMeasure> of every sweep's particles, each sweep
-  normalized to total weight one."
-  [model-task num-particles num-iterations & [opts]]
-  (check-options! opts particle-options)
-  (if (on-savepoints? opts)
-    (on-savepoints (smc/pgas model-task num-particles num-iterations opts))
-    (with-frozen-caller opts
-      (fn [opts]
-        (pmcmc/pgibbs (particle-sweep model-task num-particles (assoc opts :ancestor-sampling? true))
-                      num-iterations {:seed (:seed opts) :pick-key ::pick})))))
-
-;; =============================================================================
-;; Black Box Variational Inference (BBVI)
-;; =============================================================================
-
-(defn- variational-draw
-  "The proposal of a savepoint BBVI iteration: a latent site whose q (the
-  site's prior, the first time its address is seen) has a gradient draws from
-  q; `foerster.runtime.trace/policy` then weights it by p/q."
-  [q-dists]
-  (fn [sp _old-entry]
-    (let [address (:savepoint/address sp)
-          prior (:dist (:savepoint/payload sp))
-          q (get (swap! q-dists #(if (contains? % address) % (assoc % address prior))) address)]
-      (when (grad/has-gradient? q)
-        (let [v (dist/draw q)]
-          {:value v :log-proposal (dist/logpdf q v)})))))
-
-(defn- q-gradients
-  "{address ∇log q(value)} of the latent sites of a Sample's trace that
-  `qs` has a differentiable q for."
-  [qs trace]
-  (into {} (keep (fn [[address {:keys [value observed?]}]]
-                   (let [q (get qs address)]
-                     (when (and (not observed?) q (grad/has-gradient? q))
-                       [address (grad/compute-gradient q value)]))))
-        trace))
-
-(defn- optimal-scaling
-  "Control variate coefficient Cov(f,g)/Var(g)."
-  [f g]
-  (let [n (count f)
-        f-bar (/ (reduce + f) n)
-        g-bar (/ (reduce + g) n)
-        g-centered (mapv #(- % g-bar) g)]
-    (/ (reduce + 1e-12 (map * (map #(- % f-bar) f) g-centered))
-       (reduce + 1e-12 (map * g-centered g-centered)))))
-
-(defn- aggregate-gradients
-  "Per address, the score-function ELBO gradient
-     (1/n) Σ (log w_i − a*) ∇log q(z_i),   log w = log p(x, y) − log q(x)
-   with the variance-minimizing control variate a* = Cov(f, g)/Var(g),
-   f = log w · g (Ranganath et al. 2014)."
-  [particle-gradients particle-log-weights]
-  (let [all-addrs (reduce set/union (map #(set (keys %)) particle-gradients))]
-    (reduce
-     (fn [result addr]
-       (let [valid (filter (fn [[grads lw]] (and (contains? grads addr) (grad/finite? lw)))
-                           (map vector particle-gradients particle-log-weights))
-             n (count valid)]
-         (if (< n 2)
-           result
-           (let [grads (mapv #(get (first %) addr) valid)
-                 lws (mapv second valid)]
-             (assoc result addr
-                    (mapv (fn [dim]
-                            (let [g (mapv #(nth % dim) grads)
-                                  f (mapv * lws g)
-                                  a (optimal-scaling f g)]
-                              (/ (reduce + (map (fn [x y] (- x (* a y))) f g)) n)))
-                          (range (count (first grads)))))))))
-     {}
-     all-addrs)))
-
-(defn- update-variational-dists!
-  "One ascent step on every q with a gradient. `adagrad`: true accumulates
-   squared gradients (AdaGrad), a number γ decays them (RMSprop), false
-   takes plain steps of size `lr`."
-  [q-dists accumulators gradients lr adagrad]
-  (doseq [[addr g] gradients]
-    (let [dist (get @q-dists addr)]
-      (when (grad/has-gradient? dist)
-        (let [g2 (mapv #(* % %) g)
-              prev (get @accumulators addr)
-              acc (cond (nil? prev) g2
-                        (number? adagrad) (mapv #(+ (* adagrad %1) (* (- 1.0 adagrad) %2)) prev g2)
-                        :else (mapv + prev g2))
-              rate (if adagrad (mapv #(/ lr (+ 1e-8 (Math/sqrt %))) acc) lr)]
-          (swap! accumulators assoc addr acc)
-          (swap! q-dists assoc addr (grad/grad-step dist g rate)))))))
-
-(declare bbvi)
-
-(defn bbvi-infer
-  "Black Box Variational Inference (Ranganath et al., AISTATS 2014).
-
-   Learns a mean-field q(z) = Π_addr q_addr by stochastic ascent on the ELBO
-   with the score-function estimator and control variates: `num-iterations`
-   updates, each from `num-particles` programs that sample latents from q
-   and weight by p(x, y)/q(x). Each site's q starts as the prior it has when
-   first reached and from then on moves by gradient only: mean-field, it
-   does not follow a prior that depends on other latents.
-
-   Args:
-     model-task, num-particles, num-iterations
-     opts: :base-lr (1.0) — step size at iteration t is
-           base-lr / (t+1)^robbins-monro
-           :robbins-monro (0.0)
-           :adagrad (true) — true: AdaGrad, γ ∈ (0,1): RMSprop with decay γ,
-           false: plain steps
-           :executor
-
-   Returns: Spin<EmpiricalMeasure> — `num-particles` importance-weighted
-   samples from the final q (with 0 iterations: from the priors); the learned
-   q is under `:variational-dists` (see `get-variational-dists`)."
-  [model-task num-particles num-iterations & [opts]]
-  (check-options! opts (-> particle-options
-                           (disj :policy :resample-threshold)
-                           (into #{:base-lr :robbins-monro :adagrad})))
-  (with-frozen-caller opts #(bbvi model-task num-particles num-iterations %)))
-
-(defn- bbvi
-  [model-task num-particles num-iterations opts]
-  (spin
-   (let [base-lr (or (:base-lr opts) 1.0)
-         robbins-monro (or (:robbins-monro opts) 0.0)
-         adagrad (get opts :adagrad true)
-         q-dists (atom {})
-         accumulators (atom {})]
-     (loop [iteration 0]
-       (let [qs @q-dists
-             measure (await (particles model-task num-particles
-                                       (assoc opts
-                                              :resample-threshold 0.0
-                                              :policy (itrace/policy {:draw (variational-draw q-dists)}))))]
-         (if (>= iteration num-iterations)
-           (assoc measure :variational-dists @q-dists)
-           (let [ps (m/get-particles measure)
-                 grads (mapv (fn [[c _]] (q-gradients (merge @q-dists qs) (m/get-trace c)))
-                             ps)]
-             (update-variational-dists! q-dists accumulators
-                                        (aggregate-gradients grads (mapv second ps))
-                                        (/ base-lr (Math/pow (inc iteration) robbins-monro))
-                                        adagrad)
-             (recur (inc iteration)))))))))
-
-(defn get-variational-dists
-  "The learned {address -> distribution} of a `bbvi-infer` result."
-  [measure]
-  (:variational-dists measure))
+(def ^{:arglists '([model measure n & [{:keys [interventions]}]])} predictive
+  "Posterior predictive draws of `model`. See `org.replikativ.foerster.inference.posterior/predictive`."
+  posterior/predictive)
 
 ;; =============================================================================
 ;; One call shape
