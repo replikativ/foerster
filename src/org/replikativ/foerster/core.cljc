@@ -9,7 +9,8 @@
 
   Pure inference (`:world-policy :fresh`, the default) runs in fresh worlds;
   `:world-policy :fork` in canonical forks of the caller's world (see
-  `in-canonical-worlds`). Particle measures hold `Sample`s (result, trace,
+  `in-canonical-worlds`; methods that run several times fork the caller
+  once, `foerster.canonical`). Particle measures hold `Sample`s (result, trace,
   and a canonical particle's world descriptor).
 
   All functions return Spin<EmpiricalMeasure> for composability;
@@ -30,6 +31,8 @@
             [org.replikativ.foerster.tempering :as tempering]
             [org.replikativ.foerster.gradient :as grad]
             [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.canonical :as canonical :refer [close-canonical! canonical-recovery share
+                                                                     balance-op frozen-source with-frozen-caller]]
             #?(:clj [org.replikativ.foerster.analysis :as analysis])
             #?(:clj [org.replikativ.foerster.compiled :as compiled])
             [org.replikativ.spindel.effects.savepoint :as sp]
@@ -127,6 +130,14 @@
 
 (declare particles)
 
+(defn- refuse-authority!
+  "Methods whose runs fork worlds per move (chains, tempered particles)
+  take no `:authority` or `:grant` yet."
+  [opts what]
+  (when-let [given (seq (filter #(contains? opts %) [:authority :grant]))]
+    (throw (ex-info (str what " does not take :authority or :grant yet: every move forks a world")
+                    {:type ::invalid-world-policy :options (vec given)}))))
+
 (defn- kernel-policy
   "An `foerster.trace` policy that asks `kernel` (a PInferenceKernel) for
   every latent site's value; the value's `:log-weight-delta` (default 0) is
@@ -164,10 +175,13 @@
       executor; without it the process generator (`random/set-seed!`) seeds
       the run
     - :world-policy - :fresh (default) for pure inference, or :fork to
-      execute each particle in a frozen canonical Yggdrasil world that is
-      discarded after the final particle values are captured
+      execute each particle (each chain) in a frozen canonical Yggdrasil
+      world that is discarded after the final values are captured; chains
+      fork one frozen fork of the caller made when inference starts and
+      reuse nothing incrementally (`foerster.trace/reexecute`)
     - :world-opts - Optional :systems/:rights/:snapshots policy forwarded to
-      canonical particle forks; lifecycle fields are owned by inference
+      canonical forks; lifecycle fields are owned by inference
+    - :authority, :grant - budgets (doc/worlds.md); particle kernels only
 
   Returns: Spin<EmpiricalMeasure>
 
@@ -179,16 +193,19 @@
                                          {:barrier-policy :none}))]
         (query measure identity)))"
   [model-task kernel num-particles & [opts]]
+  (when (k/markov-kernel? kernel)
+    (refuse-authority! opts "A Markov chain"))
   (check-options! opts (if (k/markov-kernel? kernel)
-                         #{:executor :world-policy :seed}
+                         #{:executor :world-policy :world-opts :seed}
                          (conj particle-options :barrier-policy)))
   (let [smc-opts (cond-> (dissoc opts :barrier-policy)
                    (= :none (:barrier-policy opts)) (assoc :resample-threshold 0.0))]
     (cond
       (k/markov-kernel? kernel)
       ;; Markov-chain kernels are replay plus accept over traces; each of the
-      ;; `num-particles` is an independent chain.
-      (transition/infer model-task kernel num-particles opts)
+      ;; `num-particles` is an independent chain. Under :fork every chain
+      ;; forks the inference's one frozen fork of the caller's world.
+      (with-frozen-caller opts #(transition/infer model-task kernel num-particles %))
 
       (= :prior (k/kernel-id kernel))
       (particles model-task num-particles smc-opts)
@@ -234,30 +251,6 @@
 ;; every world discarded before the result or error is delivered; particles
 ;; keep their worlds' descriptors.
 
-(defn- close-canonical!
-  "CPS: give up the inference's `lease` on `scope`, then close the session in
-  `root` (cancelling and joining its worlds, discarding the scope) — or,
-  with no session, discard the scope once quiescent, a root fork still in
-  flight included. Idempotent."
-  [scope lease root]
-  (fn [resolve reject]
-    (world-scope/end-activity! scope lease)
-    (if-let [session (some-> root sp/session)]
-      ((sp/close! session) resolve reject)
-      ((world-scope/discard-when-quiescent! scope) resolve reject))))
-
-(defn- canonical-recovery
-  "What a host needs when a canonical inference failed: the worlds'
-  descriptors and the operations that finish their cleanup, should the
-  automatic one have failed. Process-local."
-  [scope lease root]
-  {:status (:status @scope)
-   :manager scope
-   :await-quiescent (world-scope/await-quiescence scope)
-   :cancel! #(world-scope/request-cancel! scope)
-   :discard! #(close-canonical! scope lease root)
-   :descriptors (world-scope/descriptors scope)})
-
 (defn- with-world-descriptors
   "`measure` whose particles carry their worlds' settled descriptors."
   [measure descriptors]
@@ -279,11 +272,19 @@
   `:world-opts` are the forks' options (`:systems`, `:rights`,
   `:snapshots`); `:executor` the worlds' executor; `:authority` a
   `world.scope/PResourceAuthority` and `:grant` what the inference may spend
-  of the caller's wallet."
+  of the caller's wallet. Inside `with-frozen-caller` the root is forked
+  from the inference's frozen fork instead of the caller's world, and takes
+  `::grant` of its wallet, or all that is left of it."
   [model-task opts run]
   (spin-core/with-causal-descendant-egress
     (spin
-     (let [caller rtc/*execution-context*
+     (let [source (or (frozen-source opts) rtc/*execution-context*)
+           grant (if (frozen-source opts)
+                   (when (:authority opts)
+                     (if (contains? opts ::grant)
+                       (::grant opts)
+                       (await (balance-op (:authority opts) source))))
+                   (:grant opts))
            world-opts (or (:world-opts opts) {})
            scope (world-scope/create {:purpose :particle
                                       :authority (:authority opts)
@@ -294,9 +295,12 @@
            root (volatile! nil)
            measure (volatile! nil)]
        (try
+         ;; the fork resolves in its source's world: resume this spin in
+         ;; the caller's, also when the source is a frozen fork
          (vreset! root (:child-ctx (await (fn [resolve reject]
-                                            (world-scope/fork! scope caller {:grant (:grant opts)}
-                                                               resolve reject)))))
+                                            (let [[resolve reject] (sp/in-callers-world resolve reject)]
+                                              (world-scope/fork! scope source {:grant grant}
+                                                                 resolve reject))))))
          (rtp/swap-state! @root [:inference :canonical?] (constantly true))
          (vreset! measure
                   (await (run (binding [rtc/*execution-context* @root]
@@ -324,7 +328,7 @@
   takes an even share of its world's budget; forks in ClojureScript."
   [opts root scope]
   (-> opts
-      (dissoc :world-policy :world-opts :executor :authority :grant)
+      (dissoc :world-policy :world-opts :executor :authority :grant ::source ::grant)
       (assoc :root root :scope scope :copy? #?(:clj true :cljs false))))
 
 (defn- particles
@@ -380,8 +384,6 @@
     (spin (query (await (smc-infer (model) 1000)) identity))"
   [model-task num-particles & [opts]]
   (check-options! opts (conj (into particle-options smc-options) :batch))
-  (when (and (:batch opts) (not (on-savepoints? opts)))
-    (throw (ex-info ":batch runs in fresh worlds" {:type ::invalid-world-policy :batch (:batch opts)})))
   (particles model-task num-particles opts))
 
 (defn tempered-infer
@@ -392,16 +394,17 @@
 
   Options: `:ess-target` (0.5), `:moves` (single-site MH moves per particle
   per step; default a sweep), `:scale` (2.38), `:waste-free` P, `:max-steps`,
-  `:executor`, `:seed` (fixes every draw); fresh worlds only.
+  `:executor`, `:seed` (fixes every draw), `:world-policy` (:fork: every
+  particle in a fork of one frozen fork of the caller's world, without
+  incremental reuse) and `:world-opts`; no `:authority` yet.
 
   Returns a spin resolving the EmpiricalMeasure; `:temperatures` holds the
   schedule."
   [model-task num-particles & [opts]]
-  (check-options! opts #{:ess-target :moves :scale :waste-free :max-steps :executor :seed :world-policy})
-  (when (= :fork (world-policy opts))
-    (throw (ex-info "Tempered SMC runs in fresh worlds" {:type ::invalid-world-policy
-                                                         :world-policy :fork :supported #{:fresh}})))
-  (on-savepoints (tempering/tempered model-task num-particles (dissoc opts :world-policy))))
+  (refuse-authority! opts "Tempered SMC")
+  (check-options! opts #{:ess-target :moves :scale :waste-free :max-steps :executor :seed :world-policy :world-opts})
+  (with-frozen-caller opts
+    #(on-savepoints (tempering/tempered model-task num-particles (canonical/run-options %)))))
 
 (defn parallel-tempering-infer
   "Non-reversible parallel tempering (`foerster.parallel-tempering`) of a
@@ -411,18 +414,20 @@
   schedule tuned over `:rounds` rounds of doubling length (default 10).
 
   Options: `:rounds`, `:steps` (random-walk steps per chain per scan),
-  `:executor`, `:seed` (fixes every draw); fresh worlds only.
+  `:executor`, `:seed` (fixes every draw), `:world-policy` (:fork: the
+  program runs in a fork of the caller's world) and `:world-opts`; no
+  `:authority` yet.
 
   Returns a spin resolving the EmpiricalMeasure of the last round's
   target-chain states; `m/log-marginal` is the stepping-stone evidence and
   `:temperatures`, `:barrier`, `:local-barrier`, `:round-trips` and
   `:swap-acceptance` diagnose the run."
   [model-task num-chains & [opts]]
-  (check-options! opts #{:rounds :steps :executor :seed :world-policy})
-  (when (= :fork (world-policy opts))
-    (throw (ex-info "Parallel tempering runs in fresh worlds" {:type ::invalid-world-policy
-                                                               :world-policy :fork :supported #{:fresh}})))
-  (on-savepoints (parallel-tempering/parallel-tempering model-task (assoc (dissoc opts :world-policy) :chains num-chains))))
+  (refuse-authority! opts "Parallel tempering")
+  (check-options! opts #{:rounds :steps :executor :seed :world-policy :world-opts})
+  (with-frozen-caller opts
+    #(on-savepoints (parallel-tempering/parallel-tempering
+                     model-task (assoc (canonical/run-options %) :chains num-chains)))))
 
 (defn importance-sampling
   "Importance sampling: `num-samples` runs of `model-task`, each weighted by
@@ -530,9 +535,11 @@
   (check-options! opts (into particle-options smc-options))
   (if (on-savepoints? opts)
     (on-savepoints (smc/pimh model-task num-particles num-iterations opts))
-    (pmcmc/pimh
-     (particle-sweep model-task num-particles opts)
-     num-iterations {:seed (:seed opts) :accept-key ::pimh-accept})))
+    (with-frozen-caller opts
+      (fn [opts]
+        (pmcmc/pimh
+         (particle-sweep model-task num-particles opts)
+         num-iterations {:seed (:seed opts) :accept-key ::pimh-accept})))))
 
 (defn pgibbs-infer
   "Particle Gibbs (conditional SMC, Andrieu et al. 2010).
@@ -550,9 +557,11 @@
   (check-options! opts (into particle-options #{:anchors :rejuvenate}))
   (if (on-savepoints? opts)
     (on-savepoints (smc/pgibbs model-task num-particles num-iterations opts))
-    (pmcmc/pgibbs
-     (particle-sweep model-task num-particles opts)
-     num-iterations {:seed (:seed opts) :pick-key ::pick})))
+    (with-frozen-caller opts
+      (fn [opts]
+        (pmcmc/pgibbs
+         (particle-sweep model-task num-particles opts)
+         num-iterations {:seed (:seed opts) :pick-key ::pick})))))
 
 ;; =============================================================================
 ;; IPMCMC - Interacting Particle MCMC
@@ -648,6 +657,8 @@
     ;; Use parallel combinator to run all sweeps concurrently
     (apply comb/parallel sweep-spins)))
 
+(declare ipmcmc)
+
 (defn ipmcmc-infer
   "Interacting Particle MCMC inference.
 
@@ -697,6 +708,10 @@
                     {:type ::unknown-options :unknown [:resample-threshold]})))
   (check-options! opts (into (disj particle-options :resample-threshold)
                              #{:num-nodes :num-csmc-nodes :all-particles?}))
+  (with-frozen-caller opts #(ipmcmc model-task num-particles num-iterations %)))
+
+(defn- ipmcmc
+  [model-task num-particles num-iterations opts]
   (spin
    (let [num-nodes (or (:num-nodes opts) 8)
          num-csmc-nodes (or (:num-csmc-nodes opts) (quot num-nodes 2))
@@ -706,13 +721,22 @@
          ;; every node resamples at every barrier (ESS ≤ N < ∞·N),
          ;; multinomially, as conditional SMC does (`smc/smc` :retained)
          node-opts (assoc opts :resample-threshold ##Inf :resampling :multinomial)
-         sweep-opts #(assoc node-opts :seed (sp/derive-seed seed ::sweep %))]
+         ;; the nodes of a sweep run at once: in a frozen fork of the
+         ;; caller's world with an authority, each takes an even share of
+         ;; what is left, decided before any of them starts
+         node-grant (fn [opts]
+                      (spin (when (and (frozen-source opts) (:authority opts))
+                              (share (await (balance-op (:authority opts) (frozen-source opts))) num-nodes))))
+         sweep-opts (fn [iteration grant]
+                      (cond-> (assoc node-opts :seed (sp/derive-seed seed ::sweep iteration))
+                        grant (assoc ::grant grant)))]
      (assert (> num-csmc-nodes 0) ":num-csmc-nodes must be > 0")
      (assert (< num-csmc-nodes num-nodes) ":num-csmc-nodes must be < :num-nodes")
      (loop [iteration 0
             ;; iteration 0 runs plain SMC on every node
             measures (await (run-parallel-sweeps model-task num-particles
-                                                 (vec (repeat num-nodes nil)) (sweep-opts :initial)))
+                                                 (vec (repeat num-nodes nil))
+                                                 (sweep-opts :initial (await (node-grant opts)))))
             all-samples []]
        (if (>= iteration num-iterations)
          (m/markov-measure all-samples)
@@ -747,7 +771,8 @@
                      [csmc-indices zeta-sums samples retained-traces])))]
            (log/trace :ipmcmc/gibbs-update {:iteration iteration :csmc-indices csmc-indices})
            (recur (inc iteration)
-                  (await (run-parallel-sweeps model-task num-particles retained-traces (sweep-opts iteration)))
+                  (await (run-parallel-sweeps model-task num-particles retained-traces
+                                              (sweep-opts iteration (await (node-grant opts)))))
                   (into all-samples samples))))))))
 
 (defn pgas-infer
@@ -765,8 +790,10 @@
   (check-options! opts particle-options)
   (if (on-savepoints? opts)
     (on-savepoints (smc/pgas model-task num-particles num-iterations opts))
-    (pmcmc/pgibbs (particle-sweep model-task num-particles (assoc opts :ancestor-sampling? true))
-                  num-iterations {:seed (:seed opts) :pick-key ::pick})))
+    (with-frozen-caller opts
+      (fn [opts]
+        (pmcmc/pgibbs (particle-sweep model-task num-particles (assoc opts :ancestor-sampling? true))
+                      num-iterations {:seed (:seed opts) :pick-key ::pick})))))
 
 ;; =============================================================================
 ;; Black Box Variational Inference (BBVI)
@@ -848,6 +875,8 @@
           (swap! accumulators assoc addr acc)
           (swap! q-dists assoc addr (grad/grad-step dist g rate)))))))
 
+(declare bbvi)
+
 (defn bbvi-infer
   "Black Box Variational Inference (Ranganath et al., AISTATS 2014).
 
@@ -874,6 +903,10 @@
   (check-options! opts (-> particle-options
                            (disj :policy :resample-threshold)
                            (into #{:base-lr :robbins-monro :adagrad})))
+  (with-frozen-caller opts #(bbvi model-task num-particles num-iterations %)))
+
+(defn- bbvi
+  [model-task num-particles num-iterations opts]
   (spin
    (let [base-lr (or (:base-lr opts) 1.0)
          robbins-monro (or (:robbins-monro opts) 0.0)
@@ -925,6 +958,25 @@
      :kernel #{:kernel :chains :particles}
      :pmmh #{:particles :iterations :burn}}))
 
+(defn- pmmh
+  "PMMH (`smc2/pmmh`) in the worlds `opts`' `:world-policy` names: under
+  `:fork` the initial θ is drawn, and every iteration's SMC runs, in
+  canonical worlds forked from one frozen fork of the caller's world.
+  No `:authority` yet."
+  [model n-particles iterations opts]
+  (refuse-authority! opts "PMMH")
+  (with-frozen-caller opts
+    (fn [o]
+      (on-savepoints
+       (smc2/pmmh model n-particles iterations
+                  (if-let [source (frozen-source o)]
+                    (assoc (dissoc o :world-policy ::source :world-opts)
+                           :canonical-source source :world-opts (:world-opts o)
+                           :filter (fn [model n smc-opts]
+                                     (particles model n (assoc smc-opts :world-policy :fork ::source source
+                                                               :world-opts (:world-opts o)))))
+                    (dissoc o :world-policy)))))))
+
 (defn- compiled-rmh
   "`:rmh` on the model compiled (`foerster.compiled`): the spin must come
   from an `analysis/model` whose structure is static given its arguments.
@@ -933,7 +985,17 @@
   #?(:clj [model iterations burn step-size chains opts]
      :cljs [_model _iterations _burn _step-size _chains _opts])
   #?(:clj
-     (let [[m args] (or (analysis/applied model)
+     (let [_ (when-let [misplaced (seq (filter #{:world-policy :world-opts :authority :grant} (keys opts)))]
+               ;; Compiled code has no worlds: it cannot fork the caller's
+               ;; world, and an option it would ignore is refused. A model
+               ;; that needs application state reads it once and passes it
+               ;; in as data.
+               (when (or (not= #{:world-policy} (set misplaced)) (not= :fresh (:world-policy opts)))
+                 (throw (ex-info (str ":compiled? runs without worlds; read application state once and "
+                                      "pass it to the model as data. Refused: " (vec misplaced))
+                                 {:type ::invalid-world-policy :options (vec misplaced)
+                                  :world-policy (:world-policy opts) :supported #{:fresh}}))))
+           [m args] (or (analysis/applied model)
                         (throw (ex-info ":compiled? needs a model made by foerster.analysis/model"
                                         {:type ::not-an-analysis-model})))]
        (on-savepoints (compiled/rmh (apply compiled/compile-model m args)
@@ -1013,7 +1075,7 @@
                                                               step-size (assoc :step-size step-size)))
                             (or chains 4) (apply dissoc rest-opts nuts-opts)))
       :kernel (kernel-infer model kernel (or chains particles 4) rest-opts)
-      :pmmh (on-savepoints (smc2/pmmh model particles iterations (cond-> rest-opts burn (assoc :burn burn)))))))
+      :pmmh (pmmh model particles iterations (cond-> rest-opts burn (assoc :burn burn))))))
 
 ;; =============================================================================
 ;; Nested inference

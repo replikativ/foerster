@@ -43,7 +43,7 @@
 (defn- prior-draw
   "θ from the program's own prior: a simulation's values at `params`."
   [model params opts & [parameter-prefix?]]
-  (then (gfi/simulate model (select-keys opts [:executor :inference-scope]))
+  (then (gfi/simulate model (select-keys opts [:executor :inference-scope :canonical-source :world-opts]))
         (fn [t resolve reject]
           (let [choices (itrace/choices t)
                 missing (remove #(contains? choices %) params)
@@ -160,26 +160,35 @@
               drawing from the current generator (default: a Gaussian
               random walk of `:scale`, default 0.1, on every parameter)
     :burn     iterations left out of the result (default 0)
+    :filter   (fn [model n smc-opts]) -> the CPS operation of one
+              iteration's SMC (default `foerster.smc/smc`); with
+              `:canonical-source` (a frozen fork of the caller's world,
+              `foerster.canonical`) and `:world-opts`, the initial θ is
+              drawn in a fork of it: `foerster.core/infer` passes both for
+              `:world-policy :fork`, the filter running each iteration in
+              canonical worlds forked from that source
     and SMC options (`:resample-threshold`, `:resampling`, `:executor` …)
 
   Resolves an EmpiricalMeasure, equally weighted, of one particle per kept
   iteration drawn from that iteration's SMC: its value the program's, its
   trace with θ and a state trajectory. `:acceptance` is the acceptance rate,
   `:thetas` the chain."
-  [model n iterations {:keys [params propose scale burn] :or {scale 0.1 burn 0} :as opts}]
+  [model n iterations {:keys [params propose scale burn] run-filter :filter :or {scale 0.1 burn 0} :as opts}]
   (when-not (seq params)
     (throw (ex-info "pmmh needs :params" {:type ::no-params})))
-  (when (or (= :fork (:world-policy opts)) (:world-opts opts))
-    (throw (ex-info "Parameter filters currently use fresh inner worlds"
+  (when (or (= :fork (:world-policy opts)) (and (:world-opts opts) (not (:canonical-source opts))))
+    (throw (ex-info "PMMH under :world-policy :fork runs through foerster.core/infer (:method :pmmh)"
                     {:type ::unsupported-world-policy :supported #{:fresh}})))
   (fn [resolve reject]
     (let [seed (or (:seed opts) (random/fresh-seed))
+          run-filter (or run-filter smc/smc)
+          smc-opts (dissoc opts :filter :canonical-source :world-opts)
           propose (or propose (random-walk (zipmap params (repeat scale))))
           ;; every run its own seed: a fixed one would make the chain target
           ;; the posterior of one noise draw
           run (fn [theta key]
-                (or-impossible (smc/smc model n (assoc (conditioned theta opts)
-                                                       :seed (sp/derive-seed seed ::inner key)))))
+                (or-impossible (run-filter model n (assoc (conditioned theta smc-opts)
+                                                          :seed (sp/derive-seed seed ::inner key)))))
           pick (fn [measure k]
                  (let [ps (m/get-particles measure)
                        i (random/with-stream* seed [::pick k]
@@ -245,7 +254,11 @@
   (when-not (seq params)
     (throw (ex-info "smc2 needs :params" {:type ::no-params})))
   (when (or (= :fork (:world-policy opts)) (:world-opts opts))
-    (throw (ex-info "Parameter filters currently use fresh inner worlds"
+    ;; SMC² forks its active inner filters (a θ-particle's population is
+    ;; forked when θ-particles are resampled); canonical particles are
+    ;; copies of worlds, which do not fork a running population yet
+    (throw (ex-info (str "SMC² runs in fresh worlds: its inner filters fork running populations, "
+                         "which canonical (copied) particle worlds do not support yet")
                     {:type ::unsupported-world-policy :supported #{:fresh}})))
   (when-let [option (some #(when (get opts %) %) [:anchors :retained :copy?])]
     (throw (ex-info "SMC² requires independently forkable active inner filters"

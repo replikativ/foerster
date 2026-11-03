@@ -68,7 +68,7 @@
 (deftest unfinished-programs-and-incompatible-targets-are-refused
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Finish the population"
                         (run #(ip/run (fn [scope] (ip/initialize scope (ip/trace-target (coin-model)) 2))))))
-  (is (thrown? clojure.lang.ExceptionInfo (ip/trace-target nil {:world-policy :fork})))
+  (is (thrown? clojure.lang.ExceptionInfo (ip/trace-target nil {:world-policy :elsewhere})))
   (is (thrown? clojure.lang.ExceptionInfo
                (ip/advance {:owner :a} {:owner :b} {}))))
 

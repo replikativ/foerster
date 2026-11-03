@@ -13,6 +13,7 @@
             [org.replikativ.foerster.trace-owner :as owner]
             [org.replikativ.foerster.transport :as transport]
             [org.replikativ.foerster.gfi :as gfi]
+            [org.replikativ.foerster.canonical :as canonical]
             [org.replikativ.foerster.trace :as it]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.protocols :as rtp]
@@ -107,15 +108,21 @@
 (defn- trace-score [beta t]
   (transduce (map (it/tempered-score beta)) + 0.0 (it/entries t)))
 
-(defrecord TraceRepresentation [model executor]
+(defrecord TraceRepresentation [model executor world-policy]
   PRepresentation
-  (initialize-particles [_ resources target n {:keys [seed]}]
+  (initialize-particles [_ resources target n {:keys [seed canonical-source world-opts]}]
+    (when (and (= :fork world-policy) (not canonical-source))
+      (throw (ex-info "A :world-policy :fork target runs in a program run with :world-policy :fork"
+                      {:type ::unsupported-world-policy})))
     (sequential (range n)
                 (fn [i]
                   (let [operation (:operation (gfi/run-policy* model (it/policy {:temperature (:position target)})
                                                                (cond-> {:inference-scope resources
                                                                         :seed (sp/derive-seed seed ::initialize i)}
-                                                                 executor (assoc :executor executor))))]
+                                                                 executor (assoc :executor executor)
+                                                                 (= :fork world-policy)
+                                                                 (assoc :canonical-source canonical-source
+                                                                        :world-opts world-opts))))]
                     (fn [resolve reject]
                       (operation #(resolve {:particle % :log-weight (it/log-weight %)}) reject))))))
   (copy-particles [_ _ _target particles ancestors {:keys [seed step]}]
@@ -146,16 +153,20 @@
 
 (defn trace-target
   "A complete-trace target p(choices)*L(choices)^beta, not a streaming prefix.
-  Only fresh worlds are supported here. Model effects obey the Spin discipline."
+  `:world-policy :fork` runs every particle in a fork of the caller's world;
+  the target must then be used in a program `run` with `:world-policy
+  :fork`, whose frozen fork of the caller it forks (`foerster.canonical`).
+  Moves then reuse nothing incrementally (`foerster.trace/reexecute`).
+  Model effects obey the Spin discipline."
   [model & [{:keys [beta executor label world-policy] :or {beta 0.0 world-policy :fresh} :as opts}]]
   (options! opts #{:beta :executor :label :world-policy})
-  (when-not (= :fresh world-policy)
-    (throw (ex-info "Trace population programs currently use fresh worlds" {:type ::unsupported-world-policy})))
+  (when-not (#{:fresh :fork} world-policy)
+    (throw (ex-info "Unknown world policy" {:type ::unsupported-world-policy :world-policy world-policy})))
   (when-not (and (number? beta) (<= 0.0 beta 1.0))
     (throw (ex-info "Temperature must be in [0,1]" {:type ::invalid-temperature})))
   (let [id (random-uuid)]
     {:id id :family id :label label :position beta :score #(trace-score beta %)
-     :representation (->TraceRepresentation model executor)}))
+     :representation (->TraceRepresentation model executor world-policy)}))
 
 (defn- derive-target [target position score]
   (assoc target :id (random-uuid) :parent (:id target) :position position :score score))
@@ -178,22 +189,32 @@
 
 (defn run
   "Run (body scope) with a root seed and an asynchronous resource lifetime.
-  Scope is passed explicitly; nested programs receive independent lifetimes."
+  Scope is passed explicitly; nested programs receive independent lifetimes.
+  With `:world-policy :fork` (and `:world-opts`) the program forks the
+  caller's world once; its `:world-policy :fork` trace targets run every
+  particle in a fork of that frozen fork (`foerster.canonical`)."
   ([body] (run {} body))
   ([opts body]
-   (options! opts #{:seed :world-policy})
-   (when-not (contains? #{nil :fresh} (:world-policy opts))
-     (throw (ex-info "This program representation does not import caller systems" {:type ::unsupported-world-policy})))
-   (scope/run (fn [resources]
-                (spin
-                 (let [context {:resources resources :seed (or (:seed opts) (random/fresh-seed))
-                                :owner (random-uuid) :population-counter (atom -1)
-                                :population-ids (atom #{}) :live-populations (atom {}) :retired (atom [])}
-                       result (await (body context))]
-                   (when-not (satisfies? m/PMeasure result)
-                     (throw (ex-info "Finish the population before returning from inference"
-                                     {:type ::unfinished-population})))
-                   result))))))
+   (options! opts #{:seed :world-policy :world-opts})
+   (when-not (contains? #{nil :fresh :fork} (:world-policy opts))
+     (throw (ex-info "Unknown world policy" {:type ::unsupported-world-policy :world-policy (:world-policy opts)})))
+   (when (and (contains? opts :world-opts) (not= :fork (:world-policy opts)))
+     (throw (ex-info ":world-opts applies to :world-policy :fork only" {:type ::unsupported-world-policy})))
+   (canonical/with-frozen-caller
+     (select-keys opts [:world-policy :world-opts])
+     (fn [copts]
+       (scope/run (fn [resources]
+                    (spin
+                     (let [context {:resources resources :seed (or (:seed opts) (random/fresh-seed))
+                                    :owner (random-uuid) :population-counter (atom -1)
+                                    :population-ids (atom #{}) :live-populations (atom {}) :retired (atom [])
+                                    :canonical-source (canonical/frozen-source copts)
+                                    :world-opts (:world-opts opts)}
+                           result (await (body context))]
+                       (when-not (satisfies? m/PMeasure result)
+                         (throw (ex-info "Finish the population before returning from inference"
+                                         {:type ::unfinished-population})))
+                       result))))))))
 
 (defn- owned! [scope population]
   (when-not (= (:owner scope) (:owner population))

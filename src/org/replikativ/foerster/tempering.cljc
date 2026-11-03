@@ -177,11 +177,13 @@
     :max-steps   refuse to run longer (default 1000)
     :executor    the particle worlds' executor
     :seed        fixes every draw (default: one from the process generator)
+    :canonical-source, :world-opts  every particle runs in a fork of this
+                 frozen fork of the caller's world (`foerster.canonical`)
 
   Returns a CPS operation resolving an EmpiricalMeasure of `Sample`s whose
   `m/log-marginal` estimates the evidence; `:temperatures` holds the
   schedule and `:rejuvenation` the moves made and accepted."
-  [model n & [{:keys [ess-target moves scale waste-free max-steps executor seed]
+  [model n & [{:keys [ess-target moves scale waste-free max-steps executor seed canonical-source world-opts]
                :or {ess-target 0.5 scale 2.38 max-steps 1000}}]]
   (when-not (and (number? ess-target) (< 0.0 ess-target 1.0))
     (throw (ex-info ":ess-target must lie in (0, 1)" {:type ::invalid-ess-target :ess-target ess-target})))
@@ -200,7 +202,9 @@
              run! (fn []
                     (let [r (gfi/run-policy* model (itrace/policy {:temperature 0.0})
                                              (cond-> {:inference-scope resources :seed (sp/derive-seed seed ::run (swap! runs inc))}
-                                               executor (assoc :executor executor)))]
+                                               executor (assoc :executor executor)
+                                               canonical-source (assoc :canonical-source canonical-source
+                                                                       :world-opts world-opts)))]
                       (:operation r)))
              fail! reject
              stats (atom {:moves 0 :accepted 0})]

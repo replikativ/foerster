@@ -17,6 +17,7 @@
   {org.replikativ.foerster.gfi-test/with-root hooks.foerster/scoped-bindings
    org.replikativ.foerster.gfi-semantics-test/with-root hooks.foerster/scoped-bindings
    org.replikativ.foerster.trace-test/with-session hooks.foerster/scoped-bindings
-   org.replikativ.foerster.world-particles-test/capturing-scopes hooks.foerster/scoped-bindings}}
+   org.replikativ.foerster.world-particles-test/capturing-scopes hooks.foerster/scoped-bindings
+   org.replikativ.foerster.fork-policy-test/capturing-scopes hooks.foerster/scoped-bindings}}
 
  :linters {:unused-private-var {:level :warning}}}
