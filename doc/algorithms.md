@@ -200,7 +200,10 @@ SCMC keeps at most `:memory` past points with weights, a core-set whose
 weighted log-likelihood approximates that of all data so far. The particles
 move against the core-set. After each step, the core-set plus the new batch
 is recompressed with GIGA (Campbell & Broderick 2018), fitted where the
-current particles are:
+current particles are. GIGA's weights are then refitted by nonnegative
+least squares on the points it chose, the fully corrective update of
+Campbell & Beronov (2019) (`:refit :nnls`, the default; `:refit :none` keeps
+GIGA's weights, as in the UAI 2021 algorithm):
 
 ```clojure
 (def posterior
@@ -216,14 +219,35 @@ current particles are:
 
 The synchronous numeric API returns the same `EmpiricalMeasure` of `Sample`s
 as the program-based inference APIs, with equal particle weights. Its
-`:inference-contract`, `:coreset`, `:steps`, `:max-coreset-size`, `:moves` and
-`:accepted` fields describe approximation and execution.
+`:inference-contract`, `:coreset`, `:steps`, `:max-retained-coreset-size`
+(at most `:memory`), `:max-transient-coreset-size` (core-set plus batch;
+`:max-coreset-size` is its old name), `:moves`, `:accepted` and
+`:last-update` (ESS before resampling and likelihood evaluations by phase)
+fields describe approximation and execution.
 
-The reweighting by each batch is exact, and only the moves use the
-core-set. The result therefore carries the core-set's approximation error,
-which is small when the log-likelihoods compress well (few parameters,
-exchangeable data). With `:memory` at least the amount of data, nothing is
-compressed and SCMC is resample-move SMC.
+Each batch reweights the particles by its exact likelihood, but the
+particles were moved against the core-set before the last compression, and
+nothing corrects for the switch to the compressed one (as in the paper's
+Algorithm 1); the moves then target the compressed core-set. The result
+therefore carries the core-set's approximation error, which is small when
+the log-likelihoods compress well (few parameters, exchangeable data). With
+`:memory` at least the amount of data, nothing is compressed and SCMC is
+resample-move SMC.
+
+A step evaluates each likelihood once per state: the batch at every
+particle for the weights, and the expanded core-set at each proposal of the
+moves. The values at the particles are kept in the state, so a move's start
+state and the compression cost no new evaluations; they are used only with
+the log-likelihood, core-set and particles they were computed for, and
+re-evaluated otherwise. `:projection-inflation k`
+is a research option, off by default and a deviation from the published
+algorithm: it fits the compression at the particles spread by k about their
+mean, μ + k·(θ − μ), at N·|E| more evaluations per compression.
+
+For streaming use, `scmc/start`, `scmc/append-batch` and `scmc/result` keep
+the state as a persistent value. `start` records its seed (drawn when none
+is given); `(scmc/initial state)` and `(scmc/options state)` restart the
+same run, so a replay after a historical correction is reproducible.
 
 On a two-parameter Bayesian regression in batches of 20, with 500
 particles:

@@ -41,18 +41,21 @@
 
 (defn walk
   "`steps` random-walk Metropolis steps from `q0` against the log density `f`,
-  coordinate j stepping by `scales`[j] standard normals. Resolves
-  {:q final :accepted k}."
-  [f q0 scales steps]
-  (loop [i 0 q (vec q0) lp (f q0) accepted 0]
-    (if (= i steps)
-      {:q q :accepted accepted}
-      (let [q' (mapv (fn [x s] (+ x (* s (dist/draw (dist/normal 0.0 1.0))))) q scales)
-            lp' (f q')
-            u (dist/draw (dist/uniform 0.0 1.0))]
-        (if (and (== lp' lp') (< (Math/log u) (- lp' lp)))
-          (recur (inc i) q' lp' (inc accepted))
-          (recur (inc i) q lp accepted))))))
+  coordinate j stepping by `scales`[j] standard normals. `lp0`, when given,
+  is f(q0), which the walk then does not evaluate again: a chain of walks
+  carries the :lp of one into the next. Resolves {:q final :accepted k
+  :lp f(final)}."
+  ([f q0 scales steps] (walk f q0 scales steps nil))
+  ([f q0 scales steps lp0]
+   (loop [i 0 q (vec q0) lp (if (some? lp0) lp0 (f q0)) accepted 0]
+     (if (= i steps)
+       {:q q :accepted accepted :lp lp}
+       (let [q' (mapv (fn [x s] (+ x (* s (dist/draw (dist/normal 0.0 1.0))))) q scales)
+             lp' (f q')
+             u (dist/draw (dist/uniform 0.0 1.0))]
+         (if (and (== lp' lp') (< (Math/log u) (- lp' lp)))
+           (recur (inc i) q' lp' (inc accepted))
+           (recur (inc i) q lp accepted)))))))
 
 (defn- write-back
   "Replay `trace` with the block site at `address` set to `q` (a symmetric

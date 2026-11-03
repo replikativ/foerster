@@ -122,7 +122,10 @@ The caller owns the audit log needed for historical correction.
 
 The [[../experiments/reactive-telemetry.org][reactive telemetry experiment]] uses a world-local runtime atom and one
 tracked consumer to append observation batches, replay corrected history, and
-perform speculative inference in a fork. Receipts carry revisions and explicit
+perform speculative inference in a fork. It keeps persistent SCMC snapshots
+every few batches and replays a correction from the last one before the first
+changed observation; keyed randomness makes that replay equal to a replay
+from the prior, at a cost that grows with the replayed suffix. Receipts carry revisions and explicit
 approximation status. Low ESS causes smaller batch retries; an individual
 observation that still collapses the weights requests recovery without committing
 the candidate revision. These checks do not validate posterior accuracy.
