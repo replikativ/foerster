@@ -14,8 +14,17 @@
   re-runs its program once, but as compiled code.
 
   A model that does not qualify is refused with the reasons, so a caller
-  can fall back to the general path."
+  can fall back to the general path.
+
+  Scope: an opt-in (`infer … {:method :rmh :compiled? true}`), on the JVM
+  only, for models whose latents are all continuous, and single-site
+  random-walk MH only, with a fixed `:step-size` and the whole density
+  evaluated per move (no incremental density). Positive and interval
+  latents step in their own coordinates, a proposal outside the support
+  being rejected, where the general path's block moves adapt scales in
+  unconstrained coordinates. The chains are tasks of the run's executor."
   (:require [clojure.walk :as walk]
+            [org.replikativ.spindel.engine.executor :as sched]
             [org.replikativ.foerster.analysis :as analysis]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]
@@ -115,11 +124,13 @@
   one latent drawn uniformly by a Gaussian step of `:step-size` (default
   0.1); every state after the first `:burn` moves is kept. Each chain draws
   from a stream of its own, seeded from `:seed` (else from the process
-  generator, in order), and the chains run in parallel. Resolves, as a CPS
-  operation, an EmpiricalMeasure of the model's results with `:chain-lengths`;
-  a sample's trace holds its latent values only."
+  generator, in order), so its draws do not depend on where it runs. The
+  chains are tasks of `:executor` (spread over its threads, as the other
+  chain drivers'), or of a two-thread pool of the run's own. Resolves, as a
+  CPS operation, an EmpiricalMeasure of the model's results with
+  `:chain-lengths`; a sample's trace holds its latent values only."
   [{:keys [addresses log-density draw result]}
-   {:keys [iterations burn step-size chains seed] :or {burn 0 chains 4 step-size 0.1}}]
+   {:keys [iterations burn step-size chains seed executor] :or {burn 0 chains 4 step-size 0.1}}]
   (fn [resolve reject]
     (try
       (let [k (count addresses)
@@ -143,7 +154,32 @@
                                                   0.0])
                                       out)]
                             (recur (inc i) lp out))))))
-            chains (mapv deref (mapv (fn [s] (future (random/with-stream* s ::rmh chain))) seeds))]
-        (resolve (assoc (m/markov-measure (into [] cat chains))
-                        :chain-lengths (mapv count chains))))
+            own-executor (when-not executor (sched/thread-pool-executor {:threads 2}))
+            executor (or executor own-executor)
+            results (object-array chains)
+            failed (atom false)
+            ;; every chain, and the fan-out itself: the run's own pool is
+            ;; shut down only once nothing can dispatch to it any more
+            pending (atom (inc chains))
+            done! (fn []
+                    (when (zero? (swap! pending dec))
+                      (when own-executor (.close ^java.lang.AutoCloseable own-executor))
+                      (when-not @failed
+                        (let [chains (vec results)]
+                          (resolve (assoc (m/markov-measure (into [] cat chains))
+                                          :chain-lengths (mapv count chains)))))))
+            fail! (fn [t]
+                    ;; the first failure is the run's error; the chains not
+                    ;; yet started are skipped
+                    (when (compare-and-set! failed false true) (reject t)))]
+        (try
+          (sched/spread! executor chains
+                         (fn [i]
+                           (try
+                             (when-not @failed
+                               (aset results i (random/with-stream* (nth seeds i) ::rmh chain)))
+                             (catch Throwable t (fail! t))
+                             (finally (done!)))))
+          (catch Throwable t (fail! t))
+          (finally (done!))))
       (catch Throwable t (reject t)))))

@@ -76,3 +76,26 @@
     (is (some #(= ::block/no-sample-density (:type (ex-data %)))
               (take-while some? (iterate ex-cause error)))
         (str error))))
+
+(deftest a-block-other-sites-depend-on-is-refused-with-the-workarounds
+  ;; a ~ N(0, 1) as block :a; b ~ N(a, 1) as block :b, whose inputs are a
+  (let [gaussian (fn [id mean-of]
+                   (block/block {:block/id id :block/target :complete-conditional
+                                 :block/latents [{:name id :shape [] :support :real}]}
+                                {:log-density (fn [^doubles th in] (let [d (- (aget th 0) (mean-of in))] (* -0.5 d d)))
+                                 :value+grad (fn [^doubles th in] (let [d (- (aget th 0) (mean-of in))]
+                                                                    [(* -0.5 d d) (double-array [(- d)])]))}))
+        a-block (gaussian :a (constantly 0.0))
+        b-block (gaussian :b :a)
+        model #(spin (let [[a] (sample (block/block-dist a-block nil) :id :a :init [0.0])]
+                       (sample (block/block-dist b-block {:a a}) :id :b :init [0.0])))
+        e (try (b/run-infer 61 #(infer/infer (model) {:method :rmh :iterations 5 :chains 1}))
+               nil
+               (catch Exception e
+                 (loop [e e] (cond (nil? e) nil
+                                   (= :org.replikativ.foerster.block-mh/incomplete-target (:type (ex-data e))) e
+                                   :else (recur (ex-cause e))))))]
+    (is (some? e))
+    (is (= [:b] (:changed (ex-data e))))
+    (is (re-find #"complete conditional" (ex-message e)))
+    (is (re-find #"k/hmc-kernel" (ex-message e)))))

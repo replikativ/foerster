@@ -7,7 +7,9 @@
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.gfi :as gfi]
-            [org.replikativ.foerster.measure :as m]))
+            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.random :as random]
+            [org.replikativ.spindel.engine.executor :as sched]))
 
 (def ^:private logistic
   (a/model [xs ns ys]
@@ -69,3 +71,52 @@
     (is (= #{:value-dependent-structure :unknown-test :not-continuous}
            (set (map :reason (:refusals (ex-data (try (c/compile-model mixture 0.3)
                                                       (catch clojure.lang.ExceptionInfo e e))))))))))
+
+(defn- counting-executor
+  "An executor that runs its tasks on `inner`, counting them in `n`."
+  [inner n]
+  (reify sched/PExecutor
+    (execute! [_ f] (swap! n inc) (sched/execute! inner f))
+    (execute-after! [_ ms f] (swap! n inc) (sched/execute-after! inner ms f))))
+
+(deftest compiled-chains-run-on-the-executor
+  ;; no thread of their own: the chains are tasks of :executor, the same
+  ;; draws whatever executes them
+  (let [ys [0.8 1.4 0.3 1.9]
+        run (fn [executor]
+              (with-redefs [clojure.core/future-call (fn [_] (throw (ex-info "a chain on a future" {})))]
+                (b/run-infer 4 (fn [] (infer/infer (normal-mean ys) {:method :rmh :compiled? true :iterations 300
+                                                                     :chains 3 :step-size 0.6 :seed [3 4]
+                                                                     :executor executor})))))
+        tasks (atom 0)
+        pool (sched/thread-pool-executor {:threads 2})]
+    (try
+      (let [pooled (run (counting-executor pool tasks))
+            inline (run (sched/synchronous-executor))]
+        (is (pos? @tasks))
+        (is (= [300 300 300] (:chain-lengths pooled)))
+        (is (= (map m/get-value (m/get-contexts pooled)) (map m/get-value (m/get-contexts inline)))))
+      (finally (.close ^java.lang.AutoCloseable pool)))))
+
+(deftest a-failing-chain-is-one-clean-error
+  ;; one chain of eight throws: the run rejects once, with that error, never
+  ;; resolves, and its own pool is not shut down under the other workers
+  ;; (no RejectedExecutionException from them)
+  (let [compiled (c/compile-model normal-mean [0.8 1.4])
+        calls (atom 0)
+        outcomes (atom [])
+        with-stream* @#'random/with-stream*
+        done (promise)]
+    (with-redefs [random/with-stream* (fn [seed key f]
+                                        (if (= 2 (swap! calls inc))
+                                          (throw (ex-info "chain failed" {:type ::chain-failed}))
+                                          (with-stream* seed key f)))]
+      ((c/rmh compiled {:iterations 5 :chains 8 :seed [5 6]})
+       #(do (swap! outcomes conj [:resolve %]) (deliver done true))
+       #(do (swap! outcomes conj [:reject %]) (deliver done true)))
+      (deref done 10000 nil)
+      ;; let the other chains finish before looking
+      (Thread/sleep 500))
+    (is (= 1 (count @outcomes)) (str (mapv first @outcomes)))
+    (is (= :reject (ffirst @outcomes)))
+    (is (= ::chain-failed (:type (ex-data (second (first @outcomes))))))))
