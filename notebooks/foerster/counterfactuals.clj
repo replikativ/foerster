@@ -15,7 +15,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.foerster.model.mechanism :as mech]
-            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as trace]
             [org.replikativ.spindel.core :as sp]
@@ -126,7 +126,7 @@
                                 :particles 1500})
    #(deliver p %) #(deliver p %))
   (let [pairs (deref p 60000 [])
-        ws (m/normalize-log-weights (mapv :weight pairs))]
+        ws (weights/normalize-log-weights (mapv :weight pairs))]
     (reduce + (map (fn [pair w] (if (:y (:counterfactual pair)) 0.0 w)) pairs ws))))
 
 ;; A discrete site has many noise values for one outcome; abduction draws

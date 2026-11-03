@@ -26,7 +26,7 @@
   (:require [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.diagnostics :as diagnostics]
             [org.replikativ.foerster.dist :as dist]
-            [org.replikativ.foerster.measure :as m]))
+            [org.replikativ.foerster.weights :as weights]))
 
 (defn- dot ^double [a b] (reduce + 0.0 (map * a b)))
 (defn- axpy "a·x + y" [a x y] (mapv #(+ (* a %1) %2) x y))
@@ -425,7 +425,7 @@
                               {:type ::no-approximation :proposals (count proposals)})))
           ;; one proposal has nothing to smooth
           [lw k] (if (= 1 (count proposals)) [[0.0] ##NaN] (diagnostics/psis (mapv second proposals) 1.0))
-          picks (m/systematic-resample (mapv #(Math/exp %) lw) draws)
+          picks (weights/systematic-resample (mapv #(Math/exp %) lw) draws)
           best (apply max-key :elbo qs)]
       {:mean (:mean best)
        :covariance @(:covariance best)

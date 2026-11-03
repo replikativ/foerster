@@ -8,6 +8,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.model.process :as process]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
@@ -28,7 +29,7 @@
   ;; Ewens: P(together) = 1/(1+α)·2/(2+α)·… ; for α = 1: 1/3, 1/6, and the
   ;; three pair+single partitions 1/6 each
   (let [measure (b/run-infer 101 #(infer/infer (seat-three 1.0) {:method :enumerate}))
-        ws (m/normalize-log-weights (mapv second (m/get-particles measure)))
+        ws (weights/normalize-log-weights (mapv second (m/get-particles measure)))
         p (reduce (fn [acc [[s _] w]] (update acc (partition-of (m/get-value s)) (fnil + 0.0) w))
                   {} (map vector (m/get-particles measure) ws))]
     (is (< (Math/abs (- (:together p) (/ 1.0 3))) 1e-12))
@@ -71,7 +72,7 @@
                   (observe (dist/flip (if (= x 2) 0.9 0.1)) true :id :signal)
                   x))
         measure (b/run-infer 103 #(infer/infer (outer) {:method :enumerate}))
-        ws (m/normalize-log-weights (mapv second (m/get-particles measure)))
+        ws (weights/normalize-log-weights (mapv second (m/get-particles measure)))
         p2 (reduce + (map (fn [[[s _] w]] (if (= 2 (m/get-value s)) w 0.0))
                           (map vector (m/get-particles measure) ws)))
         exact (/ (* 2/3 0.9) (+ (* 2/3 0.9) (* 1/3 0.1)))]

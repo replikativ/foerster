@@ -21,6 +21,7 @@
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.model.mechanism :as mech]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]))
 
 (defn- scored-entries [t]
@@ -162,7 +163,7 @@
   (when-not (some #(> (:weight %) ##-Inf) population)
     (throw (ex-info "A query needs positive posterior mass" {:type ::impossible-evidence})))
   (reduce + (map (fn [draw w] (* (f draw) w)) population
-                 (m/normalize-log-weights (mapv :weight population)))))
+                 (weights/normalize-log-weights (mapv :weight population)))))
 
 (defn query
   "Compose factual inference, reusable abduction and multiple worlds.

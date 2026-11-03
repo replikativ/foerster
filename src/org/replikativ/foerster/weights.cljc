@@ -10,7 +10,11 @@
   importance sampling, streaming, batched and conditional SMC, PGAS, and
   through them PIMH, particle Gibbs and IPMCMC), whose raw weights live in
   their particles' worlds, account each barrier with `barrier`. Both fold
-  the same log mass: the normalizer before plus the log mean weight.")
+  the same log mass: the normalizer before plus the log mean weight.
+
+  Drawing from weights is here too: `sample-categorical` and the resampling
+  schemes (`resample`), which read the current generator (`foerster.random`)."
+  (:require [org.replikativ.foerster.random :as random]))
 
 (defn log-sum-exp [xs]
   (when-not (seq xs)
@@ -123,3 +127,111 @@
   (when (= :zero-mass (:status state))
     (throw (ex-info "Cannot resample a zero-mass population" {:type ::zero-mass})))
   (uniform n (:log-mass state)))
+
+;; =============================================================================
+;; Drawing from weights
+;; =============================================================================
+
+(defn- cumulative
+  "The running sums of `weights`, as a vector."
+  [weights]
+  (vec (reductions + weights)))
+
+(defn- search-cumulative
+  "The first index whose cumulative weight exceeds `u`, by bisection; the
+  last index when rounding leaves `u` above every sum."
+  [cumsum u]
+  (loop [lo 0 hi (dec (count cumsum))]
+    (if (>= lo hi)
+      lo
+      (let [mid (quot (+ lo hi) 2)]
+        (if (< u (nth cumsum mid)) (recur lo mid) (recur (inc mid) hi))))))
+
+(defn sample-categorical
+  "One index drawn from normalized weights, through `random/uniform01`."
+  [weights]
+  (random/decide (constantly weights) #(search-cumulative (cumulative weights) (random/uniform01))))
+
+(defn normalize-log-weights
+  "Legacy engine selection: equal mass among impossible candidates, or among
+  infinite-weight candidates. This does not make a zero-mass posterior valid."
+  [log-weights]
+  (normalize log-weights {:zero :uniform :infinite :uniform}))
+
+(defn systematic-resample
+  "Systematic resampling algorithm from Anglican.
+
+  Low-variance resampling for particle filters.
+  weights: normalized weights (sum to 1)
+  n: number of particles to sample
+
+  Returns vector of indices into original particle vector."
+  [weights n]
+  {:pre [(every? #(and (>= % 0) (<= % 1)) weights)
+         (< (Math/abs (- (reduce + weights) 1.0)) 1e-6)]}
+  (let [u (/ (random/uniform01) n)  ; Random offset, from the seeded generator
+        cumsum (cumulative weights)
+        last-index (dec (count weights))]
+    (loop [i 0
+           j 0
+           indices []]
+      (if (>= i n)
+        indices
+        (let [threshold (+ u (/ i n))]
+          ;; the last index takes whatever rounding leaves above the sum
+          (if (or (= j last-index) (< threshold (nth cumsum j)))
+            (recur (inc i) j (conj indices j))
+            (recur i (inc j) indices)))))))
+
+;; -----------------------------------------------------------------------------
+;; Other resampling schemes (Douc, Cappé & Moulines 2005)
+;; -----------------------------------------------------------------------------
+
+(defn multinomial-resample
+  "`n` indices drawn independently from the normalized `weights`."
+  [weights n]
+  (let [cumsum (cumulative weights)]
+    (vec (repeatedly n (fn [] (random/decide (constantly weights)
+                                             #(search-cumulative cumsum (random/uniform01))))))))
+
+(defn stratified-resample
+  "Stratified resampling: one uniform draw in each of the n strata [i/n,
+  (i+1)/n). Lower variance than multinomial, never more than systematic's
+  failure modes."
+  [weights n]
+  (let [cumsum (vec (reductions + weights))
+        last-index (dec (count weights))]
+    (loop [i 0 j 0 out []]
+      (if (= i n)
+        out
+        (let [u (/ (+ i (random/uniform01)) n)
+              j (loop [j j] (if (and (< j last-index) (< (nth cumsum j) u)) (recur (inc j)) j))]
+          (recur (inc i) j (conj out j)))))))
+
+(defn residual-resample
+  "Residual resampling: ⌊n·wᵢ⌋ copies of each particle, the rest drawn
+  multinomially from the residual weights."
+  [weights n]
+  ;; n·(1/n) may round to just below 1: the whole part is taken with a
+  ;; margin, or equal weights would fall back to multinomial draws
+  (let [copies (mapv #(long (Math/floor (+ (* n %) 1e-9))) weights)
+        fixed (into [] (mapcat (fn [i c] (repeat c i)) (range) copies))
+        left (- n (count fixed))]
+    (if (zero? left)
+      fixed
+      (let [residual (mapv (fn [w c] (max 0.0 (- (* n w) c))) weights copies)
+            total (reduce + residual)]
+        (into fixed (if (pos? total)
+                      (multinomial-resample (mapv #(/ % total) residual) left)
+                      (systematic-resample weights left)))))))
+
+(defn resample
+  "`n` ancestor indices from the normalized `weights` by `scheme`:
+  `:systematic` (default), `:stratified`, `:residual` or `:multinomial`."
+  [scheme weights n]
+  (case (or scheme :systematic)
+    :systematic (systematic-resample weights n)
+    :stratified (stratified-resample weights n)
+    :residual (residual-resample weights n)
+    :multinomial (multinomial-resample weights n)
+    (throw (ex-info "Unknown resampling scheme" {:type ::unknown-resampling :scheme scheme}))))

@@ -142,11 +142,11 @@
                       (loop [i 0 lp (double (log-density x)) out (transient [])]
                         (if (= i iterations)
                           (persistent! out)
-                          (let [j (int (* k (m/uniform01)))
+                          (let [j (int (* k (random/uniform01)))
                                 old (aget x j)
                                 _ (aset x j (+ old (* step-size (dist/draw (dist/normal 0.0 1.0)))))
                                 lp' (double (log-density x))
-                                accept? (and (== lp' lp') (< (Math/log (m/uniform01)) (- lp' lp)))
+                                accept? (and (== lp' lp') (< (Math/log (random/uniform01)) (- lp' lp)))
                                 lp (if accept? lp' (do (aset x j old) lp))
                                 out (if (>= i burn)
                                       (conj! out [(m/sample-particle (result x)

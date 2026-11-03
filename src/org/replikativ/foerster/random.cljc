@@ -233,3 +233,9 @@
   []
   (let [g (current)]
     [(next-u32! g) (next-u32! g)]))
+
+(defn pick-uniformly
+  "A uniformly chosen element of a vector, drawn through `uniform01`."
+  [v]
+  (let [n (count v)]
+    (nth v (decide #(repeat n (/ 1.0 n)) #(int (* (uniform01) n))))))

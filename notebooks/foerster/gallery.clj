@@ -16,6 +16,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample observe factor]]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -43,7 +44,7 @@
   "The weighted distribution of `(f value)` over the particles: {x p}."
   [measure f]
   (let [ps (m/get-particles measure)
-        ws (m/normalize-log-weights (mapv second ps))]
+        ws (weights/normalize-log-weights (mapv second ps))]
     (reduce (fn [acc [w [particle _]]] (update acc (f (m/get-value particle)) (fnil + 0.0) w))
             {} (map vector ws ps))))
 
@@ -184,7 +185,7 @@
         log-post (fn [mu] (+ (dist/logpdf (dist/normal 0.0 50.0) mu)
                              (reduce + (map #(dist/logpdf (dist/student-t 2.0 mu 1.0) %) measurements))))
         lps (mapv log-post mus)
-        z (m/log-sum-exp lps)
+        z (weights/log-sum-exp lps)
         ws (mapv #(Math/exp (- % z)) lps)
         e (fn [g] (reduce + (map (fn [w mu] (* w (g mu))) ws mus)))
         mean (e identity)
@@ -292,7 +293,7 @@
                    :mu1 (:mean g1)
                    :high high
                    :low (- (+ (:mean g1) (:mean g2)) high)}))
-        z (m/log-sum-exp (map :log-w terms))
+        z (weights/log-sum-exp (map :log-w terms))
         e (fn [k] (reduce + (map #(* (Math/exp (- (:log-w %) z)) (k %)) terms)))]
     {:mu1-lower (e :mu1-lower) :mu1 (e :mu1) :low (e :low) :high (e :high)}))
 
@@ -373,11 +374,11 @@
         joint (for [r (range 40)]
                 [r (if (< 4 r)
                      (+ (dist/logpdf cp r) (dist/logpdf (dist/poisson 6) 6))
-                     (m/log-sum-exp
+                     (weights/log-sum-exp
                       (for [s (range 60)]
                         (+ (dist/logpdf cp r) (dist/logpdf cp s)
                            (dist/logpdf (dist/poisson (+ 1 (fib (* 3 r)) s)) 6)))))])
-        z (m/log-sum-exp (map second joint))]
+        z (weights/log-sum-exp (map second joint))]
     {:posterior (into {} (map (fn [[r lp]] [r (Math/exp (- lp z))]) joint))
      :log-evidence z}))
 
@@ -458,7 +459,7 @@
                               (reduce + (map #(dist/lgamma (+ 1.0 %)) cs)))))
         lps (into {} (for [s (range 1 n-years)]
                        [s (+ (segment (subvec disasters 0 s)) (segment (subvec disasters s)))]))
-        z (m/log-sum-exp (vals lps))
+        z (weights/log-sum-exp (vals lps))
         posterior (into {} (map (fn [[s lp]] [s (Math/exp (- lp z))]) lps))]
     {:posterior posterior
      :early (reduce + (for [[s p] posterior] (* p (/ (+ 1.0 (reduce + (subvec disasters 0 s))) (+ s 1.0)))))
@@ -582,7 +583,7 @@
                            (reduce + (map (fn [y s] (log-normal-density y mu (+ (* s s) (* tau tau))))
                                           school-y school-sd))))
         cells (vec (for [mu mus tau taus] [mu tau (lp mu tau)]))
-        z (m/log-sum-exp (map #(nth % 2) cells))
+        z (weights/log-sum-exp (map #(nth % 2) cells))
         ws (mapv #(Math/exp (- (nth % 2) z)) cells)
         tau-marginal (reduce (fn [acc [w [_ tau]]] (update acc tau (fnil + 0.0) w))
                              (sorted-map) (map vector ws cells))]

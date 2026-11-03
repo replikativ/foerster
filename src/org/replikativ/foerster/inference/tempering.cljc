@@ -23,6 +23,7 @@
   parameters)."
   (:require [org.replikativ.foerster.runtime.scope :as scope]
             [org.replikativ.foerster.weights :as weights]
+            [org.replikativ.foerster.contract :as contract]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.moves.block-mh :as block-mh]
             [org.replikativ.foerster.runtime.gfi :as gfi]
@@ -112,7 +113,7 @@
                                             :iteration [key step j] :keep-old? true}
                                      (seq (blocks t))
                                      (assoc :select (fn [t' _]
-                                                      {:targets #{(m/pick-uniformly (others t'))}
+                                                      {:targets #{(random/pick-uniformly (others t'))}
                                                        :log-selection #(- (Math/log (double (count (others %)))))}))))
                  (fn [{t' :trace accepted? :accepted?}]
                    ;; the accepted world need not keep the one it replayed
@@ -253,7 +254,7 @@
                                  :rejuvenation @stats)
                           ;; the random-walk scales of every move are set from
                           ;; the population it moves (fixed during the move)
-                          (assoc-in [:inference-contract :adaptation] :population)))))]
+                          (update :inference-contract contract/adapted :population)))))]
         ;; One run first: a model that is one block needs no other run, its
         ;; particles are draws of the block until the end.
            ((run!)

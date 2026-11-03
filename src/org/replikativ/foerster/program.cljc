@@ -7,6 +7,7 @@
   (:require [org.replikativ.foerster.weights :as w]
             [org.replikativ.foerster.runtime.scope :as scope]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.contract :as contract]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.moves.transition :as transition]
             [org.replikativ.foerster.population.path :as path]
@@ -299,9 +300,8 @@
       (remember! scope
                  {:target target :particles (mapv :particle draws) :mass (w/from-log (mapv :log-weight draws))
                   :owner (:owner scope) :population-id population-id :seed seed :step 0 :history []
-                  :inference-contract {:semantics :weighted-population
-                                       :weight-contract :requires-operation-assumptions
-                                       :normalizer {:status :unverified}}
+                  :inference-contract (contract/weighted-population
+                                       {:weight-contract :requires-operation-assumptions})
                   :lease (when (instance? TraceRepresentation (:representation target))
                            (atom {:phase :idle :version 0})) :version 0 :transitions {} :forks (atom 0)})))))
 
@@ -323,7 +323,7 @@
 
 (defn ess [population]
   (if (= :zero-mass (get-in population [:mass :status])) 0.0
-      (m/compute-ess (w/selection (:mass population)))))
+      (w/ess (w/selection (:mass population)))))
 
 (defn resample
   ([scope population] (resample scope population {}))

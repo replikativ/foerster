@@ -19,6 +19,7 @@
   (`::infinite-support`); `:max-branches` (default 100000) bounds the work."
   (:require [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.contract :as contract]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.runtime.trace :as itrace]
@@ -119,6 +120,7 @@
                          ;; the evidence is the SUM of the branch weights:
                          ;; log-marginal adds the log mean, so add log n back
                          (finish! resolve (assoc (m/empirical done)
+                                                 :inference-contract (contract/weighted-population {:normalizer :exact})
                                                  :log-normalizer (Math/log (count done))
                                                  :enumeration {:branches (count done)}))))))
           ;; a branch whose weight is zero has nothing left to contribute:

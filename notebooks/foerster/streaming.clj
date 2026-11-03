@@ -11,6 +11,7 @@
   (:require [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.spindel.core :as sp]
@@ -54,7 +55,7 @@
   "Posterior mean and standard deviation of x_t."
   [measure t]
   (let [ps (m/get-particles measure)
-        ws (m/normalize-log-weights (mapv second ps))
+        ws (weights/normalize-log-weights (mapv second ps))
         xs (mapv (fn [[s _]] (:value (get (m/get-trace s) [:x t]))) ps)
         mu (reduce + (map * ws xs))]
     [mu (Math/sqrt (reduce + (map (fn [w x] (* w (let [d (- x mu)] (* d d)))) ws xs)))]))

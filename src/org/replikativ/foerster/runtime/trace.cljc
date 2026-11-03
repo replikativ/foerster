@@ -34,7 +34,7 @@
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.foerster.model.mechanism :as mech]
             [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.dist :as dist])
   #?(:cljs (:require-macros [is.simm.partial-cps.async :as pcps])))
@@ -749,7 +749,7 @@
   "Select one latent site uniformly. A selection is
   {:targets #{address} :log-selection (fn [trace])}."
   [trace _iteration]
-  {:targets #{(m/pick-uniformly (:addresses (latent-index trace)))}
+  {:targets #{(random/pick-uniformly (:addresses (latent-index trace)))}
    :log-selection (fn [t] (- (Math/log (double (latent-count t)))))})
 
 (defn prior-proposal
@@ -1017,7 +1017,7 @@
               _ (when-not (every? #(and (number? %) (not (#?(:clj Double/isNaN :cljs js/isNaN) %)) (not= ##Inf %)) increments)
                   (throw (ex-info "Gibbs candidate scores are invalid" {:type ::gibbs-invalid-score})))
               selected (random/in-world-stream (:trace/world t) [::gibbs iteration]
-                                               #(m/sample-categorical (m/normalize-log-weights increments)))
+                                               #(weights/sample-categorical (weights/normalize-log-weights increments)))
               [value chosen] (nth options selected)
               live (cond-> [chosen] keep-old? (conj t))]
           (rtp/swap-state! (:trace/world chosen) [:engine/reuse-source] (constantly nil))

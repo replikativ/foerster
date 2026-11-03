@@ -16,6 +16,7 @@
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
@@ -36,7 +37,7 @@
   and `:log-weight`, in particle order."
   [measure]
   (let [ps (m/get-particles measure)
-        ws (m/normalize-log-weights (mapv second ps))]
+        ws (weights/normalize-log-weights (mapv second ps))]
     (into []
           (keep (fn [[[particle log-w] w]]
                   (some-> (trajectory particle) (assoc :weight w :log-weight log-w))))
@@ -48,7 +49,7 @@
   [measure n]
   (let [ts (trajectories measure)
         ws (mapv :weight ts)]
-    (vec (repeatedly n #(let [i (m/sample-categorical ws)]
+    (vec (repeatedly n #(let [i (weights/sample-categorical ws)]
                           (assoc (nth ts i) :index i))))))
 
 (defn maximize-evidence

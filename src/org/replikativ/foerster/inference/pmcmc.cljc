@@ -7,6 +7,7 @@
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.core :as-alias core]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.inference.particle-mcmc :as chains]
@@ -97,7 +98,7 @@
         (let [;; Candidate indices: current SMC nodes + current CSMC node i
               proposal-indices (conj smc-indices (csmc-indices i))
               proposal-log-Zs (mapv #(nth log-Zs %) proposal-indices)
-              probs (m/normalize-log-weights proposal-log-Zs)
+              probs (weights/normalize-log-weights proposal-log-Zs)
 
               ;; Update zeta sums for Rao-Blackwellization
               new-zeta-sums (reduce (fn [zs [idx p]]
@@ -106,7 +107,7 @@
                                     (map vector proposal-indices probs))
 
               ;; Sample which node to use as CSMC
-              k (m/sample-categorical probs)]
+              k (weights/sample-categorical probs)]
 
           (if (= k (count smc-indices))
             ;; Keep current CSMC node (k points to the appended csmc index)
@@ -262,15 +263,15 @@
                                            (when (pos? zeta)
                                              (if all-particles?
                                                (map (fn [[smp lw]] [smp (+ lw (Math/log zeta))]) node)
-                                               [[(first (nth node (m/sample-categorical
-                                                                   (m/normalize-log-weights (mapv second node)))))
+                                               [[(first (nth node (weights/sample-categorical
+                                                                   (weights/normalize-log-weights (mapv second node)))))
                                                  (Math/log zeta)]]))))
                                        (range num-nodes)))
                          retained-traces (vec (concat
                                                (map (fn [node-idx]
                                                       (let [ps (m/get-particles (nth measures node-idx))]
-                                                        (m/get-trace (first (nth ps (m/sample-categorical
-                                                                                     (m/normalize-log-weights (mapv second ps))))))))
+                                                        (m/get-trace (first (nth ps (weights/sample-categorical
+                                                                                     (weights/normalize-log-weights (mapv second ps))))))))
                                                     csmc-indices)
                                                (repeat num-smc-nodes nil)))]
                      [csmc-indices zeta-sums samples retained-traces])))]

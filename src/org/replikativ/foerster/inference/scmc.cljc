@@ -47,6 +47,7 @@
   resamples, then moves every particle by population-scaled random-walk
   Metropolis."
   (:require [org.replikativ.foerster.population.theta :as pop]
+            [org.replikativ.foerster.contract :as contract]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.weights :as weights]))
@@ -417,7 +418,7 @@
           _ (when (= :zero-mass (:status mass))
               (throw (ex-info "Every particle has zero likelihood for a batch: no posterior population"
                               {:type ::zero-evidence :batch steps})))
-          ess (m/compute-ess (weights/selection mass))
+          ess (weights/ess (weights/selection mass))
           ;; the cache holds the log-likelihoods of this log-likelihood
           ;; function, core-set and population; any other is re-evaluated
           cache (:coreset-log-likelihoods state)
@@ -507,10 +508,10 @@
   (merge (m/empirical (mapv (fn [q] [(m/sample-particle q {}) 0.0]) particles))
          (select-keys state [:coreset :steps :max-retained-coreset-size :max-transient-coreset-size
                              :max-coreset-size :moves :accepted :log-normalizer :last-update])
-         {:inference-contract {:semantics (if approximate? :approximate-population :weighted-population)
-                               :normalizer {:status :unverified}
-                               :adaptation :population
-                               :approximation (when approximate? :coreset-rejuvenation)}}))
+         {:inference-contract (contract/weighted-population
+                               (cond-> {:semantics (if approximate? :approximate-population :weighted-population)
+                                        :adaptation :population}
+                                 approximate? (assoc :approximation :coreset-rejuvenation)))}))
 
 (defn scmc
   "Run numeric SCMC over :batches using start, append-batch and result.

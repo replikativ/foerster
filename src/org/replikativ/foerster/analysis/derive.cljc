@@ -27,7 +27,7 @@
   draw of z is still a proposal the weight accounts for. They make the
   marginal exact."
   (:require [org.replikativ.foerster.dist :as dist]
-            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.effects.savepoint :as sp]
@@ -210,11 +210,11 @@
       ((scores s values (:group entry) policy session)
        (fn [deltas]
          (try
-           (let [total (m/log-sum-exp deltas)
+           (let [total (weights/log-sum-exp deltas)
                  [i lq] (if (= ##-Inf total)
                           [0 ##Inf]
                           (let [i (random/in-world-stream (:savepoint/world s) address
-                                                          #(m/sample-categorical (m/normalize-log-weights deltas)))]
+                                                          #(weights/sample-categorical (weights/normalize-log-weights deltas)))]
                             [i (- (nth deltas i) total)]))
                  v (nth values i)]
              (resolve (itrace/policy (assoc opts :draw (fn [x _]

@@ -5,7 +5,7 @@
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
@@ -131,7 +131,7 @@
                                      (let [{t :trace w :weight} (await-cps (gfi/generate (hierarchical root) {}))]
                                        (await-cps (gfi/close! t))
                                        w))))
-          log-z (m/log-mean-exp ws)]
+          log-z (weights/log-mean-exp ws)]
       ;; over seeds the estimate's error has sd ≈ 0.026 and no bias: 3σ
       (is (< (Math/abs (- log-z (lp (dist/normal 0.0 (Math/sqrt 3.0)) 2.0))) 0.08)
           (str "log Z " log-z)))))

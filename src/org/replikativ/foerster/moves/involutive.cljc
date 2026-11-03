@@ -24,7 +24,6 @@
   (:require [org.replikativ.spindel.trace :as trace]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.moves.transport :as transport]
-            [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.engine.protocols :as rtp]))
 
@@ -156,7 +155,7 @@
                      accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
                                   (or (>= ratio 0.0)
                                       (< (Math/log (random/in-world-stream (:trace/world t') ::accept
-                                                                           m/uniform01))
+                                                                           random/uniform01))
                                          ratio)))]
                  (if accept? (trace/release! trace t') (trace/release! t' trace))
                  (resolve {:trace (if accept? t' trace) :accepted? accept? :log-ratio ratio}))

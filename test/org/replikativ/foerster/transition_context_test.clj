@@ -6,7 +6,7 @@
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.moves.nuts :as nuts]
-            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as it]
             [org.replikativ.foerster.moves.transition :as transition]
@@ -54,7 +54,7 @@
     (with-redefs [rtp/swap-state! (fn [world _ f] (swap! world f))
                   it/mh-step (fn [t _] (fn [resolve _] (resolve {:trace t :accepted? false})))
                   random/in-world-stream (fn [_ _ f] (f))
-                  m/sample-categorical (constantly 0)
+                  weights/sample-categorical (constantly 0)
                   nuts/within-gibbs (fn [_]
                                       (fn [t opts]
                                         (swap! seen conj opts)

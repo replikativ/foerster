@@ -8,6 +8,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.effects.await :as aw]
@@ -173,7 +174,7 @@
                          (let [k (/ pv (+ pv 1.0)) mean (+ pm (* k (- y pm))) var (* (- 1.0 k) pv)]
                            (recur more mean (+ var 1.0) [mean var]))))
         ps (m/get-particles (:measure final))
-        ws (m/normalize-log-weights (mapv second ps))
+        ws (weights/normalize-log-weights (mapv second ps))
         xs (mapv (comp m/get-value first) ps)
         mean (reduce + (map * ws xs))
         var (reduce + (map (fn [w x] (* w (let [d (- x mean)] (* d d)))) ws xs))]

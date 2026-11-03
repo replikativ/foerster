@@ -14,7 +14,7 @@
   Parameters come from the distribution at the site, so replaying a site with
   its old u under new parents is the counterfactual value."
   (:require [org.replikativ.foerster.dist :as dist]
-            [org.replikativ.foerster.measure :as m]))
+            [org.replikativ.foerster.random :as random]))
 
 (defprotocol PMechanism
   (noise [d] "A fresh draw of the site's exogenous noise.")
@@ -22,7 +22,7 @@
   (abduct [d x] "Noise that gives value `x`: exact when the mechanism is
     invertible, a draw from the posterior over u otherwise."))
 
-(defn- uniform-between [a b] (+ a (* (- b a) (m/uniform01))))
+(defn- uniform-between [a b] (+ a (* (- b a) (random/uniform01))))
 
 (extend-type org.replikativ.foerster.dist.Normal
   PMechanism
@@ -32,33 +32,33 @@
 
 (extend-type org.replikativ.foerster.dist.Uniform
   PMechanism
-  (noise [_] (m/uniform01))
+  (noise [_] (random/uniform01))
   (push [d u] (+ (:a d) (* (- (:b d) (:a d)) u)))
   (abduct [d x] (/ (- x (:a d)) (- (:b d) (:a d)))))
 
 (extend-type org.replikativ.foerster.dist.Exponential
   PMechanism
-  (noise [_] (m/uniform01))
+  (noise [_] (random/uniform01))
   (push [d u] (/ (- (Math/log (- 1.0 u))) (:lambda d)))
   (abduct [d x] (- 1.0 (Math/exp (- (* (:lambda d) x))))))
 
 ;; flip(p) = [u < p]: true takes u ∈ [0, p), false u ∈ [p, 1)
 (extend-type org.replikativ.foerster.dist.Flip
   PMechanism
-  (noise [_] (m/uniform01))
+  (noise [_] (random/uniform01))
   (push [d u] (< u (:p d)))
   (abduct [d x] (if x (uniform-between 0.0 (:p d)) (uniform-between (:p d) 1.0))))
 
 (extend-type org.replikativ.foerster.dist.Bernoulli
   PMechanism
-  (noise [_] (m/uniform01))
+  (noise [_] (random/uniform01))
   (push [d u] (if (< u (:p d)) 1 0))
   (abduct [d x] (if (== 1 x) (uniform-between 0.0 (:p d)) (uniform-between (:p d) 1.0))))
 
 ;; discrete(w) = the first index whose cumulative weight exceeds u·Σw
 (extend-type org.replikativ.foerster.dist.Discrete
   PMechanism
-  (noise [_] (m/uniform01))
+  (noise [_] (random/uniform01))
   (push [d u]
     (let [target (* u (:total d))]
       (loop [i 0 acc 0.0 [w & more] (:weights d)]
@@ -121,7 +121,7 @@
   this structural assumption. Unsupported quantiles fail explicitly."
   ([d] (inverse-cdf d nil))
   ([d lower-cdf]
-   (mechanism d {:noise m/uniform01
+   (mechanism d {:noise random/uniform01
                  :push #(dist/quantile d %)
                  :abduct (fn [x]
                            (let [hi (dist/cdf d x)]
@@ -137,23 +137,23 @@
 ;; Univariate: e.g. Gamma declares the protocol but its quantile is refused.
 (extend-protocol PMechanism
   org.replikativ.foerster.dist.LogNormal
-  (noise [_] (m/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
+  (noise [_] (random/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
   org.replikativ.foerster.dist.HalfNormal
-  (noise [_] (m/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
+  (noise [_] (random/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
   org.replikativ.foerster.dist.Cauchy
-  (noise [_] (m/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
+  (noise [_] (random/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
   org.replikativ.foerster.dist.HalfCauchy
-  (noise [_] (m/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
+  (noise [_] (random/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
   org.replikativ.foerster.dist.Weibull
-  (noise [_] (m/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
+  (noise [_] (random/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
   org.replikativ.foerster.dist.Laplace
-  (noise [_] (m/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
+  (noise [_] (random/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x))
   org.replikativ.foerster.dist.Gumbel
-  (noise [_] (m/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x)))
+  (noise [_] (random/uniform01)) (push [d u] (dist/quantile d u)) (abduct [d x] (dist/cdf d x)))
 
 (extend-type org.replikativ.foerster.dist.Categorical
   PMechanism
-  (noise [_] (m/uniform01))
+  (noise [_] (random/uniform01))
   (push [d u]
     (nth (:values d) (push (dist/->Discrete (:weights d) (:total d)) u)))
   (abduct [d x]

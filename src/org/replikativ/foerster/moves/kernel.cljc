@@ -7,7 +7,7 @@
   choice of proposal policy, not of engine. `PMarkovKernel` describes
   transitions that `foerster.moves.transition` compiles and runs over traces."
   (:refer-clojure :exclude [cycle])
-  (:require [org.replikativ.foerster.measure :as m]
+  (:require [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.dist :as dist]))
 
 ;; =============================================================================
@@ -214,7 +214,7 @@
 (defrecord RandomSelector [block-ids]
   PBlockSelector
   (select-block [_ _trace _iteration]
-    (m/pick-uniformly block-ids)))
+    (random/pick-uniformly block-ids)))
 
 (defn random-selector
   [block-ids]

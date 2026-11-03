@@ -6,6 +6,7 @@
             [org.replikativ.foerster.core :as infer :refer [sample observe factor]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.spindel.core :as sp]))
 
 (defn- dice
@@ -22,7 +23,7 @@
 (deftest re-exported-effects-are-effects
   (let [measure (b/run-infer 5 #(infer/infer (dice) {:method :enumerate}))
         ps (filter (comp #(> % ##-Inf) second) (m/get-particles measure))
-        ws (m/normalize-log-weights (mapv second ps))
+        ws (weights/normalize-log-weights (mapv second ps))
         mean (reduce + (map (fn [[p _] w] (* w (m/get-value p))) ps ws))]
     (is (= 6 (count ps)) "the six pairs that sum to 7")
     (is (< (Math/abs (- mean 3.5)) 1e-12) (str mean))

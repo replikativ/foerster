@@ -36,7 +36,6 @@
   (:require [org.replikativ.foerster.moves.transition-context :as tc]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.dist :as dist]
-            [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.trace :as trace]))
@@ -524,7 +523,7 @@
                           (if (seq (others t))
                             ((itrace/mh-step t (assoc chain-opts
                                                       :select (fn [t' _]
-                                                                {:targets #{(m/pick-uniformly (others t'))}
+                                                                {:targets #{(random/pick-uniformly (others t'))}
                                                                  :log-selection #(- (Math/log (double (count (others %)))))})))
                              (fn [r]
                                (when-let [visit (:on-visit chain-opts)] (visit r))

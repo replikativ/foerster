@@ -45,7 +45,7 @@
                proposed (await (sweep key nil seed))
                log-z' (m/log-marginal proposed)
                ratio (- log-z' log-z)
-               u (random/with-stream* seed [accept-key key] m/uniform01)
+               u (random/with-stream* seed [accept-key key] random/uniform01)
                accept? (or (>= ratio 0.0) (< (Math/log u) ratio))
                [next z] (if accept? [(normalized proposed) log-z'] [current log-z])]
            (recur next z (inc i) (into samples next))))))))
@@ -53,7 +53,7 @@
 (defn- pick-retained [measure seed role key]
   (let [ps (m/get-particles measure)
         selected (random/with-stream* seed [role key]
-                   #(m/sample-categorical (m/normalize-log-weights (mapv second ps))))]
+                   #(weights/sample-categorical (weights/normalize-log-weights (mapv second ps))))]
     (retained-choices (m/get-trace (first (nth ps selected))))))
 
 (defn pgibbs

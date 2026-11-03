@@ -12,6 +12,7 @@
   (:require [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.amortized.learn :as learn]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.inference.steer :as steer]
             [org.replikativ.spindel.core :as sp]
@@ -30,7 +31,7 @@
   "Posterior mean of `f` of the program's value."
   [measure f]
   (let [ps (m/get-particles measure)
-        ws (m/normalize-log-weights (mapv second ps))]
+        ws (weights/normalize-log-weights (mapv second ps))]
     (reduce + (map (fn [[particle _] w] (* w (double (f (m/get-value particle))))) ps ws))))
 
 ;; ## A process and a reward

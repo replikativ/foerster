@@ -7,6 +7,7 @@
             [org.replikativ.foerster.causal.counterfactual :as cf]
             [org.replikativ.foerster.model.mechanism :as mech]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.causal.attribution :as attr]
             [org.replikativ.foerster.effects :refer [sample observe deterministic]]
@@ -76,7 +77,7 @@
                                        y (sample (dist/flip (if x 1.0 0.3)) :id :y)]
                                    {:x x :y y}))
                           {:evidence {:x true :y true} :interventions {:x {:do false}} :particles 1500}))
-        ws (m/normalize-log-weights (mapv :weight pairs))
+        ws (weights/normalize-log-weights (mapv :weight pairs))
         pn (reduce + (map (fn [p w] (if (:y (:counterfactual p)) 0.0 w)) pairs ws))]
     (is (< (Math/abs (- pn 0.7)) 0.04) (str "PN " pn))))
 

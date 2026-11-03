@@ -6,6 +6,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.inference.smc :as smc]))
 
 (def ^:private weights [0.2 0.5 0.3])
@@ -33,7 +34,7 @@
 (deftest summed-out-indicators-leave-the-exact-evidence
   ;; nothing random is left once every z_i is summed out: every particle
   ;; carries the exact marginal, whatever their number
-  (let [exact (reduce + (map #(m/log-sum-exp (component-logs %)) ys))
+  (let [exact (reduce + (map #(weights/log-sum-exp (component-logs %)) ys))
         plan (derive/plan (a/graph-of mixture))]
     (doseq [n [1 7]]
       (let [measure (b/run-infer 3 #(smc/smc (mixture ys) n {:enumerate plan}))]
@@ -43,7 +44,7 @@
       (let [measure (b/run-infer 4 #(smc/smc (mixture ys) 3000 {:enumerate plan}))
             zs (map (comp first m/get-value) (m/get-contexts measure))
             freq (frequencies zs)
-            post (m/normalize-log-weights (vec (component-logs (first ys))))]
+            post (weights/normalize-log-weights (vec (component-logs (first ys))))]
         (doseq [k (range 3)]
           (is (< (Math/abs (- (nth post k) (/ (get freq k 0) 3000.0))) 0.03)
               (str "z_0 = " k)))))
@@ -60,8 +61,8 @@
              z)))
 
 (deftest a-branch-decided-by-the-summed-out-site
-  (let [exact (m/log-sum-exp [(+ (Math/log 0.3) (dist/logpdf (dist/normal 1.0 1.0) 0.5))
-                              (+ (Math/log 0.7) (dist/logpdf (dist/normal -1.0 2.0) 0.5))])
+  (let [exact (weights/log-sum-exp [(+ (Math/log 0.3) (dist/logpdf (dist/normal 1.0 1.0) 0.5))
+                                    (+ (Math/log 0.7) (dist/logpdf (dist/normal -1.0 2.0) 0.5))])
         measure (b/run-infer 6 #(smc/smc (branching) 5 {:enumerate (derive/plan (a/graph-of branching))}))]
     (is (< (Math/abs (- exact (m/log-marginal measure))) 1e-9))))
 

@@ -6,6 +6,7 @@
             [org.replikativ.foerster.moves.transition-context :as tc]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.moves.hmc :as hmc]
             [org.replikativ.foerster.moves.nuts :as nuts]
@@ -162,7 +163,7 @@
                    [[(nth children
                           (random/in-world-stream (:trace/world current)
                                                   [::mixture base (::path tree)]
-                                                  #(m/sample-categorical (:weights tree)))) 0]])]
+                                                  #(weights/sample-categorical (:weights tree)))) 0]])]
        (loop [t current remaining (seq parts) moves 0 accepted 0]
          (if-not remaining
            {:trace t :moves moves :accepted-moves accepted}

@@ -10,7 +10,7 @@
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
@@ -62,7 +62,7 @@
   "Self-normalized importance estimate of E[f] over `n` runs."
   [n make policy-opts f]
   (let [runs (vec (repeatedly n #(run make policy-opts)))
-        ws (m/normalize-log-weights (mapv second runs))]
+        ws (weights/normalize-log-weights (mapv second runs))]
     (reduce + (map (fn [[r] w] (* w (f r))) runs ws))))
 
 (deftest selectors-match-names-paths-and-sites

@@ -13,7 +13,9 @@ src/org/replikativ/foerster/
 │                       #   errors carry core's keywords wherever raised
 ├── dist.cljc effects.cljc block.cljc   # what models are written with
 ├── measure.cljc diagnostics.cljc random.cljc weights.cljc
-│                       #   results, checks, seeding, population mass
+│                       #   results, checks, seeding, population mass,
+│                       #   resampling
+├── contract.cljc       # what a result vouches for (its :inference-contract)
 ├── program.cljc        # user inference programs over populations
 ├── sandbox.clj         # the interpreter-sandbox surface (dvergr)
 ├── analysis.clj amortized.cljc         # facades of analysis/ and amortized/
@@ -36,7 +38,7 @@ src/org/replikativ/foerster/
 
 The top level is the public API (what users require to write models and read
 results) and its foundations; folders hold the implementation. Layers, lowest
-first: `random`; `dist`, `weights`; `measure`, `effects`, `block`;
+first: `random`; `dist`, `weights`, `contract`; `measure`, `effects`, `block`;
 `diagnostics`; `model/`; `runtime/`; `analysis/`; `moves/`; `population/`;
 `inference/`; `causal/`; `core`, `program`; `amortized/`, `sandbox`. A
 namespace requires only its own layer and those below;

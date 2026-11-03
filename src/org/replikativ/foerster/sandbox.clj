@@ -24,6 +24,7 @@
             [org.replikativ.foerster.diagnostics :as diag]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.inference.optimize :as opt]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.effects.savepoint :as savepoint]
@@ -66,7 +67,7 @@
       (throw (ex-info "Every particle has zero likelihood: no posterior" {:type ::zero-likelihood})))
     (cond-> {:posterior/values (mapv m/get-value (m/get-contexts measure))
              :posterior/log-weights log-weights
-             :posterior/weights (vec (m/normalize-log-weights log-weights))
+             :posterior/weights (vec (weights/normalize-log-weights log-weights))
              :posterior/ess (m/effective-sample-size measure)
              :posterior/log-marginal (m/log-marginal measure)
              :posterior/worlds (m/world-descriptors measure)}

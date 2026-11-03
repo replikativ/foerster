@@ -192,7 +192,7 @@
           pick (fn [measure k]
                  (let [ps (m/get-particles measure)
                        i (random/with-stream* seed [::pick k]
-                           #(m/sample-categorical (m/normalize-log-weights (mapv second ps))))]
+                           #(weights/sample-categorical (weights/normalize-log-weights (mapv second ps))))]
                    [(first (nth ps i)) 0.0]))]
       ((then (prior-draw model params opts)
              (fn [theta0 res rej]
@@ -210,7 +210,7 @@
                                  (fn [measure']
                                    (let [log-z' (if measure' (m/log-marginal measure') ##-Inf)
                                          ratio (+ (- log-z' log-z) (or lr 0.0))
-                                         u (random/with-stream* seed [::accept i] m/uniform01)
+                                         u (random/with-stream* seed [::accept i] random/uniform01)
                                          accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
                                                       (< (Math/log u) ratio))
                                          [theta log-z sample] (if accept?
@@ -327,7 +327,7 @@
                                 lw (mapv + lw incs)
                                 mass (weights/from-log lw log-z)
                                 selection (weights/normalize lw {:zero :uniform})]
-                            (if (< (m/compute-ess selection) (* ess-target (count ps)))
+                            (if (< (weights/ess selection) (* ess-target (count ps)))
                               ((rejuvenate ps selection (:log-mass mass) ys)
                                res rej)
                               (res (step-of ps lw log-z ys))))
@@ -338,7 +338,7 @@
                  (fn [res rej]
                    (let [k (count ys)
                          ancestors (random/with-stream* seed [::resample k]
-                                     #(m/systematic-resample weights (count ps)))
+                                     #(weights/systematic-resample weights (count ps)))
                          firsts (atom #{})
                          pick (fn [_ a res' rej']
                                 (let [p (nth ps a)]
@@ -373,7 +373,7 @@
                         (fn [step']
                           (let [log-z' (if step' (m/log-marginal (:measure step')) ##-Inf)
                                 ratio (+ (- log-z' (:log-z p)) (or lr 0.0))
-                                u (random/with-stream* seed [::accept key n] m/uniform01)
+                                u (random/with-stream* seed [::accept key n] random/uniform01)
                                 accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
                                              (< (Math/log u) ratio))]
                             (swap! stats #(-> % (update :moves inc)

@@ -35,7 +35,6 @@
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]))
 
 (defn- then [operation f]
@@ -388,7 +387,7 @@
                              (not (#?(:clj Double/isNaN :cljs js/isNaN) w))
                              (or (>= w 0.0)
                                  (< (Math/log (random/in-world-stream (:trace/world t') ::accept
-                                                                      m/uniform01))
+                                                                      random/uniform01))
                                     w)))]
             (cond
               (identical? t' trace) nil
@@ -439,7 +438,7 @@
                           accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) log-alpha))
                                        (or (>= log-alpha 0.0)
                                            (< (Math/log (random/in-world-stream (:trace/world t') ::accept
-                                                                                m/uniform01))
+                                                                                random/uniform01))
                                               log-alpha)))]
                       (if accept? (trace/release! trace t') (trace/release! t' trace))
                       (resolve {:trace (if accept? t' trace) :accepted? accept?})))

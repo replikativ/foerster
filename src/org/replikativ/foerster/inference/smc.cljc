@@ -27,6 +27,7 @@
             [org.replikativ.foerster.analysis.derive :as derive]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
+            [org.replikativ.foerster.contract :as contract]
             [org.replikativ.foerster.inference.particle-mcmc :as pmcmc]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.dist :as dist]
@@ -240,7 +241,7 @@
                (let [ms (movable t k lag)]
                  (if (empty? ms)
                    {:targets #{} :log-selection (constantly 0.0)}
-                   {:targets #{(m/pick-uniformly ms)}
+                   {:targets #{(random/pick-uniformly ms)}
                     :log-selection #(- (Math/log (double (count-movable %))))})))
      :propose (or (:propose rejuvenate) itrace/prior-proposal)
      :policy-options (itrace/policy-options policy)
@@ -326,6 +327,21 @@
   (and (= itrace/choose-site (:savepoint/site sp))
        (:stream (:options (:savepoint/payload sp)))))
 
+(defn evidence-status
+  "The normalizer status (`foerster.contract`) of savepoint SMC run with
+  `opts`. :unbiased for SMC whose proposals are the prior: every resampling
+  scheme here gives particle i N·wᵢ offspring in expectation, resampling may
+  be decided adaptively from the current weights (an αSMC, Whiteley, Lee &
+  Heine 2016), and resample-move's MH moves leave each barrier's target
+  invariant. :unverified when a correction rests on the caller (a
+  `:policy`'s proposals or constraints, SMCP3's kernels, a rejuvenation
+  `:propose`), for conditional SMC (`:retained`), and for the variants not
+  argued here (`:enumerate`, `:batch`, forked populations)."
+  [{:keys [policy retained ancestor-sampling? enumerate smcp3 batch adopt rejuvenate]}]
+  (if (or policy retained ancestor-sampling? enumerate smcp3 batch adopt (:propose rejuvenate))
+    :unverified
+    :unbiased))
+
 (defn- run-particles
   "The particle machinery shared by `smc` and `stream`. Starts `model` with
   `n` particles and returns `{:supply! (fn [value])}`.
@@ -386,6 +402,7 @@
     (throw (ex-info (str ":enumerate is not supported with " other)
                     {:type ::enumerate-with-unsupported :option other})))
   (let [threshold (or resample-threshold 0.5)
+        evidence-contract (contract/weighted-population {:normalizer (evidence-status opts)})
         anchor? (anchor-predicate anchors)
         lag (:lag anchors)
         ;; {anchor-id anchor}: every anchor that may still be pending
@@ -477,7 +494,8 @@
                                                                           (get streaming slot)))]
                                               [(sample-of w nil) (weight-of w)])))
                                         (range n)))
-                                 :log-normalizer log-z)
+                                 :log-normalizer log-z
+                                 :inference-contract evidence-contract)
                     true (assoc :history history)
                     rejuvenate (assoc :rejuvenation rejuvenation)))]
     (letfn [(arrived! []
@@ -591,7 +609,7 @@
                 (if-not resample?
                   (resume-all! (map (juxt :sp :value) entries) fail!)
                   (let [ancestors (random/with-stream* seed [::batch k index]
-                                    #(m/resample resampling weights size))
+                                    #(weights/resample resampling weights size))
                         sources (mapv #(:sp (nth entries %)) ancestors)]
                     ((if copy? (all-copied sources) (all-forked sources))
                      (fn [children]
@@ -729,7 +747,7 @@
                                           candidates scores)]
                        (resample-with! k (nth candidates
                                               (random/with-stream* seed [::ancestor k]
-                                                #(m/sample-categorical (m/normalize-log-weights combined)))))))
+                                                #(weights/sample-categorical (weights/normalize-log-weights combined)))))))
                    fail!))
                 (resample-with! k 0)))
 
@@ -797,8 +815,8 @@
                                       ;; conditional: slot 0 continues from its
                                       ;; own lineage, or the past PGAS drew for it
                                        (into [retained-ancestor]
-                                             (m/multinomial-resample weights (dec n)))
-                                       (m/resample resampling weights n)))
+                                             (weights/multinomial-resample weights (dec n)))
+                                       (weights/resample resampling weights n)))
                         live? #(or (contains? parked %) (contains? streaming %))
                         forked-slots (filterv #(live? (nth ancestors %)) slots)
                         source (fn [a] (or (:sp (get parked a)) (get streaming a)))]
