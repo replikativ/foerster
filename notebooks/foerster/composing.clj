@@ -32,9 +32,9 @@
 
 (def world (sp/create-execution-context))
 
-;; `run` evaluates an inference — its model included — in that world and
-;; waits for the result.
-(defmacro run [inference] `(sp/with-context world @~inference))
+;; `run` builds the inference `(make)` returns — its model included — in
+;; that world and waits for the result.
+(defn run [make] (sp/with-context world @(make)))
 
 ;; ## A model with a known posterior
 ;;
@@ -78,8 +78,8 @@ exact
                                {:value v :log-q (dist/logpdf q v)}))
                            (fn [{:keys [address]} v] (dist/logpdf (dist/normal (get exact address) 0.5) v)))))
 
-(let [prior (run (infer/importance-sampling (model) 2000 {:seed 1}))
-      guided (run (infer/importance-sampling (model) 2000 {:seed 1 :proposal near-data}))]
+(let [prior (run #(infer/importance-sampling (model) 2000 {:seed 1}))
+      guided (run #(infer/importance-sampling (model) 2000 {:seed 1 :proposal near-data}))]
   {:prior {:ess (m/effective-sample-size prior) :means (means prior)}
    :guided {:ess (m/effective-sample-size guided) :means (means guided)}})
 
@@ -88,16 +88,16 @@ exact
 ;; proposals (`prior`, `distribution`, `random-walk`) are right by
 ;; construction:
 
-{:from-fn (contract/normalizer-status (run (infer/importance-sampling (model) 100 {:seed 2 :proposal near-data})))
+{:from-fn (contract/normalizer-status (run #(infer/importance-sampling (model) 100 {:seed 2 :proposal near-data})))
  :distribution (contract/normalizer-status
-                (run (infer/importance-sampling (model) 100 {:seed 2 :proposal (proposal/distribution (dist/normal 0.0 2.0))})))}
+                (run #(infer/importance-sampling (model) 100 {:seed 2 :proposal (proposal/distribution (dist/normal 0.0 2.0))})))}
 
 ;; ## Kernels compose
 ;;
 ;; A kernel moves some sites. `:only` says which; `cycle` runs kernels in
 ;; turn. A chain refuses a kernel that leaves a site unmoved, naming it:
 
-(try (run (infer/kernel-infer (model) (k/single-site-mh-kernel 100 {:only #{:a}}) 2 {:seed 3}))
+(try (run #(infer/kernel-infer (model) (k/single-site-mh-kernel 100 {:only #{:a}}) 2 {:seed 3}))
      (catch Exception e (ex-message (or (ex-cause e) e))))
 
 (def per-site
@@ -105,7 +105,7 @@ exact
                  (k/single-site-mh-kernel 1 {:only #{:b}})]
            {:samples :all :burn 200}))
 
-(means (run (infer/kernel-infer (model) per-site 2 {:seed 4})))
+(means (run #(infer/kernel-infer (model) per-site 2 {:seed 4})))
 
 ;; ## A kernel of your own
 ;;
@@ -117,8 +117,8 @@ exact
   (k/kernel 1 (fn [t context] (trace/mh-step t (assoc context :propose (proposal/random-walk 0.4))))
             {:retains? true :tempering? true :id :walk}))
 
-(means (run (infer/kernel-infer (model) (k/cycle 2000 [walk (k/single-site-mh-kernel 1)] {:samples :all :burn 200})
-                                2 {:seed 5})))
+(means (run #(infer/kernel-infer (model) (k/cycle 2000 [walk (k/single-site-mh-kernel 1)] {:samples :all :burn 200})
+                                 2 {:seed 5})))
 
 ;; ## One kernel, many places
 ;;
@@ -127,8 +127,8 @@ exact
 
 (def mix (k/cycle 1 [(k/single-site-mh-kernel 1) walk]))
 
-{:smc (means (run (infer/smc-infer (model) 500 {:seed 6 :anchors :all :rejuvenate {:moves 2 :kernel mix}})))
- :tempered (means (run (infer/tempered-infer (model) 500 {:seed 7 :kernel mix})))}
+{:smc (means (run #(infer/smc-infer (model) 500 {:seed 6 :anchors :all :rejuvenate {:moves 2 :kernel mix}})))
+ :tempered (means (run #(infer/tempered-infer (model) 500 {:seed 7 :kernel mix})))}
 
 ;; ## Pairs: moves with auxiliary randomness
 ;;
@@ -141,11 +141,11 @@ exact
      :log-q (fn [_ u] (dist/logpdf q u))
      :involution (fn [{a :a} u] {:choices {:a (+ a u)} :aux (- u) :log-jacobian 0.0})}))
 
-{:mcmc (means (run (infer/kernel-infer (model)
-                                       (k/cycle 2000 [(k/involutive-kernel 1 shift) (k/single-site-mh-kernel 1 {:only #{:b}})]
-                                                {:samples :all :burn 200})
-                                       2 {:seed 8})))
- :smcp3 (means (run (infer/smc-infer (model) 500 {:seed 9 :anchors #{:a} :smcp3 (pair/from-involution shift)})))}
+{:mcmc (means (run #(infer/kernel-infer (model)
+                                        (k/cycle 2000 [(k/involutive-kernel 1 shift) (k/single-site-mh-kernel 1 {:only #{:b}})]
+                                                 {:samples :all :burn 200})
+                                        2 {:seed 8})))
+ :smcp3 (means (run #(infer/smc-infer (model) 500 {:seed 9 :anchors #{:a} :smcp3 (pair/from-involution shift)})))}
 
 ;; ## An inference program
 ;;
@@ -168,7 +168,7 @@ exact
                                                              (k/single-site-mh-kernel 1 {:only #{:b}})])))]
                    (recur p (next betas)))))))))
 
-(let [r (run (anneal (model)))]
+(let [r (run #(anneal (model)))]
   {:means (means r) :contract (:inference-contract r)})
 
 ;; Each piece is checked where it is taken: a proposal that does not return
