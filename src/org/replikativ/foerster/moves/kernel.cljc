@@ -316,6 +316,57 @@
   (chain-output (->ProposalMHKernel num-iterations proposal (vec args)) (dissoc opts :args)))
 
 ;; =============================================================================
+;; A kernel of your own
+;; =============================================================================
+
+(defprotocol PCustomKernel
+  "A Markov kernel of your own (`kernel`): its move, and what it declares
+  about itself."
+  (custom-step [k] "(fn [trace context]) -> a CPS operation resolving the move.")
+  (custom-capabilities [k] "{:tempering? b :retains? b}"))
+
+(defrecord CustomKernel [num-iterations step tempering? retains? id]
+  PMarkovKernel
+  (transition-id [_] id)
+  PCustomKernel
+  (custom-step [_] step)
+  (custom-capabilities [_] {:tempering? tempering? :retains? retains?}))
+
+(defn kernel
+  "A Markov kernel of your own, making `num-iterations` moves of `step`:
+  (fn [trace context]) -> a CPS operation resolving {:trace t' :accepted? b}
+  (with `:moves` and `:accepted-moves` when one step makes several).
+
+  `context` carries the target (`:temperature`, `:policy-options`,
+  `:constraints`), the replay frontier (`:until`, `:anchor?`), ownership
+  (`:keep-old?`, `:shared-anchors?`) and `:iteration`, the move's number,
+  which keys its randomness. `foerster.runtime.trace/mh-step` with your own
+  `:select` and `:propose` honours all of them:
+
+    (k/kernel 100 (fn [t context]
+                    (trace/mh-step t (assoc context :select my-select
+                                                    :propose my-proposal))))
+
+  It composes with the built-in kernels through `cycle` and `mixture`, runs
+  as chains (`kernel-infer`) and as SMC's rejuvenation. Leaving the target
+  invariant is your obligation; results using it say so (`:unverified`
+  evidence). Options: `:id` (a keyword naming the move, default :custom),
+  `:tempering?` (the step targets `:temperature` β < 1 correctly, as
+  `mh-step` does; default false), `:retains?` (the step honours
+  `:keep-old?` and `:shared-anchors?`, as passing `context` to `mh-step`
+  does; default false: population moves and SMC's rejuvenation need it),
+  and the output options of every chain kernel."
+  [num-iterations step & [{:keys [id tempering? retains?] :as opts}]]
+  {:pre [(pos-int? num-iterations) (fn? step)]}
+  (when (#{:cycle :mixture} id)
+    (throw (ex-info ":id names the move; :cycle and :mixture are the composites'"
+                    {:type ::invalid-kernel :id id})))
+  (chain-output (->CustomKernel num-iterations step (boolean tempering?) (boolean retains?) (or id :custom))
+                (dissoc opts :id :tempering? :retains?)))
+
+(defn custom-kernel? [k] (satisfies? PCustomKernel k))
+
+;; =============================================================================
 ;; Composing Markov-chain kernels
 ;; =============================================================================
 

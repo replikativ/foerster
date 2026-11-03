@@ -69,7 +69,14 @@
          {:value (get proposed (:savepoint/address sp-value)) :symmetric? true}
          (itrace/prior-draw sp-value old-entry)))}))
 
+(declare builtin-leaf-options)
+
 (defn- leaf-options [kernel]
+  (if (k/custom-kernel? kernel)
+    {:step (k/custom-step kernel)}
+    (builtin-leaf-options kernel)))
+
+(defn- builtin-leaf-options [kernel]
   (case (k/transition-id kernel)
     :single-site-mh {}
     :finite-gibbs {:step (fn [current opts]
@@ -112,6 +119,8 @@
   [leaf]
   (contains? #{:nuts :random-walk-mh} (k/transition-id leaf)))
 
+(declare leaf-capabilities)
+
 (defn prepare
   "Compile once per independently moving chain or particle. The result owns
   local tuning counters and must not be shared by resampled descendants.
@@ -123,13 +132,28 @@
   (let [tree (compile-tree kernel [])]
     {::tree tree
      :adaptation? (boolean (some #(and (adaptive-leaf? %) (pos? (:burn % 0))) (leaves tree)))
-     ;; programmable moves give back the state they leave: they cannot keep
-     ;; it alive for a population's other owners
-     :capabilities {:retention (if (some #(#{:involutive :proposal-mh} (k/transition-id %)) (leaves tree))
-                                 #{}
-                                 #{:keep-old? :shared-anchors?})
-                    :tempering? (every? #(#{:single-site-mh :block-gibbs :finite-gibbs}
-                                          (k/transition-id %)) (leaves tree))}}))
+     :capabilities (leaf-capabilities (leaves tree))}))
+
+(defn- leaf-capabilities
+  "What a kernel whose leaves are `ls` can do, as `prepare` reports it:
+  `:retention`, the ownership options every leaf honours (programmable moves
+  give back the state they leave: they cannot keep it alive for a
+  population's other owners; a custom kernel honours them when it declares
+  `:retains?`); `:tempering?`, whether every leaf targets β < 1 correctly;
+  `:verified?`, whether every leaf is built in and leaves its target
+  invariant by construction (an involution, a proposal program or a custom
+  step is its author's obligation)."
+  [ls]
+  (let [user? #(or (k/custom-kernel? %) (#{:involutive :proposal-mh} (k/transition-id %)))
+        retains? #(if (k/custom-kernel? %)
+                    (:retains? (k/custom-capabilities %))
+                    (not (#{:involutive :proposal-mh} (k/transition-id %))))
+        tempers? #(if (k/custom-kernel? %)
+                    (:tempering? (k/custom-capabilities %))
+                    (#{:single-site-mh :block-gibbs :finite-gibbs} (k/transition-id %)))]
+    {:retention (if (every? retains? ls) #{:keep-old? :shared-anchors?} #{})
+     :tempering? (boolean (every? tempers? ls))
+     :verified? (not-any? user? ls)}))
 
 (defn adaptation? [prepared] (:adaptation? prepared))
 
