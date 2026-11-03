@@ -32,8 +32,8 @@
   (is (= :exact (status 1 {:method :enumerate})))
   (is (= :unbiased (status 2 {:method :smc :particles 20})) "adaptive resampling, prior proposals")
   (is (= :unbiased (status 3 {:method :importance :particles 20})))
-  (is (= :unverified (status 4 {:method :smc :particles 20 :policy (itrace/policy {})}))
-      "a caller's policy carries the correction obligations")
+  (is (= :unverified (status 4 {:method :smc :particles 20 :policy (itrace/policy {:draw (fn [_ _] nil)})}))
+      "a caller's proposals carry the correction obligations")
   (is (= :unavailable (status 5 {:method :mh :iterations 50 :chains 2})))
   (testing "tempered SMC chooses its schedule from its population"
     (let [r (b/run-infer 6 #(infer/infer (hmm) {:method :tempered :particles 20}))]

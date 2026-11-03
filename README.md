@@ -151,10 +151,11 @@ for posterior diagnostics and validation; a successful run alone is not a fit ch
 ## Worlds
 
 Pure models run in fresh worlds (`:world-policy :fresh`, the default). The
-particle methods (importance sampling, SMC, particle MCMC, BBVI) also run in
-**canonical forks** of the caller's world (`:world-policy :fork`), for models
-that read or change the systems of the world they run in (databases,
-repositories, a business book); Markov chains run in fresh worlds only:
+methods also run in **canonical forks** of the caller's world
+(`:world-policy :fork`), for models that read or change the systems of the
+world they run in (databases, repositories, a business book). Every driver
+but SMC² does; methods that run several times (Markov chains, tempering,
+PMMH, inference programs) fork one frozen fork of the caller:
 
 - every particle starts from a frozen copy of the caller's managed state
   and runs the whole model; writes to forkable managed systems stay local.

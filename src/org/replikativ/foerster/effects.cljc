@@ -185,31 +185,48 @@
 ;; Effect Registration
 ;; =============================================================================
 
+(def site-options
+  "What `sample`, `observe` and `choose` take after the distribution:
+  `:id` (the address), `:observe` (the observed value), `:proposal` (a
+  distribution fresh draws come from instead), `:init` (a Markov chain's
+  first state) and `:stream` (the value arrives from outside, SMC's
+  `stream`). Any other key is refused: a misspelt option would otherwise
+  be ignored."
+  #{:id :observe :proposal :init :stream})
+
+(defn- site-options!
+  "`opts` (key value …) as a map, refusing keys `site-options` does not name."
+  [opts]
+  (when (odd? (count opts))
+    (throw (ex-info "Site options come in key-value pairs" {:type ::invalid-site-options :options (vec opts)})))
+  (let [options (apply hash-map opts)]
+    (when-let [unknown (seq (remove site-options (keys options)))]
+      (throw (ex-info (str "Unknown site options " (vec unknown) "; a site takes " site-options)
+                      {:type ::invalid-site-options :unknown (vec unknown) :allowed site-options})))
+    options))
+
 (defn choose-adapter
   "Adapter for choose effect: (choose dist & opts) -> {source, options}"
   [args]
-  (let [[source & opts] args
-        options (apply hash-map opts)]
+  (let [[source & opts] args]
     {:source source
-     :options options}))
+     :options (site-options! opts)}))
 
 (defn sample-adapter
   "Adapter for sample effect: (sample dist & opts) -> {source, options}"
   [args]
   ;; Same as choose adapter - sample is just choose without :observe
-  (let [[source & opts] args
-        options (apply hash-map opts)]
+  (let [[source & opts] args]
     {:source source
-     :options options}))
+     :options (site-options! opts)}))
 
 (defn observe-adapter
   "Adapter for observe effect: (observe dist value & opts) -> {source, options with :observe}"
   [args]
   ;; observe has different syntax: (observe dist value & opts)
-  (let [[source value & opts] args
-        options (assoc (apply hash-map opts) :observe value)]
+  (let [[source value & opts] args]
     {:source source
-     :options options}))
+     :options (assoc (site-options! opts) :observe value)}))
 
 (defn factor
   "Multiply the weight of this execution by exp(`log-weight`): a score that is

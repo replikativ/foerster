@@ -455,7 +455,7 @@ exact
 ;; **When**: models with all their observations at the end; many latents
 ;; with few observations each; structure that changes between runs.
 ;; **Options**: `:iterations` per chain, `:chains` (default 4), `:burn`,
-;; `:seed`. Markov chains run in fresh worlds only. Check R-hat (below 1.01)
+;; `:seed`, `:world-policy`. Check R-hat (below 1.01)
 ;; and bulk ESS for every quantity you report.
 
 (kind/table
@@ -778,14 +778,15 @@ exact
 ;;
 ;; | Method | `:world-policy :fork` | `foerster.sandbox` | `:seed` |
 ;; |---|---|---|---|
-;; | enumeration | – | – | not needed (exact) |
-;; | importance sampling, SMC | yes | yes | yes |
-;; | arrival-batched SMC, resample-move, SMCP3 | – (fresh worlds) | – | yes |
+;; | enumeration | yes | – | not needed (exact) |
+;; | importance sampling, SMC, arrival-batched SMC | yes | importance, SMC | yes |
+;; | resample-move, SMCP3 | – (fresh worlds) | – | yes |
 ;; | particle cascade | – | – | yes |
 ;; | PIMH, particle Gibbs, PGAS, IPMCMC, BBVI | yes | – | yes |
-;; | PMMH, SMC² | – | – | yes |
-;; | MH, random-walk MH, HMC, NUTS, delayed acceptance | – | MH, RMH, NUTS | yes |
-;; | tempered SMC, parallel tempering | – | – | – (process generator) |
+;; | PMMH | yes | – | yes |
+;; | SMC² | – (fresh worlds) | – | yes |
+;; | MH, random-walk MH, HMC, NUTS, delayed acceptance | yes (compiled `:rmh`: no worlds) | MH, RMH, NUTS | yes |
+;; | tempered SMC, parallel tempering | yes | – | yes |
 ;; | MAP, Laplace, Pathfinder | (no worlds) | yes | via `random/set-seed!` |
 ;; | SCMC | (no worlds) | – | yes |
 ;;

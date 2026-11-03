@@ -2,7 +2,7 @@
   "Inference kernels: what decides a particle's latent sites.
 
   A `PInferenceKernel` decides a particle's latent sites during execution:
-  `inference/kernel-infer` runs savepoint SMC whose sample sites take the
+  `foerster.core/kernel-infer` runs savepoint SMC whose sample sites take the
   value the kernel's `step` gives, which makes importance sampling vs SMC a
   choice of proposal policy, not of engine. `PMarkovKernel` describes
   transitions that `foerster.moves.transition` compiles and runs over traces."
@@ -18,7 +18,7 @@
   "Protocol for kernels that operate at the random choices of a particle.
 
   It decides what value a latent site of a particle takes:
-  `inference/kernel-infer` asks its `step` at every sample site of savepoint
+  `foerster.core/kernel-infer` asks its `step` at every sample site of savepoint
   SMC.
 
   Site kernels choose and correct proposals; they are distinct from

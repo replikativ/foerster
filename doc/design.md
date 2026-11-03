@@ -43,8 +43,8 @@ proposal, and flags: `:observed?`, `:constrained?`, `:kept?`, `:symmetric?`,
 
 A **policy** (`trace/policy`) decides sites: constraints, kept values from
 an earlier trace, draws from custom proposals, interventions, counterfactual
-noise, and the prior for everything else. `trace/run` and `trace/replay`
-run a program under a policy.
+noise, and the prior for everything else. `gfi/run-policy` runs a program
+under a policy, and `trace/reexecute` re-runs a trace after a move.
 
 ## The algorithms as handlers
 
@@ -188,7 +188,9 @@ With `:world-policy :fork` the model runs in a frozen fork of the caller's
 world, the root, and its session's worlds join the root's scope; every
 particle runs the whole model, is a copy of a world (grades checked, budgets
 split), and every world is discarded before the result is delivered. See
-[worlds](worlds.md). Markov chains run in fresh worlds only.
+[worlds](worlds.md). Markov chains, tempered SMC, parallel tempering, PMMH
+and inference programs fork their worlds from one frozen fork of the
+caller's world; SMC² runs in fresh worlds only.
 
 ## Not implemented yet
 

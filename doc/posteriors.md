@@ -88,7 +88,13 @@ with prior proposals, adaptive resampling and resample-move included),
 stones), `:unverified` (correct only if a caller's policy, kernels or
 program meet their obligations, or an adaptive or approximate method), or
 `:unavailable` (chain draws). `(contract/unbiased-evidence? measure)` says
-whether a pseudo-marginal method may use it.
+whether a pseudo-marginal method may use it; PMMH refuses a filter whose
+evidence is neither (`:allow-unverified-evidence? true` overrides). The
+contract may also name `:weight-contract :requires-operation-assumptions`
+(inference programs: weights are right only if the user's operations are),
+`:adaptation :population` (the method tuned itself from its population:
+tempered SMC, SCMC) and `:approximation :coreset-rejuvenation` (SCMC after
+compression).
 
 **Surviving histories** — `(diagnostics/distinct-count measure [:x 0])`:
 how many distinct values an early site still takes after SMC resampled —

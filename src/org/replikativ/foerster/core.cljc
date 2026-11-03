@@ -133,6 +133,9 @@
   (check-options! opts (if (k/markov-kernel? kernel)
                          #{:executor :world-policy :world-opts :seed}
                          (conj particle-options :barrier-policy)))
+  (when (and (:policy opts) (not (k/markov-kernel? kernel)) (not= :prior (k/kernel-id kernel)))
+    (throw (ex-info "A site kernel decides the sites itself: :policy does not apply"
+                    {:type ::unknown-options :unknown [:policy]})))
   (let [smc-opts (cond-> (dissoc opts :barrier-policy)
                    (= :none (:barrier-policy opts)) (assoc :resample-threshold 0.0))]
     (cond
@@ -184,7 +187,8 @@
   "Tempered SMC (`foerster.inference.tempering`): `num-particles` complete runs of
   `model-task`, moved from the prior to the posterior through the targets
   p(x)·L(x)^β with an adaptive schedule of β. Explores posteriors whose
-  modes a Markov chain cannot cross, and estimates the evidence.
+  modes a Markov chain cannot cross, and estimates the evidence (its
+  contract says `:unverified`: the schedule adapts to the population).
 
   Options: `:ess-target` (0.5), `:moves` (single-site MH moves per particle
   per step; default a sweep), `:scale` (2.38), `:waste-free` P, `:max-steps`,
@@ -302,6 +306,8 @@
   No `:authority` yet."
   [model n-particles iterations opts]
   (refuse-authority! opts "PMMH")
+  (check-options! opts (into (into particle-options smc-options)
+                             #{:params :propose :scale :burn :filter :allow-unverified-evidence?}))
   (with-frozen-caller opts
     (fn [o]
       (on-savepoints
@@ -444,4 +450,5 @@
                           {} (map vector ps ws))]
      (with-meta (dist/categorical (vec (filter (comp pos? second) by-value)))
        {:inference/nesting {:kind :empirical-conditional :method (:method opts)
-                            :exact? (= :enumerate (:method opts)) :particles (count ps)}}))))
+                            :exact? (= :enumerate (:method opts)) :particles (count ps)
+                            :contract (:inference-contract measure)}}))))

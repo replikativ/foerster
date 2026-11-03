@@ -34,7 +34,10 @@
 
   Args:
     model-task, num-particles (per sweep), num-iterations
-    opts: :executor, :resample-threshold
+    opts: the particle methods' options (`:seed`, `:executor`,
+          `:resample-threshold`, `:policy`, `:world-policy`, `:world-opts`,
+          `:authority`, `:grant`) and SMC's (`:resampling`, `:genealogy?`,
+          and in fresh worlds `:anchors`, `:rejuvenate`, `:smcp3`)
 
   Returns: Spin<EmpiricalMeasure>"
   [model-task num-particles num-iterations & [opts]]

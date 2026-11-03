@@ -40,8 +40,9 @@ computes statistics of numeric model results. =run= settles
 all owned sessions before delivering the result, including on cancellation.
 A program must finish rather than return a live population.
 
-These targets are complete traces, not streaming observation prefixes, and
-currently use fresh execution worlds. Trace moves use the shared Markov
+These targets are complete traces, not streaming observation prefixes; under
+=:world-policy :fork= they run in forks of one frozen fork of the caller's
+world. Trace moves use the shared Markov
 transition interpreter, including =k/cycle= and =k/mixture=. Population moves
 require frozen tuning; warm-up belongs to a separate chain run. At intermediate
 temperatures, only transitions declaring tempered-target support are accepted.
@@ -115,7 +116,8 @@ argument from target paths or proposals chosen using the current population.
 
 MCMC outputs from the built-in chain and particle-MCMC drivers are tagged
 =:inference-contract= with =:semantics :markov-chain= and
-=:normalizer {:status :unavailable}=.
+=:normalizer {:status :unavailable}=, except parallel tempering, whose
+contract names its stepping-stone estimate (=:status :estimate=).
 =m/log-marginal= returns nil for them. Their empirical weights combine draws;
 they do not estimate the model's evidence. Weighted SMC and importance outputs
 retain their numerical normalizers.

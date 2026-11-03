@@ -83,16 +83,18 @@ non-Markov-chain kernel:
 | `:policy` | the prior | a `foerster.runtime.trace/policy` deciding the sites: constraints, interventions, custom proposals ([extending](extending.md)) |
 | `:anchors`, `:rejuvenate` | — | resample-move (below); `smc-infer` and `pimh-infer`, fresh worlds |
 | `:resampling` | `:systematic` | `:stratified`, `:residual` or `:multinomial` (Douc, Cappé & Moulines 2005); `smc-infer`, `pimh-infer` |
-| `:genealogy?` | `false` | record every resampling's ancestor indices in the measure's `:history` |
+| `:genealogy?` | `false` | record every resampling's ancestor indices in the measure's `:history`; `smc-infer`, `pimh-infer` |
 | `:batch` | — | B: resample in batches of B in arrival order instead of at a barrier for all (below); `smc-infer`, fresh worlds |
-| `:smcp3` | — | `{:forward K :backward L}`: SMCP3 move-reweight steps at each observation (below); needs `:anchors` |
+| `:smcp3` | — | `{:forward K :backward L}`: SMCP3 move-reweight steps at each observation (below); needs `:anchors`; `smc-infer`, `pimh-infer`, fresh worlds |
 
 An option a method does not take is refused (`::infer/unknown-options`), and
 so are `:world-opts`, `:authority` and `:grant` under `:world-policy :fresh`
 (`::infer/fork-only-options`): an option that would be ignored is a mistake.
 `importance-sampling` takes no `:resample-threshold`, BBVI no `:policy` or
 `:resample-threshold` (it decides both), and the Markov-chain kernels only
-`:executor` and `:world-policy :fresh`.
+`:executor`, `:seed`, `:world-policy` and `:world-opts`. A site kernel
+(`kernel-infer` with a `PInferenceKernel`) decides the sites itself and
+refuses `:policy`.
 
 A program can also name a proposal at a site:
 `(sample (dist/normal 0 1) :id :mu :proposal guide)` draws a fresh value
@@ -529,8 +531,10 @@ and `mixture` build a sampler from parts — HMC for the continuous block,
 single-site moves for the discrete sites — and nest. Each part runs for its
 own iterations.
 
-The Markov-chain kernels run in fresh worlds only (they refuse `:fork`) and
-take output options: `:samples :final` (default) emits each chain's last
+The Markov-chain kernels run in fresh worlds or, under `:world-policy
+:fork`, each chain in a fork of one frozen fork of the caller's world
+(incremental reuse only for runs that wrote no world state), and take
+output options: `:samples :final` (default) emits each chain's last
 state; `:samples :all` emits every state after the first `:burn` moves,
 equally weighted. `kernel-infer` takes `:seed`, from which each chain's
 seed is derived.
