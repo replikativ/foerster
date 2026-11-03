@@ -101,8 +101,8 @@ streaming diagnostic or a general convergence certificate.
 * Accuracy and cost
 
 SCMC compresses with GIGA and then refits GIGA's weights by nonnegative
-least squares on the points it selected, as the reference implementation
-does (=:refit :nnls=, the default; =:refit :none= reproduces the earlier
+least squares on the points it selected, the fully corrective update of
+Campbell & Beronov (2019) (=:refit :nnls=, the default; =:refit :none= reproduces the earlier
 GIGA-only projection bit for bit). The sweep uses 800 particles, budgets 8,
 32, 64, 128 and 300, and three inference seeds. Budget is the maximum
 retained number of representatives and the GIGA iteration budget; fewer

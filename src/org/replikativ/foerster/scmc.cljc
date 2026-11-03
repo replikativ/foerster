@@ -14,11 +14,13 @@
   After each step's moves, when the core-set and the new batch exceed M, it
   is recompressed: a sparse nonnegative least-squares fit (GIGA; Campbell &
   Broderick 2018) of the core-set's log-likelihood functions, centred and
-  evaluated at the current particles, to their weighted sum. As in the
-  reference implementation, GIGA's weights are then refitted by
-  nonnegative least squares on the points it selected (`:refit :nnls`, the
-  default; `:refit :none` keeps GIGA's weights). The fit is best where the
-  population has its mass.
+  evaluated at the current particles, to their weighted sum. GIGA fixes the
+  weights' proportions greedily and fits only their common scale; its
+  weights are then refitted by nonnegative least squares on the points it
+  selected, the fully corrective update of Campbell & Beronov (NeurIPS
+  2019) (`:refit :nnls`, the default; `:refit :none` keeps GIGA's weights,
+  as in the UAI 2021 algorithm). The fit is best where the population has
+  its mass.
 
   `:projection-inflation k` is a research option and a deviation from the
   UAI 2021 algorithm, off by default: the projection is fitted at the
@@ -27,15 +29,15 @@
   matched over a wider region than the current population (the posterior
   can move outside it as data arrive). It costs N·|E| likelihood
   evaluations per compression, and the likelihood must be finite at the
-  spread points. k = 1, or no factor, is the reference projection.
+  spread points. k = 1, or no factor, is the UAI 2021 projection.
 
   Each new batch reweights the particles by its own exact likelihood, but
   the particles it reweights are not distributed as the previous target:
   they were moved against the previous step's core-set before that step
   compressed it (the core-set plus that step's batch), while the posterior
   they stand for from then on uses the compressed core-set. No importance
-  correction exp(Σ_C' w'·ℓ − Σ_C w·ℓ) is applied for that switch, as in the
-  reference implementation; the next moves target the compressed core-set.
+  correction exp(Σ_C' w'·ℓ − Σ_C w·ℓ) is applied for that switch, as in
+  the paper's Algorithm 1; the next moves target the compressed core-set.
   So the particles carry the core-set's approximation error: small when the
   log-likelihoods compress well (exchangeable data, few parameters), larger
   for a small `:memory`. With M at least the amount of data, SCMC is
@@ -271,9 +273,9 @@
 
 (defn nnls-refit
   "GIGA's weights `w` refitted by nonnegative least squares on their
-  support, as the reference implementation does after GIGA (`giga.build(m);
-  giga.optimize()` in Campbell's bayesian-coresets, used by the SCMC
-  reference): the support stays, its weights become the NNLS solution for
+  support, the fully corrective update of Campbell & Beronov (NeurIPS 2019;
+  `build` then `optimize` in Campbell's bayesian-coresets library): the
+  support stays, its weights become the NNLS solution for
   the same `target`, and the refit is kept only if it does not increase the
   residual by more than a relative 1e-12. Weights NNLS sets to zero leave
   the support."
