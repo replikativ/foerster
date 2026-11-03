@@ -9,6 +9,7 @@
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.inference.tempering :as tp]
+            [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as executor]
@@ -80,3 +81,20 @@
     (is (= ::infer/invalid-world-policy (refusal #(infer/tempered-infer model 10 {:world-policy :elsewhere}))))
     (is (= ::infer/invalid-world-policy (refusal #(infer/tempered-infer model 10 {:world-policy :fork :grant {:tokens 1}}))))
     (is (= ::infer/unknown-options (refusal #(infer/tempered-infer model 10 {:particles 3}))))))
+
+(deftest a-kernel-moves-the-particles
+  (doseq [[label opts] [["tempered" {}] ["waste-free" {:waste-free 10}]]]
+    (testing label
+      (let [r (b/run-infer 41 #(infer/tempered-infer (conjugate) 300
+                                                     (merge {:kernel (k/cycle 1 [(k/single-site-mh-kernel 2)])} opts)))
+            [mu sd] (b/w-mean-sd identity (b/weighted-values r))]
+        (is (< (Math/abs (- mu (first truth))) 0.05) (str mu " vs " truth))
+        (is (< (Math/abs (- sd (second truth))) 0.05) (str sd))
+        (is (pos? (get-in r [:rejuvenation :moves])))))))
+
+(deftest a-kernel-that-cannot-temper-is-refused
+  (let [refusal (fn [opts] (try (b/run-infer 42 #(infer/tempered-infer (conjugate) 10 opts)) nil
+                                (catch Throwable e (some #(:type (ex-data %)) (take-while some? (iterate ex-cause e))))))]
+    (is (= ::tp/invalid-kernel (refusal {:kernel (k/nuts-kernel 1)})) "NUTS targets temperature one only")
+    (is (= ::tp/invalid-kernel (refusal {:kernel (k/single-site-mh-kernel 1) :moves 2})))
+    (is (= ::tp/invalid-kernel (refusal {:kernel (k/random-walk-mh-kernel 1 {:burn 5})})))))

@@ -34,6 +34,8 @@
             [org.replikativ.foerster.runtime.trace-owner :as trace-owner]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as itrace]
+            [org.replikativ.foerster.moves.kernel :as k]
+            [org.replikativ.foerster.moves.transition :as transition]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.protocols :as rtp]))
 
@@ -143,6 +145,54 @@
                   (block-moves t step (blocks t) states seen accepted total)))]
       (go t 0 [] [] 0 0))))
 
+(defn- kernel-chain
+  "`steps` iterations of the Markov kernel `kernel` on `t` at temperature
+  `beta`, numbered from `base` apart by the kernel's stride; resolves as
+  `move-chain` does. Every accepted state is collected (`:on-visit`), to be
+  released with the population's other states."
+  [t steps beta kernel base]
+  (let [{:keys [step iteration-stride]} (transition/options kernel)]
+    (fn [resolve reject]
+      (let [seen (volatile! []) accepted (volatile! 0) total (volatile! 0)
+            visit (fn [{t' :trace accepted? :accepted? :as r}]
+                    (vswap! total + (:moves r 1))
+                    (vswap! accepted + (or (:accepted-moves r) (if accepted? 1 0)))
+                    (when accepted?
+                      ;; the accepted world need not keep the one it replayed
+                      ;; from alive as a source of reused spins
+                      (rtp/swap-state! (:trace/world t') [:engine/reuse-source] (constantly nil))
+                      (vswap! seen conj t')))]
+        (letfn [(go [t s states]
+                    (if (= s steps)
+                      (resolve {:states states :seen @seen :accepted @accepted :moves @total})
+                      ((step t {:temperature beta :keep-old? true :on-visit visit
+                                :iteration (* iteration-stride (+ base s))})
+                       (fn [{t' :trace}] (go t' (inc s) (conj states t')))
+                       reject)))]
+          (go t 0 []))))))
+
+(defn- check-kernel!
+  "Refuse a `:kernel` tempered SMC cannot move its particles with: not a
+  fixed Markov kernel that targets temperatures below one and keeps the
+  states it moves from."
+  [kernel moves]
+  (when kernel
+    (when-not (k/markov-kernel? kernel)
+      (throw (ex-info "Tempered SMC's :kernel is a Markov kernel (foerster.moves.kernel)"
+                      {:type ::invalid-kernel :kernel kernel})))
+    (when moves
+      (throw (ex-info "Tempered SMC takes :kernel or :moves, not both" {:type ::invalid-kernel})))
+    (let [{:keys [capabilities] :as prepared} (transition/prepare kernel)]
+      (when (transition/adaptation? prepared)
+        (throw (ex-info "Tempered SMC's :kernel has fixed tuning (no :burn)" {:type ::invalid-kernel})))
+      (when-not (:tempering? capabilities)
+        (throw (ex-info (str "Tempered SMC's :kernel must target temperatures below one: single-site MH, "
+                             "finite and block Gibbs, or a custom kernel declaring :tempering?")
+                        {:type ::invalid-kernel})))
+      (when-not (contains? (:retention capabilities) :keep-old?)
+        (throw (ex-info "Tempered SMC's :kernel must keep the states it moves from (a custom kernel declares :retains?)"
+                        {:type ::invalid-kernel}))))))
+
 ;; -----------------------------------------------------------------------------
 ;; A model that is one block: particles are θ vectors (`foerster.population.theta`)
 ;; -----------------------------------------------------------------------------
@@ -171,6 +221,12 @@
                  higher, more and smaller temperature steps
     :moves       single-site MH moves per particle per step (default: one
                  sweep, as many as the particle has latent sites)
+    :kernel      a Markov kernel (`foerster.moves.kernel`) that moves the
+                 particles instead: fixed, able to target β < 1 (single-site
+                 MH, finite and block Gibbs, `cycle`/`mixture` of them, a
+                 custom kernel declaring `:tempering?`); each step makes one
+                 iteration of it per particle. A model that is one block
+                 then runs on traces too, not on θ vectors
     :scale       random-walk scale, in population standard deviations
                  (default 2.38)
     :waste-free  P: resample n/P particles and keep every state of their
@@ -184,12 +240,13 @@
   Returns a CPS operation resolving an EmpiricalMeasure of `Sample`s whose
   `m/log-marginal` estimates the evidence; `:temperatures` holds the
   schedule and `:rejuvenation` the moves made and accepted."
-  [model n & [{:keys [ess-target moves scale waste-free max-steps executor seed canonical-source world-opts]
+  [model n & [{:keys [ess-target moves kernel scale waste-free max-steps executor seed canonical-source world-opts]
                :or {ess-target 0.5 scale 2.38 max-steps 1000}}]]
   (when-not (and (number? ess-target) (< 0.0 ess-target 1.0))
     (throw (ex-info ":ess-target must lie in (0, 1)" {:type ::invalid-ess-target :ess-target ess-target})))
   (when-not (or (nil? moves) (nat-int? moves))
     (throw (ex-info ":moves must be a count" {:type ::invalid-moves :moves moves})))
+  (check-kernel! kernel moves)
   (when (and waste-free (or (not (pos-int? waste-free)) (pos? (mod n waste-free))))
     (throw (ex-info ":waste-free P must divide the number of particles"
                     {:type ::invalid-waste-free :n n :waste-free waste-free})))
@@ -223,12 +280,16 @@
                                                          {:type ::too-many-steps :beta beta}))}
                          backend
                          {:move (fn [starts beta k steps]
-                                  (let [propose (adaptive-proposal (population-scales starts) scale)
-                                        bscales (block-scales starts scale)]
+                                  (let [propose (when-not kernel (adaptive-proposal (population-scales starts) scale))
+                                        bscales (when-not kernel (block-scales starts scale))
+                                        n-starts (count starts)]
                                     (fn [resolve reject]
-                                      ((execution/parallel (pop/executor-of (first starts)) (count starts)
+                                      ((execution/parallel (pop/executor-of (first starts)) n-starts
                                                            (fn [i res rej]
-                                                             ((move-chain (nth starts i) steps moves beta propose bscales [k i])
+                                                             ((if kernel
+                                                                (kernel-chain (nth starts i) steps beta kernel
+                                                                              (* (+ (* k n-starts) i) steps))
+                                                                (move-chain (nth starts i) steps moves beta propose bscales [k i]))
                                                               res rej)))
                                        (fn [results]
                                          (try
@@ -262,7 +323,7 @@
               (try
                 (if-let [error (:trace/error template)]
                   (fail! (ex-info "A particle's program failed" {:type ::model-failed} error))
-                  (if-let [{:keys [address dist]} (pop/single-block [template])]
+                  (if-let [{:keys [address dist]} (when-not kernel (pop/single-block [template]))]
                     (let [qs (into [(get-in template [:trace/entries address :value])]
                                    (map (fn [i] (random/with-stream* seed [::init i] #(vec (dist/draw dist)))))
                                    (range 1 n))

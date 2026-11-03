@@ -147,7 +147,8 @@
   contract says `:unverified`: the schedule adapts to the population).
 
   Options: `:ess-target` (0.5), `:moves` (single-site MH moves per particle
-  per step; default a sweep), `:scale` (2.38), `:waste-free` P, `:max-steps`,
+  per step; default a sweep), `:kernel` (a Markov kernel that moves the
+  particles instead, `foerster.inference.tempering/tempered`), `:scale` (2.38), `:waste-free` P, `:max-steps`,
   `:executor`, `:seed` (fixes every draw), `:world-policy` (:fork: every
   particle in a fork of one frozen fork of the caller's world, without
   incremental reuse) and `:world-opts`; no `:authority` yet.
@@ -156,7 +157,7 @@
   schedule."
   [model-task num-particles & [opts]]
   (refuse-authority! opts "Tempered SMC")
-  (check-options! opts #{:ess-target :moves :scale :waste-free :max-steps :executor :seed :world-policy :world-opts})
+  (check-options! opts #{:ess-target :moves :kernel :scale :waste-free :max-steps :executor :seed :world-policy :world-opts})
   (with-frozen-caller opts
     #(on-savepoints (tempering/tempered model-task num-particles (canonical/run-options %)))))
 

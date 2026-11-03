@@ -163,6 +163,14 @@ final θ are written back to traces, by one replay each. On golf putting as
 one block, 1000 particles take about a second and estimate log Z within
 0.2 of the exact −191.93.
 
+`:kernel` moves the particles with a Markov kernel of your choice instead
+of the built-in moves (one iteration per particle per step): any fixed
+kernel that targets temperatures below one — single-site MH (`:only` to
+restrict it), finite and block Gibbs, their `cycle` and `mixture`, or a
+kernel of your own declaring `:tempering?`. NUTS and HMC target β = 1 only
+and are refused, as are kernels that adapt. With a kernel, a one-block model
+runs on traces too.
+
 For data that arrive one observation at a time — IBIS (Chopin 2002) — use
 SMC with resample-move on the static parameters, below.
 
