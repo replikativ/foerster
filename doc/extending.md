@@ -22,7 +22,7 @@ and, for compiled densities,
 
 ## A policy
 
-A **policy** decides every site of a run. `foerster.trace/policy` builds one
+A **policy** decides every site of a run. `foerster.runtime.trace/policy` builds one
 from options, and the particle methods take it as `:policy` (all but BBVI,
 whose guide decides the latent sites):
 
@@ -93,8 +93,8 @@ to propose the reverse move.
 ```
 
 For moves that are not "redraw these sites" — scaling, swapping, splitting —
-use involutive MCMC (`foerster.involutive/step`) and the generative function
-interface (`foerster.gfi`), shown in the
+use involutive MCMC (`foerster.moves.involutive/step`) and the generative function
+interface (`foerster.runtime.gfi`), shown in the
 [programmable inference notebook](https://replikativ.github.io/foerster/foerster.programmable.html).
 An involution may change the model's dimension (reversible jump): it sets
 the new sites through `:choices` and names under `:removed` the sites whose
@@ -104,7 +104,7 @@ component into two and the matching merge
 
 ## A kernel
 
-A `PInferenceKernel` (`foerster.kernel`) decides latent sites of SMC:
+A `PInferenceKernel` (`foerster.moves.kernel`) decides latent sites of SMC:
 
 ```clojure
 (def fixed
@@ -123,14 +123,14 @@ distribution, which cancels against its density).
 
 A custom `PInferenceKernel` is an SMC site-proposal policy. Markov-chain
 descriptions implement the separate `PMarkovKernel` protocol (`transition-id`,
-not a site `step`) and are compiled by `foerster.transition`. They are combined with `k/cycle` and `k/mixture`
+not a site `step`) and are compiled by `foerster.moves.transition`. They are combined with `k/cycle` and `k/mixture`
 ([algorithms](algorithms.md#kernels)); a move of your own over traces is an
 `mh-chain` `:step`.
 
 ## Learned twists and proposals
 
-A steered program (`foerster.steer/model`) records each step's state and its
-reward in the trace, and `foerster.learn` reads them back as training data:
+A steered program (`foerster.inference.steer/model`) records each step's state and its
+reward in the trace, and `foerster.amortized.learn` reads them back as training data:
 `(learn/trajectories measure)` gives every particle's
 `{:states :reward :weight :log-weight}`, and `(learn/draws measure n)`
 resamples `n` of them by weight into unweighted draws from the target. A
@@ -145,6 +145,6 @@ itself is outside foerster.
 Every algorithm here is a handler of spindel savepoints: open a session on a
 world, install handlers for `:inference/choose` and `:inference/factor`, and
 resume, fork, copy or abandon the savepoints they receive.
-`foerster.smc` is the reference; the [design](design.md) guide explains the
+`foerster.inference.smc` is the reference; the [design](design.md) guide explains the
 structure and spindel's [savepoints](https://github.com/replikativ/spindel/blob/main/docs/savepoints.md)
 the primitive.

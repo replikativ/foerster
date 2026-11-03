@@ -36,7 +36,7 @@
             [org.replikativ.foerster.diagnostics :as d]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample]]
-            [org.replikativ.foerster.optimize :as optimize]
+            [org.replikativ.foerster.inference.optimize :as optimize]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (def commit "91027f9cdd13b7e76283fec3f2898f59d4b83ec4")

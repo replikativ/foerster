@@ -8,7 +8,7 @@
    Every run here is one particle from a seed, so it is bit-reproducible."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.core :as infer]
-            [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as measure]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.spin.cps :refer [spin]]

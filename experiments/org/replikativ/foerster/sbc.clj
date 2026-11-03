@@ -14,7 +14,7 @@
   (:require [org.replikativ.foerster.benchmark-test :refer [run-infer]]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.core :as infer]
-            [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.spindel.spin.cps :refer [spin]])

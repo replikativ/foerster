@@ -11,7 +11,7 @@
             [org.replikativ.foerster.diagnostics :as d]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
-            [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 ;; y_i ~ N(a + b·x_i, σ = 0.5), (a, b) ~ N(0, I): a conjugate posterior
@@ -128,7 +128,7 @@
   ;; a half-line surrogate at a state outside it would freeze the chain
   (let [half-line (fn [[a]] (if (pos? a) 0.0 ##-Inf))
         error (try (run half-line) nil (catch Exception e e))]
-    (is (some #(= :org.replikativ.foerster.block-mh/coarse-support (:type (ex-data %)))
+    (is (some #(= :org.replikativ.foerster.moves.block-mh/coarse-support (:type (ex-data %)))
               (take-while some? (iterate ex-cause error)))
         (str error))))
 
@@ -139,6 +139,6 @@
                                                        1))
                    nil
                    (catch Exception e e))]
-    (is (some #(= :org.replikativ.foerster.block-mh/scales-dimension (:type (ex-data %)))
+    (is (some #(= :org.replikativ.foerster.moves.block-mh/scales-dimension (:type (ex-data %)))
               (take-while some? (iterate ex-cause error)))
         (str error))))

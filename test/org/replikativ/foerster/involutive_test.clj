@@ -3,8 +3,8 @@
   involution, and a scale move whose Jacobian matters — without it the chain
   settles on the wrong posterior."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.foerster.involutive :as inv]
-            [org.replikativ.foerster.gfi :as gfi]
+            [org.replikativ.foerster.moves.involutive :as inv]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]

@@ -1,9 +1,9 @@
 (ns org.replikativ.foerster.causal-model-test
   (:require #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer-macros [deftest is async]])
-            [org.replikativ.foerster.causal-model :as cm]
-            [org.replikativ.foerster.counterfactual :as cf]
-            [org.replikativ.foerster.attribution :as attribution]
+            [org.replikativ.foerster.causal.model :as cm]
+            [org.replikativ.foerster.causal.counterfactual :as cf]
+            [org.replikativ.foerster.causal.attribution :as attribution]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.engine.context :as ctx]

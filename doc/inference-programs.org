@@ -8,7 +8,7 @@ engines share mass accounting; Markov transitions are a separate interface.
 
 #+begin_src clojure
 (require '[org.replikativ.foerster.program :as ip]
-         '[org.replikativ.foerster.kernel :as k]
+         '[org.replikativ.foerster.moves.kernel :as k]
          '[org.replikativ.spindel.spin.cps :refer [spin]]
          '[org.replikativ.spindel.effects.await :refer [await]])
 
@@ -142,25 +142,25 @@ estimation need separate contracts and retained inner state.
   moves and ownership; fused numerical loops remain available through its
   synchronous entry point.
 - =program.cljc= exposes these population operations to user inference programs.
-  =population.cljc= supplies the numerical backend; =tempering.cljc= supplies
-  complete-trace phases. =scmc.cljc= uses the numerical path engine and returns
+  =population/theta.cljc= supplies the numerical backend; =inference/tempering.cljc= supplies
+  complete-trace phases. =inference/scmc.cljc= uses the numerical path engine and returns
   the same settled =PMeasure= interface, with its numerical diagnostics attached.
-- =particle_mcmc.cljc= owns sweep normalization, PIMH acceptance and conditional
+- =inference/particle_mcmc.cljc= owns sweep normalization, PIMH acceptance and conditional
   SMC chain retention. Fresh-savepoint and canonical-world drivers inject their
   sweep operations instead of maintaining duplicate statistical chain loops.
 - =PInferenceKernel= describes site proposals; =PMarkovKernel= describes Markov
   transitions. Existing constructors are unchanged. Use =transition-id= for the
   latter; they no longer pretend to implement a site =step=.
-- =transition.cljc= is the shared interpreter for built-in chains and population
+- =moves/transition.cljc= is the shared interpreter for built-in chains and population
   moves. Prepared transitions retain per-particle counters and tuning state;
-  resampling resets that state for new descendants. =transport.cljc= separately
+  resampling resets that state for new descendants. =moves/transport.cljc= separately
   scores forward/backward weighted proposals and change-of-variables corrections.
-- =execution.cljc= batches independent CPS operations in index order. It rejects
+- =runtime/execution.cljc= batches independent CPS operations in index order. It rejects
   on the first failure; cancellation and joining already-started work remain the
-  owning scope's responsibility. =scope.cljc= settles asynchronous finalization;
+  owning scope's responsibility. =runtime/scope.cljc= settles asynchronous finalization;
   GFI, tempering and nested SMC² filters register their resources with scopes.
-- =trace_owner.cljc= reclaims trace worlds and anchors unreachable from all live
-  populations. =cursor.cljc= guards streaming SMC and SMC² step versions and
+- =runtime/trace_owner.cljc= reclaims trace worlds and anchors unreachable from all live
+  populations. =runtime/cursor.cljc= guards streaming SMC and SMC² step versions and
   controller-wide close. Canonical worlds retain their specialized grade,
   budget and world-scope authority; conditional filters retain their stronger
   prefix and retained-trajectory contracts.

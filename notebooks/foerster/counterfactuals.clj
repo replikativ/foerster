@@ -11,13 +11,13 @@
 
 (ns foerster.counterfactuals
   (:require [org.replikativ.foerster.core :as infer]
-            [org.replikativ.foerster.counterfactual :as cf]
+            [org.replikativ.foerster.causal.counterfactual :as cf]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample]]
-            [org.replikativ.foerster.mechanism :as mech]
+            [org.replikativ.foerster.model.mechanism :as mech]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.trace :as trace]
+            [org.replikativ.foerster.runtime.trace :as trace]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.select :as select]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
@@ -78,7 +78,7 @@
 ;; made Y what it was — and changes only X.
 ;;
 ;; To do that, each site is read as a structural equation x = f(u) of
-;; exogenous noise u (`foerster.mechanism`). `counterfactual`:
+;; exogenous noise u (`foerster.model.mechanism`). `counterfactual`:
 ;;
 ;; 1. infers the factual world from the evidence (**abduction**: which noise
 ;;    explains what we saw),
@@ -133,7 +133,7 @@
 ;; one from its posterior. Which convention a discrete mechanism uses (here
 ;; the inverse CDF, x = F⁻¹(u)) changes counterfactual answers and cannot be
 ;; told from data, so foerster fixes and documents it
-;; (`foerster.mechanism`) rather than guessing.
+;; (`foerster.model.mechanism`) rather than guessing.
 ;;
 ;; The lower-level `counterfactual` operation above permits a newly reached
 ;; site to draw fresh noise and reports it in `:unaligned`. This weakens the

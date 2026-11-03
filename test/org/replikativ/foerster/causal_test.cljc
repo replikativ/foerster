@@ -1,6 +1,6 @@
 (ns org.replikativ.foerster.causal-test
   (:require [clojure.test :refer [deftest is]]
-            [org.replikativ.foerster.causal :as c]))
+            [org.replikativ.foerster.causal.identification :as c]))
 
 (defn- assignments [nodes]
   (if-let [[v & more] (seq nodes)]

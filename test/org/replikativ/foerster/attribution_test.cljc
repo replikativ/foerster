@@ -1,6 +1,6 @@
 (ns org.replikativ.foerster.attribution-test
   (:require [clojure.test :refer [deftest is]]
-            [org.replikativ.foerster.attribution :as a]))
+            [org.replikativ.foerster.causal.attribution :as a]))
 
 (deftest interaction-is-shared-and-dummy-player-gets-zero
   (let [game #(if (and (% :a) (% :b)) 10.0 0.0)]

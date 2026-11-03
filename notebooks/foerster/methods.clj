@@ -16,17 +16,17 @@
 (ns foerster.methods
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.block :as block]
-            [org.replikativ.foerster.cascade :as cascade]
+            [org.replikativ.foerster.inference.cascade :as cascade]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.diagnostics :as d]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
-            [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.optimize :as optimize]
+            [org.replikativ.foerster.inference.optimize :as optimize]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.scmc :as scmc]
-            [org.replikativ.foerster.trace :as trace]
+            [org.replikativ.foerster.inference.scmc :as scmc]
+            [org.replikativ.foerster.runtime.trace :as trace]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -629,7 +629,7 @@ exact
 
 ;; ## MAP, the Laplace approximation and Pathfinder
 ;;
-;; `foerster.optimize` works on a block site's target directly, no
+;; `foerster.inference.optimize` works on a block site's target directly, no
 ;; sampling, no worlds:
 ;;
 ;; - **`map-estimate`**: the mode by L-BFGS (in the latents' own
@@ -746,7 +746,7 @@ exact
 
 ;; ## Conjugate parameters, never sampled
 ;;
-;; `foerster.conjugate` carries a conjugate parameter's posterior through
+;; `foerster.model.conjugate` carries a conjugate parameter's posterior through
 ;; the program instead of a sampled value (`normal-mean`, `beta-bernoulli`,
 ;; `gamma-poisson`, `dirichlet-discrete`): each datum is scored under the
 ;; posterior predictive and the posterior updated in closed form. Under SMC
@@ -758,9 +758,9 @@ exact
 ;;
 ;; Three further uses of the same machinery have notebooks of their own:
 ;;
-;; - **Steering a process** (`foerster.steer`): SMC over the scored steps of
+;; - **Steering a process** (`foerster.inference.steer`): SMC over the scored steps of
 ;;   a process without a density — a language model, a simulator — with a
-;;   value estimate as the twist (twisted SMC); `foerster.learn` turns the
+;;   value estimate as the twist (twisted SMC); `foerster.amortized.learn` turns the
 ;;   weighted trajectories into training data. See [Steering a
 ;;   Process](foerster.steering.html). *References*: Whiteley & Lee (2014);
 ;;   Zhao et al. (2024); Lew et al. (2023, SMC steering); Korbak et al.
@@ -768,7 +768,7 @@ exact
 ;; - **Guides**: a sample site's `:proposal` draws from a distribution the
 ;;   program computes and weighs by log p − log q, for every particle
 ;;   method — see [Choosing an Inference Algorithm](foerster.algorithms.html).
-;; - **Interventions and counterfactuals** (`foerster.counterfactual`):
+;; - **Interventions and counterfactuals** (`foerster.causal.counterfactual`):
 ;;   Pearl's `do` and the abduction–action–prediction counterfactual in
 ;;   twin worlds — see [Interventions and
 ;;   Counterfactuals](foerster.counterfactuals.html). *Reference*: Pearl

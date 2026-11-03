@@ -39,8 +39,8 @@
              point reads"
   (:require [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
-            [org.replikativ.foerster.gfi :as gfi]
-            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.effects.await :as aw]
             [org.replikativ.spindel.engine.addressing :as addressing]

@@ -24,7 +24,7 @@
             [org.replikativ.foerster.diagnostics :as diag]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.optimize :as opt]
+            [org.replikativ.foerster.inference.optimize :as opt]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.effects.savepoint :as savepoint]
             [org.replikativ.spindel.engine.core :as ec]
@@ -138,7 +138,7 @@
    :ipmcmc (fn [{:keys [particles iterations]}] (* 8 particles (inc iterations)))
    ;; an SMC of :particles for each proposed parameter, and an initial one
    :pmmh (fn [{:keys [particles iterations]}] (* particles (inc iterations)))
-   ;; at most :max-branches complete assignments (foerster.enumerate)
+   ;; at most :max-branches complete assignments (foerster.inference.enumerate)
    :enumerate (fn [{:keys [max-branches] :or {max-branches 100000}}] max-branches)})
 ;; Not yet: tempering and parallel tempering have costs their sizes do not
 ;; bound.
@@ -344,7 +344,7 @@
     (+ max-iterations draws)))
 
 (defn- optimizer
-  "`f` of foerster.optimize on a block site, for a sandbox: options checked
+  "`f` of foerster.inference.optimize on a block site, for a sandbox: options checked
   against `optimizer-limits` and the host's `:max-optimizer-work`, its draws
   from a seeded stream, the result as plain data (`:draws` draws for
   Laplace; no closures)."

@@ -16,8 +16,8 @@
    scheduling order; their budgets leave room for that."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.core :as infer]
-            [org.replikativ.foerster.kernel :as k]
-            [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.moves.kernel :as k]
+            [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.spin.cps :refer [spin]]

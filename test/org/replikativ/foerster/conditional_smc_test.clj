@@ -7,7 +7,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn- model []

@@ -8,7 +8,7 @@
             [org.replikativ.foerster.dist :as d]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.counterfactual :as cf]
+            [org.replikativ.foerster.causal.counterfactual :as cf]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as engine]

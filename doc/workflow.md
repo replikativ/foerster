@@ -13,8 +13,8 @@ mean and scale:
 (require '[org.replikativ.foerster.core :as infer]
          '[org.replikativ.foerster.diagnostics :as diagnostics]
          '[org.replikativ.foerster.measure :as m]
-         '[org.replikativ.foerster.gfi :as gfi]
-         '[org.replikativ.foerster.trace :as trace]
+         '[org.replikativ.foerster.runtime.gfi :as gfi]
+         '[org.replikativ.foerster.runtime.trace :as trace]
          '[org.replikativ.foerster.dist :as dist]
          '[org.replikativ.foerster.random :as random]
          '[org.replikativ.foerster.effects :refer [sample observe]]
@@ -44,7 +44,7 @@ Name the sites (`:id`): every step below reads them back by address.
 Before conditioning on data, check that the model generates data that look
 plausible. Run it with every observed site drawing a fresh value from its
 distribution instead of scoring the data — a policy option of
-`foerster.trace`:
+`foerster.runtime.trace`:
 
 ```clojure
 (defn prior-draw []
@@ -162,7 +162,7 @@ N(0, √2):
    (dist/logpdf (dist/normal 0.0 (Math/sqrt 2.0)) 1.0)]) ; -1.5155
 ```
 
-`foerster.conjugate` has the conjugate families
+`foerster.model.conjugate` has the conjugate families
 ([algorithms](algorithms.md#conjugate-parameters-never-sampled)); a model
 that carries its parameter's posterior there is also an exact reference for
 the same model sampled.
@@ -242,7 +242,7 @@ Two quantities, which answer different questions:
 
 ### To ArviZ
 
-`foerster.arviz` turns a Markov-chain measure into ArviZ's groups —
+`foerster.diagnostics.arviz` turns a Markov-chain measure into ArviZ's groups —
 posterior, log likelihood, observed data, and with `:predictive` the
 posterior predictive — for `az.from_dict`, so ArviZ's plots and
 diagnostics apply as they are:

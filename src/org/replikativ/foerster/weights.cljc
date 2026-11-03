@@ -6,7 +6,7 @@
   Two drivers keep the ledger: the population-path interpreter
   (`population/path`: tempered SMC, θ-vector populations, population
   programs) holds a mass state (`from-log`, `reweight`, `selected`,
-  `resampled`); the savepoint particle drivers (`foerster.smc`: SMC,
+  `resampled`); the savepoint particle drivers (`foerster.inference.smc`: SMC,
   importance sampling, streaming, batched and conditional SMC, PGAS, and
   through them PIMH, particle Gibbs and IPMCMC), whose raw weights live in
   their particles' worlds, account each barrier with `barrier`. Both fold

@@ -33,7 +33,7 @@ A `deterministic` site makes a derived quantity part of every particle's
 trace, so its posterior can be read without returning it from the model:
 `(m/measure-stats measure #(m/site-value % :bmi))` (see
 [posteriors](posteriors.md)). Traces that carry what a model computed are also
-the training data of learned proposals (`foerster.learn`).
+the training data of learned proposals (`foerster.amortized.learn`).
 
 Options of `sample` and `observe`:
 
@@ -93,7 +93,7 @@ gets a new one, so its random stream changes (see
 
 ## Memoization and random processes
 
-`org.replikativ.foerster.process` keeps state in the particle's world, so
+`org.replikativ.foerster.model.process` keeps state in the particle's world, so
 it forks with the particle (Anglican's `mem` and Chinese restaurant
 process):
 

@@ -5,7 +5,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.spindel.engine.executor :as executor]))
 
 (deftest batches-keep-the-evidence-and-the-posterior

@@ -2,9 +2,9 @@
   "Gen's weight identities for `inference.gfi`, checked by hand on small
   models, and MH-by-selection against an analytic posterior."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.foerster.gfi :as gfi]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.spindel.select :as sel]
-            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.engine.context :as context]
@@ -140,5 +140,5 @@
   (with-root [root]
     (let [model (binding [ec/*execution-context* root] (spin (throw (ex-info "boom" {}))))
           outcome (try (await-cps (gfi/simulate model)) (catch Exception e e))]
-      (is (= :org.replikativ.foerster.gfi/model-failed (:type (ex-data outcome))))
+      (is (= :org.replikativ.foerster.runtime.gfi/model-failed (:type (ex-data outcome))))
       (is (= "boom" (ex-message (ex-cause outcome)))))))

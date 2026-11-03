@@ -9,7 +9,7 @@
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.spindel.engine.context :as context]

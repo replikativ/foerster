@@ -5,9 +5,9 @@
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample factor intervene!]]
-            [org.replikativ.foerster.enumerate :as enumerate]
+            [org.replikativ.foerster.inference.enumerate :as enumerate]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn- burglary

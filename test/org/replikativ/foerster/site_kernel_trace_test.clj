@@ -6,8 +6,8 @@
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
-            [org.replikativ.foerster.kernel :as k]
-            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.moves.kernel :as k]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 

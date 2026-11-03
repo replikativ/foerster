@@ -112,8 +112,8 @@ resample a weighted measure first).
 ## Training data
 
 The particles' traces are also training data. For a steered program
-(`foerster.steer/model`), which records its states under `[:steer/state t]`
-and its reward under `:steer/reward`, `org.replikativ.foerster.learn` reads
+(`foerster.inference.steer/model`), which records its states under `[:steer/state t]`
+and its reward under `:steer/reward`, `org.replikativ.foerster.amortized.learn` reads
 them back:
 
 ```clojure

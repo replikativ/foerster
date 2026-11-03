@@ -2,15 +2,15 @@
   "Compositional probabilistic inference algorithms.
 
   Every method runs a probabilistic program as a savepoint handler: SMC
-  (`foerster.smc`) for the particle methods — smc-infer,
+  (`foerster.inference.smc`) for the particle methods — smc-infer,
   importance-sampling, pimh-infer, pgibbs-infer, pgas-infer, ipmcmc-infer,
   bbvi-infer and kernel-infer with a PInferenceKernel — and replay plus
-  accept over traces (`foerster.trace`) for the Markov-chain kernels.
+  accept over traces (`foerster.runtime.trace`) for the Markov-chain kernels.
 
   Pure inference (`:world-policy :fresh`, the default) runs in fresh worlds;
   `:world-policy :fork` in canonical forks of the caller's world (see
   `in-canonical-worlds`; methods that run several times fork the caller
-  once, `foerster.canonical`). Particle measures hold `Sample`s (result, trace,
+  once, `foerster.runtime.canonical`). Particle measures hold `Sample`s (result, trace,
   and a canonical particle's world descriptor).
 
   All functions return Spin<EmpiricalMeasure> for composability;
@@ -20,21 +20,21 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.kernel :as k]
-            [org.replikativ.foerster.transition :as transition]
-            [org.replikativ.foerster.smc :as smc]
-            [org.replikativ.foerster.particle-mcmc :as pmcmc]
-            [org.replikativ.foerster.smc2 :as smc2]
-            [org.replikativ.foerster.enumerate :as enumerate]
-            [org.replikativ.foerster.gfi :as gfi]
-            [org.replikativ.foerster.parallel-tempering :as parallel-tempering]
-            [org.replikativ.foerster.tempering :as tempering]
-            [org.replikativ.foerster.gradient :as grad]
-            [org.replikativ.foerster.trace :as itrace]
-            [org.replikativ.foerster.canonical :as canonical :refer [close-canonical! canonical-recovery share
-                                                                     balance-op frozen-source with-frozen-caller]]
+            [org.replikativ.foerster.moves.kernel :as k]
+            [org.replikativ.foerster.moves.transition :as transition]
+            [org.replikativ.foerster.inference.smc :as smc]
+            [org.replikativ.foerster.inference.particle-mcmc :as pmcmc]
+            [org.replikativ.foerster.inference.smc2 :as smc2]
+            [org.replikativ.foerster.inference.enumerate :as enumerate]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
+            [org.replikativ.foerster.inference.parallel-tempering :as parallel-tempering]
+            [org.replikativ.foerster.inference.tempering :as tempering]
+            [org.replikativ.foerster.inference.gradient :as grad]
+            [org.replikativ.foerster.runtime.trace :as itrace]
+            [org.replikativ.foerster.runtime.canonical :as canonical :refer [close-canonical! canonical-recovery share
+                                                                             balance-op frozen-source with-frozen-caller]]
             #?(:clj [org.replikativ.foerster.analysis :as analysis])
-            #?(:clj [org.replikativ.foerster.compiled :as compiled])
+            #?(:clj [org.replikativ.foerster.inference.compiled :as compiled])
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.spindel.engine.core :as rtc]
@@ -94,7 +94,7 @@
   #{:world-policy :world-opts :authority :grant :executor :resample-threshold :policy :seed})
 
 (def ^:private rejuvenation-options
-  "Resample-move and SMCP3 (`foerster.smc`): SMC and PIMH in fresh worlds
+  "Resample-move and SMCP3 (`foerster.inference.smc`): SMC and PIMH in fresh worlds
   only."
   #{:anchors :rejuvenate :smcp3})
 
@@ -138,7 +138,7 @@
                     {:type ::invalid-world-policy :options (vec given)}))))
 
 (defn- kernel-policy
-  "An `foerster.trace` policy that asks `kernel` (a PInferenceKernel) for
+  "An `foerster.runtime.trace` policy that asks `kernel` (a PInferenceKernel) for
   every latent site's value; the value's `:log-weight-delta` (default 0) is
   what it adds to the particle's weight."
   [kernel]
@@ -177,7 +177,7 @@
       execute each particle (each chain) in a frozen canonical Yggdrasil
       world that is discarded after the final values are captured; chains
       fork one frozen fork of the caller made when inference starts and
-      reuse nothing incrementally (`foerster.trace/reexecute`)
+      reuse nothing incrementally (`foerster.runtime.trace/reexecute`)
     - :world-opts - Optional :systems/:rights/:snapshots policy forwarded to
       canonical forks; lifecycle fields are owned by inference
     - :authority, :grant - budgets (doc/worlds.md); particle kernels only
@@ -344,7 +344,7 @@
   #{:max-branches :policy :executor :seed :world-policy :world-opts :authority :grant})
 
 (defn- enumeration
-  "Exact enumeration (`foerster.enumerate`) of `model-task` in the worlds
+  "Exact enumeration (`foerster.inference.enumerate`) of `model-task` in the worlds
   `opts`' `:world-policy` names: under `:fork` the branches start from a
   canonical fork of the caller's world, as SMC's particles do, see each
   their own copy of its registered state, and are discarded before the
@@ -361,7 +361,7 @@
   "Sequential Monte Carlo: `num-particles` particles run `model-task` (a
   spin); at every observation the population is resampled when its
   effective sample size falls below `:resample-threshold`·N. Runs on
-  savepoints (`foerster.smc/smc`); the measure holds `Sample`s, and its
+  savepoints (`foerster.inference.smc/smc`); the measure holds `Sample`s, and its
   `m/log-marginal` estimates the evidence.
 
   Options:
@@ -372,10 +372,10 @@
     :authority, :grant   a world.scope/PResourceAuthority and the budget the
                          inference draws from the caller's wallet (:fork)
     :executor            the executor the worlds run on (default: spindel's)
-    :policy              a `foerster.trace/policy` deciding the sites
+    :policy              a `foerster.runtime.trace/policy` deciding the sites
                          (constraints, interventions, proposals)
     :anchors, :rejuvenate  resample-move: after each resampling, MH moves
-                         from anchored sites (`foerster.smc/smc`; :fresh only)
+                         from anchored sites (`foerster.inference.smc/smc`; :fresh only)
 
   Returns a spin resolving the EmpiricalMeasure.
 
@@ -386,7 +386,7 @@
   (particles model-task num-particles opts))
 
 (defn tempered-infer
-  "Tempered SMC (`foerster.tempering`): `num-particles` complete runs of
+  "Tempered SMC (`foerster.inference.tempering`): `num-particles` complete runs of
   `model-task`, moved from the prior to the posterior through the targets
   p(x)·L(x)^β with an adaptive schedule of β. Explores posteriors whose
   modes a Markov chain cannot cross, and estimates the evidence.
@@ -406,7 +406,7 @@
     #(on-savepoints (tempering/tempered model-task num-particles (canonical/run-options %)))))
 
 (defn parallel-tempering-infer
-  "Non-reversible parallel tempering (`foerster.parallel-tempering`) of a
+  "Non-reversible parallel tempering (`foerster.inference.parallel-tempering`) of a
   `model-task` that is one block site with a `:sample` and
   `:sample-log-density`: `num-chains` chains on the path from that draw
   density to the posterior, swapping states between neighbours, with the
@@ -478,7 +478,7 @@
   new inputs (more weeks, other covariates) predicts them, its latent sites
   held where the posterior has them and drawn from their prior where it
   does not (a new group's effect). `:interventions` ({selector transform},
-  as `foerster.trace/policy` takes them) sets sites by the do-operator
+  as `foerster.runtime.trace/policy` takes them) sets sites by the do-operator
   first — a scenario under the posterior.
 
   Returns a spin resolving a vector of {:value v :observations {address x}}:
@@ -548,7 +548,7 @@
     num-iterations (sweeps)
     opts: the particle methods' options, and :anchors, :rejuvenate for
           resample-move inside each sweep, the retained particle included
-          (`foerster.smc/smc`; :fresh only)
+          (`foerster.inference.smc/smc`; :fresh only)
 
   Returns: Spin<EmpiricalMeasure> of every sweep's particles, each sweep
   normalized to total weight one."
@@ -801,7 +801,7 @@
 (defn- variational-draw
   "The proposal of a savepoint BBVI iteration: a latent site whose q (the
   site's prior, the first time its address is seen) has a gradient draws from
-  q; `foerster.trace/policy` then weights it by p/q."
+  q; `foerster.runtime.trace/policy` then weights it by p/q."
   [q-dists]
   (fn [sp _old-entry]
     (let [address (:savepoint/address sp)
@@ -977,10 +977,10 @@
                     (dissoc o :world-policy)))))))
 
 (defn- compiled-rmh
-  "`:rmh` on the model compiled (`foerster.compiled`): the spin must come
+  "`:rmh` on the model compiled (`foerster.inference.compiled`): the spin must come
   from an `analysis/model` whose structure is static given its arguments.
   Opt-in and JVM-only; continuous latents, single-site random-walk MH with
-  a fixed step; the chains run on `:executor` (see `foerster.compiled`)."
+  a fixed step; the chains run on `:executor` (see `foerster.inference.compiled`)."
   #?(:clj [model iterations burn step-size chains opts]
      :cljs [_model _iterations _burn _step-size _chains _opts])
   #?(:clj
@@ -1030,12 +1030,12 @@
                                         (`k/nuts-kernel`). :rmh with
                                         :compiled? true (JVM) runs on the
                                         model compiled to plain functions
-                                        (`foerster.compiled`): a model from
+                                        (`foerster.inference.compiled`): a model from
                                         `analysis/model` whose structure is
                                         static, else refused with the
                                         reasons; its traces hold the latent
                                         values only
-    :kernel                             :kernel (a `foerster.kernel` kernel)
+    :kernel                             :kernel (a `foerster.moves.kernel` kernel)
                                         and :chains or :particles
     :pmmh                               :particles per SMC, :iterations,
                                         :params (and `smc2/pmmh` options)

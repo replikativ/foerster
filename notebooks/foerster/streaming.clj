@@ -12,7 +12,7 @@
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -108,7 +108,7 @@
 
 ;; Static parameters of a streamed model degenerate under plain SMC: give
 ;; them resample-move moves (`:anchors {:lag L}` bounds the replay), carry a
-;; conjugate posterior (`foerster.conjugate`), or infer them by SMC²
+;; conjugate posterior (`foerster.model.conjugate`), or infer them by SMC²
 ;; (`smc2/smc2`, the same step shape). For a stream of exchangeable data,
 ;; sequential core-set Monte Carlo (`scmc/scmc`) runs in bounded memory. See
 ;; [Inference Methods](foerster.methods.html).

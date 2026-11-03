@@ -7,7 +7,7 @@
             [org.replikativ.foerster.diagnostics :as d]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
-            [org.replikativ.foerster.gfi :as gfi]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as rtc]

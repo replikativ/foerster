@@ -9,29 +9,37 @@ protocol-only runtime access and `*in-trampoline*` apply here unchanged.
 
 ```
 src/org/replikativ/foerster/
-├── core.cljc          # public entry: smc-infer, kernel-infer, pgibbs-infer, …
-│                      #   in-canonical-worlds (:world-policy :fork)
-├── canonical.cljc     # one frozen fork of the caller per inference of several runs
-├── program.cljc       # scoped programmable populations; direct PMeasure results
-├── weights.cljc       # normalized selection weights and total mass
-├── population/path.cljc # shared numeric/trace weighting, selection, retention
-├── transition.cljc    # prepared Markov interpreter (chains and population moves)
-├── transition_context.cljc # target, replay and retention context
-├── transport.cljc     # scored forward/backward proposal corrections
-├── particle_mcmc.cljc # common PIMH / conditional-sweep chain orchestration
-├── scope.cljc cursor.cljc trace_owner.cljc # lifetime, linear handles, reclamation
-├── execution.cljc     # independent CPS batch execution
-├── smc.cljc smc2.cljc # savepoint/streaming/conditional and nested filters
-├── trace.cljc         # policies, shared re-execution, keyed MH / finite Gibbs
-├── effects.cljc       # sample / observe / factor sites
-├── measure.cljc       # EmpiricalMeasure, Sample, world-descriptors
-├── kernel.cljc        # kernels (prior, MH descriptions, PInferenceKernel / PMarkovKernel)
-├── block.cljc hmc.cljc          # numerical blocks, HMC-within-Gibbs
-├── dist.cljc          # portable distributions (raster's names/params)
-├── random.cljc        # xoshiro128** streams: site-keyed, seeded
-├── gfi.cljc involutive.cljc counterfactual.cljc mechanism.cljc
-└── gradient.cljc reparametrize.cljc address.cljc
+├── core.cljc           # public entry: infer, smc-infer, kernel-infer, … ;
+│                       #   :world-policy, options, dispatch
+├── dist.cljc effects.cljc block.cljc   # what models are written with
+├── measure.cljc diagnostics.cljc random.cljc weights.cljc
+│                       #   results, checks, seeding, population mass
+├── program.cljc        # user inference programs over populations
+├── sandbox.clj         # the interpreter-sandbox surface (dvergr)
+├── analysis.clj amortized.cljc         # facades of analysis/ and amortized/
+├── model/              # mechanism process conjugate: model-language extensions
+├── runtime/            # scope execution cursor trace trace_owner gfi canonical:
+│                       #   worlds, traces, lifetimes, the frozen caller fork
+├── population/         # path (the population-path interpreter), theta
+│                       #   (populations on θ vectors)
+├── moves/              # kernel transition transition_context transport involutive
+│                       #   block_mh hmc nuts: Markov moves and their interpreter
+├── inference/          # smc smc2 enumerate cascade particle_mcmc tempering
+│                       #   parallel_tempering scmc optimize gradient compiled steer
+├── diagnostics/arviz.cljc
+├── causal/             # identification model counterfactual attribution
+├── amortized/          # compiler learn
+└── analysis/           # derive
 ```
+
+The top level is the public API (what users require to write models and read
+results) and its foundations; folders hold the implementation. Layers, lowest
+first: `random`; `dist`, `weights`; `measure`, `effects`, `block`;
+`diagnostics`; `model/`; `runtime/`; `analysis/`; `moves/`; `population/`;
+`inference/`; `causal/`; `core`, `program`; `amortized/`, `sandbox`. A
+namespace requires only its own layer and those below;
+`test/org/replikativ/foerster/layout_test.clj` checks it, so a new namespace
+needs a layer there.
 
 ## Rules
 

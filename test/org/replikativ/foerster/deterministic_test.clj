@@ -6,7 +6,7 @@
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [deterministic observe sample]]
-            [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]

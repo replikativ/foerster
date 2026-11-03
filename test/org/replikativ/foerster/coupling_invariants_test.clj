@@ -8,9 +8,9 @@
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample]]
-            [org.replikativ.foerster.gfi :as gfi]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn- next-after

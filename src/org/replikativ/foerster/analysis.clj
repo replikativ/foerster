@@ -31,7 +31,7 @@
   off it.
 
   `facts` derives from the graph: the support of each site, finite latent
-  sites, plates, conjugate pairs (`foerster.conjugate`'s families, and a
+  sites, plates, conjugate pairs (`foerster.model.conjugate`'s families, and a
   Normal mean affine in a Normal prior, `:normal-affine` with each child's
   link and the sites it is conditional on) and Markov blankets. A latent
   site whose value, or a value computed from it, goes anywhere but a
@@ -76,14 +76,14 @@
 
 (def conjugate-families
   "Prior constructor → likelihood constructor → [the likelihood argument the
-  parameter must be, exactly; `foerster.conjugate` family]."
+  parameter must be, exactly; `foerster.model.conjugate` family]."
   '{beta {bernoulli [0 :beta-bernoulli] flip [0 :beta-bernoulli] binomial [1 :beta-binomial]}
     gamma {poisson [0 :gamma-poisson]}
     normal {normal [0 :normal-mean]}
     dirichlet {discrete [0 :dirichlet-discrete]}})
 
 (def implemented-families
-  "Families `foerster.conjugate` implements."
+  "Families `foerster.model.conjugate` implements."
   #{:normal-mean :beta-bernoulli :gamma-poisson :dirichlet-discrete})
 
 ;; -----------------------------------------------------------------------------
@@ -542,7 +542,7 @@
 (defn instance
   "As `specialize`, but plates with known control are unrolled too: the
   model's instance graph for its data, one site per site a run meets. Its
-  size grows with the data; for compiling a density (`foerster.compiled`)."
+  size grows with the data; for compiling a density (`foerster.inference.compiled`)."
   [model & args]
   (let [{:keys [ns params body]} (::source (meta model))]
     (when-not (every? symbol? params)
@@ -788,7 +788,7 @@
           :sequential (str "  sequential loop over " (pr-str (:over f)) ": " (addrs (:sites f)))
           :conjugate (str "  conjugate " (name (:family f)) ": " (addr (:prior f))
                           " with " (addrs (:children f))
-                          (when-not (:implemented? f) " (family not in foerster.conjugate)"))
+                          (when-not (:implemented? f) " (family not in foerster.model.conjugate)"))
           :linear-gaussian (str "  linear-Gaussian block: " (addrs (:latents f))
                                 " observed by " (addrs (:observations f)))
           :markov-blanket (str "  Markov blanket of " (addr (:site f)) ": "

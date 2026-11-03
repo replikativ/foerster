@@ -6,9 +6,9 @@
 ;; code runs natively in Clojure and ClojureScript.
 
 (ns foerster.causal-workflow
-  (:require [org.replikativ.foerster.causal-model :as cm]
-            [org.replikativ.foerster.counterfactual :as cf]
-            [org.replikativ.foerster.attribution :as attribution]
+  (:require [org.replikativ.foerster.causal.model :as cm]
+            [org.replikativ.foerster.causal.counterfactual :as cf]
+            [org.replikativ.foerster.causal.attribution :as attribution]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.core :as sp]))

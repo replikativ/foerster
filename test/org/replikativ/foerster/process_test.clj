@@ -8,7 +8,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.process :as process]
+            [org.replikativ.foerster.model.process :as process]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 

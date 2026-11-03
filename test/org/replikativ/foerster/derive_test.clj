@@ -2,11 +2,11 @@
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.analysis :as a]
             [org.replikativ.foerster.benchmark-test :as b]
-            [org.replikativ.foerster.derive :as derive]
+            [org.replikativ.foerster.analysis.derive :as derive]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.smc :as smc]))
+            [org.replikativ.foerster.inference.smc :as smc]))
 
 (def ^:private weights [0.2 0.5 0.3])
 (def ^:private means [-2.0 0.0 3.0])

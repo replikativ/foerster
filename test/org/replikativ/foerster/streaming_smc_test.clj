@@ -4,8 +4,8 @@
   each push the particle filter's x_t must match the Kalman filtering
   distribution, and its evidence the Kalman marginal likelihood."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.foerster.smc :as smc]
-            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.inference.smc :as smc]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.spindel.engine.context :as context]

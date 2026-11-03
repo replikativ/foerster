@@ -3,17 +3,17 @@
 ;; Some processes are random without a `sample` site: a language model
 ;; writing a sentence, a simulator taking a step. We cannot score their
 ;; draws, but we can still steer them — run many copies, and keep the ones a
-;; reward favours. `foerster.steer` turns such a process into a program for
+;; reward favours. `foerster.inference.steer` turns such a process into a program for
 ;; SMC whose target is the process's own law tilted by the reward,
-;; p(trajectory) · exp(reward). `foerster.learn` reads the trajectories back
+;; p(trajectory) · exp(reward). `foerster.amortized.learn` reads the trajectories back
 ;; as training data.
 
 (ns foerster.steering
   (:require [org.replikativ.foerster.core :as infer]
-            [org.replikativ.foerster.learn :as learn]
+            [org.replikativ.foerster.amortized.learn :as learn]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.steer :as steer]
+            [org.replikativ.foerster.inference.steer :as steer]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [scicloj.kindly.v4.kind :as kind]))

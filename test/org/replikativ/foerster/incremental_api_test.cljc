@@ -6,12 +6,12 @@
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.dist :as d]
             [org.replikativ.foerster.effects :refer [sample observe]]
-            #?(:clj [org.replikativ.foerster.gfi :as gfi])
-            [org.replikativ.foerster.kernel :as k]
+            #?(:clj [org.replikativ.foerster.runtime.gfi :as gfi])
+            [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.program :as ip]
-            #?(:clj [org.replikativ.foerster.trace :as it])
-            [org.replikativ.foerster.transition :as transition]
+            #?(:clj [org.replikativ.foerster.runtime.trace :as it])
+            [org.replikativ.foerster.moves.transition :as transition]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
@@ -59,8 +59,9 @@
          (is (= :finite-gibbs (k/transition-id (k/finite-gibbs-kernel 1 [:coin 0]))))
          (is (true? (get-in (transition/prepare kernel) [:capabilities :tempering?])))
          (is (= 900 (count samples)))
+         ;; seed-to-seed SD of each coin's estimate over 12 seeds: 0.043
          (doseq [i [0 1]]
-           (is (< (Math/abs (- (b/w-mean #(if (nth % i) 1.0 0.0) samples) (/ 0.27 0.41))) 0.1)))))
+           (is (< (Math/abs (- (b/w-mean #(if (nth % i) 1.0 0.0) samples) (/ 0.27 0.41))) 0.16)))))
 
      (deftest keyed-populations-can-advance-copy-fork-and-move-without-mutating-the-source
        (let [before (atom nil) after (atom nil) masses (atom nil)
@@ -172,7 +173,7 @@
                  (is (contains? (:trace/entries source) :later-observation))
                  (let [next (await-cps (it/reexecute source #{:switch}
                                                      (it/policy {:keep? true :draw (draw-switch false)}) {:seed 410}))]
-                   (is (= :prefix (:org.replikativ.foerster.trace/restart next)))
+                   (is (= :prefix (:org.replikativ.foerster.runtime.trace/restart next)))
                    (is (false? (get (it/choices next) :switch)))
                    (is (not (contains? (:trace/entries next) :later-observation)))
                    (is (= [(get (it/choices source) :prefix) false] (:trace/result next))))

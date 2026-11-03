@@ -106,7 +106,7 @@ observation into the model.
 ## Gen
 
 foerster implements Gen's generative function interface over its traces
-(`foerster.gfi`). Each operation is a CPS operation: `await` it in a spin.
+(`foerster.runtime.gfi`). Each operation is a CPS operation: `await` it in a spin.
 
 | Gen | foerster |
 |---|---|
@@ -145,7 +145,7 @@ Not in foerster yet:
   reversible jump — are `involutive/step` with `:removed`.)
 - Gradient-trained parameters (`@param`, `train!`) and amortized training
   of guides. A model's few parameters fit by maximum marginal likelihood
-  (`learn/maximize-evidence`); `foerster.learn` exports trajectories as
+  (`learn/maximize-evidence`); `foerster.amortized.learn` exports trajectories as
   training data for guides, which train elsewhere (finetune-rstr).
 - `propose`, `project` and trace translators (enumeration is
   `{:method :enumerate}`).

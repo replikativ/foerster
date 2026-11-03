@@ -10,7 +10,7 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.core :as inference]
-            [org.replikativ.foerster.kernel :as kernel]
+            [org.replikativ.foerster.moves.kernel :as kernel]
             [org.replikativ.foerster.measure :as measure]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.atom :as sa]

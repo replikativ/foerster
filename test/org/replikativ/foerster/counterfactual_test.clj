@@ -4,11 +4,11 @@
   posterior over the confounder, and the probability of necessity of a binary
   model matches its analytic value."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.foerster.counterfactual :as cf]
-            [org.replikativ.foerster.mechanism :as mech]
+            [org.replikativ.foerster.causal.counterfactual :as cf]
+            [org.replikativ.foerster.model.mechanism :as mech]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.gfi :as gfi]
-            [org.replikativ.foerster.attribution :as attr]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
+            [org.replikativ.foerster.causal.attribution :as attr]
             [org.replikativ.foerster.effects :refer [sample observe deterministic]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]

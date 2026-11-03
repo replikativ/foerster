@@ -86,12 +86,12 @@ runs them side by side.
   `:batch`) — B. Paige, F. Wood, A. Doucet, Y. W. Teh. *Asynchronous Anytime
   Sequential Monte Carlo.* NeurIPS 2014.
   [arXiv:1407.2864](https://arxiv.org/abs/1407.2864) — the stabilised
-  branching rule (Eq. 14) `foerster.cascade` uses.
+  branching rule (Eq. 14) `foerster.inference.cascade` uses.
 - **Anytime Monte Carlo** — L. M. Murray, S. S. Singh, A. Lee. *Anytime Monte
   Carlo.* Data-Centric Engineering 2:e27, 2021.
   [arXiv:1612.03319](https://arxiv.org/abs/1612.03319) — why a run must end
   by count, not by wall clock.
-- **Delayed sampling** (`foerster.conjugate`) — L. M. Murray, D. Lundén,
+- **Delayed sampling** (`foerster.model.conjugate`) — L. M. Murray, D. Lundén,
   J. Kudlicka, D. Broman, T. B. Schön. *Delayed Sampling and Automatic
   Rao-Blackwellization of Probabilistic Programs.* AISTATS 2018.
   [arXiv:1708.07787](https://arxiv.org/abs/1708.07787)
