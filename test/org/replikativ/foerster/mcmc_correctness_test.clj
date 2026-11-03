@@ -15,6 +15,7 @@
   correlated, so the tolerances are wide for their count; each was checked to
   reject the specific wrong ratio it is there for."
   (:require [clojure.test :refer [deftest is testing]]
+            [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.trace :as trace]
@@ -69,7 +70,7 @@
 
 (def ^:private kernels
   [["single-site, prior proposal" {}]
-   ["single-site, random walk" {:propose (itrace/random-walk-proposal 0.8)}]])
+   ["single-site, random walk" {:propose (proposal/random-walk 0.8)}]])
 
 ;; Two independent conjugate pairs, interleaved:
 ;;   x ~ N(0,1), 2 | x ~ N(x,1)   =>  x | y ~ N(1, 1/2)
@@ -92,6 +93,19 @@
         (is (< (Math/abs (- (:mean w) -1.0)) 0.2) (str "w mean " (:mean w)))
         (is (< 0.3 (:var x) 0.75) (str "x var " (:var x)))
         (is (< 0.3 (:var w) 0.75) (str "w var " (:var w)))))))
+
+;; An independence proposal q = N(0.5, 1.5) is asymmetric: the reverse move
+;; must be scored with q's own density of the old value. Scored under the
+;; prior N(0, 1) instead, the chain targets π·q/p₀: for x a mean of about
+;; 1.54 and a variance of about 0.69, against the posterior's 1 and 0.5.
+(deftest an-asymmetric-proposal-is-scored-in-both-directions
+  (let [chain (states interleaved-model {:propose (proposal/distribution (dist/normal 0.5 1.5))} 4000 200 3)
+        x (stats (map first chain))
+        w (stats (map second chain))]
+    (is (< (Math/abs (- (:mean x) 1.0)) 0.2) (str "x mean " (:mean x)))
+    (is (< (Math/abs (- (:mean w) -1.0)) 0.2) (str "w mean " (:mean w)))
+    (is (< 0.3 (:var x) 0.65) (str "x var " (:var x)))
+    (is (< 0.3 (:var w) 0.65) (str "w var " (:var w)))))
 
 ;; A chain: x ~ N(0,1), z | x ~ N(x,1), 3 | z ~ N(z,1).
 ;;   y | x ~ N(x,2)  =>  x | y ~ N(1, 2/3);   z | y ~ N(2, 2/3)

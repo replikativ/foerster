@@ -48,16 +48,13 @@ the evidence is `:unverified`.
 ```clojure
 ;; a proposal that knows where the data is
 (infer/importance-sampling (model) 1000
-  {:policy (trace/policy
-            {:draw (fn [sp _]
-                     (when (= :mu (:savepoint/address sp))
-                       (let [q (dist/normal 7.0 1.0)
-                             v (dist/draw q)]
-                         {:value v :log-proposal (dist/logpdf q v)})))})})
+  {:proposal (proposal/only #{:mu} (proposal/distribution (dist/normal 7.0 1.0)))})
 ```
 
-A policy's `:draw` is a proposal chosen from outside the program, per
-inference call. A proposal the program itself computes — from its data, or
+A `:proposal` (`foerster.proposal`, [algorithms](algorithms.md#proposals))
+is chosen from outside the program, per inference call; it becomes the
+policy's `:draw`, which also takes a raw `(fn [savepoint old-entry])` for
+internal policies. A proposal the program itself computes — from its data, or
 an amortized guide — is a sample site's `:proposal` option instead
 ([language](language.md#sites)); it is weighed the same way, and a `:draw`
 that answers for a site takes precedence over it.
@@ -78,7 +75,7 @@ and release owned sessions before returning.
 | Option | |
 |---|---|
 | `:select` `(fn [trace iteration])` | `{:targets #{address} :log-selection (fn [trace])}` — which sites to move and the log probability of selecting them (default: one latent uniformly) |
-| `:propose` `(fn [savepoint old-entry])` | the proposal at a target (default: the prior; `trace/random-walk-proposal` for a random walk) — the reverse move is scored under the prior, so a custom proposal must be the prior or symmetric |
+| `:propose` | a `foerster.proposal` for the target (default `proposal/prior`; `proposal/random-walk` for a random walk); the reverse move is scored with its `log-q`, so asymmetric proposals are exact |
 | `:step` | for `mh-chain`: a step function replacing `mh-step` (e.g. `hmc/within-gibbs`) |
 | `:on-step` | for `mh-chain`: `(fn [{:keys [trace accepted?]}])` called after every step |
 | `:first-iteration` | for `mh-chain`: the number of its first move; a move's randomness is keyed by its number. Without it the numbers continue from a counter the trace's world keeps, so calling `mh-chain` again on the same trace draws afresh |
@@ -111,28 +108,33 @@ values it moved into the auxiliary variables, as in a split of one
 component into two and the matching merge
 (`test/…/reversible_jump_test.clj`).
 
-## A kernel
+## A proposal
 
-A `PInferenceKernel` (`foerster.moves.kernel`) decides latent sites of SMC:
+A proposal (`foerster.proposal`) draws a latent site's value. `from-fn`
+makes one from a function of the site:
 
 ```clojure
-(def fixed
-  (reify k/PInferenceKernel
-    (kernel-id [_] :fixed)
-    (step [_ world checkpoint trace]
-      ;; checkpoint: {:source distribution :options site-options :address a}
-      {:value 42.0 :log-weight-delta -1.0})))
+(def near-data
+  (proposal/from-fn
+   (fn [{:keys [address dist old trace]}]   ; old: the value being moved, if any
+     (when (= :mu address)                  ; nil: the site's own law decides
+       (let [q (dist/normal 7.0 1.0) v (dist/draw q)]
+         {:value v :log-q (dist/logpdf q v)})))
+   ;; optional: the density of proposing v, which an MH move scores its
+   ;; reverse with
+   (fn [_ v] (dist/logpdf (dist/normal 7.0 1.0) v))))
 
-(infer/kernel-infer (model) fixed 100 {:barrier-policy :none})
+(infer/smc-infer (model) 100 {:proposal near-data})
 ```
 
-`step` returns the site's `:value` and optionally `:log-weight-delta`, what
-the value adds to the particle's weight (default 0: a draw from the site's
-distribution, which cancels against its density).
+`(:trace site)` is a delay of the particle's choices so far. Implementing
+`PProposal` (`propose`, `log-q`, `verified?`) directly works as well;
+`verified?` says whether `log-q` is the density `propose` draws from by
+construction, which decides whether SMC's evidence is `:unbiased`.
 
-A custom `PInferenceKernel` is an SMC site-proposal policy. Markov-chain
-descriptions implement the separate `PMarkovKernel` protocol (`transition-id`,
-not a site `step`) and are compiled by `foerster.moves.transition`. They are combined with `k/cycle` and `k/mixture`
+A proposal is not a Markov kernel. Markov-chain descriptions implement
+`PMarkovKernel` (`transition-id`) and are compiled by
+`foerster.moves.transition`. They are combined with `k/cycle` and `k/mixture`
 ([algorithms](algorithms.md#kernels)); a move of your own over traces is an
 `mh-chain` `:step`.
 

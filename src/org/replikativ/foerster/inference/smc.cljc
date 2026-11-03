@@ -28,6 +28,7 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.contract :as contract]
+            [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.foerster.inference.particle-mcmc :as pmcmc]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.dist :as dist]
@@ -243,7 +244,7 @@
                    {:targets #{} :log-selection (constantly 0.0)}
                    {:targets #{(random/pick-uniformly ms)}
                     :log-selection #(- (Math/log (double (count-movable %))))})))
-     :propose (or (:propose rejuvenate) itrace/prior-proposal)
+     :propose (or (:propose rejuvenate) proposal/prior)
      :policy-options (itrace/policy-options policy)
      :constraints (constrained-values
                    (if lag
@@ -327,13 +328,21 @@
   (and (= itrace/choose-site (:savepoint/site sp))
        (:stream (:options (:savepoint/payload sp)))))
 
+(defn- verified-proposal?
+  "Whether `p` is a `foerster.proposal` whose density is right by
+  construction (`proposal/verified?`)."
+  [p]
+  (and (proposal/proposal? p) (proposal/verified? p)))
+
 (defn- fixing-policy?
-  "Whether `policy` only fixes or intervenes on sites: made by
-  `foerster.runtime.trace/policy` with no options but `:constraints` and
-  `:interventions`."
+  "Whether `policy` only fixes or intervenes on sites, or proposes with a
+  verified proposal: made by `foerster.runtime.trace/policy` with no options
+  but `:constraints`, `:interventions` and such a `:draw`."
   [policy]
   (when-let [options (itrace/policy-options policy)]
-    (every? #{:constraints :interventions} (keep (fn [[k v]] (when (some? v) k)) options))))
+    (every? (fn [[k v]] (or (nil? v) (#{:constraints :interventions} k)
+                            (and (= :draw k) (verified-proposal? v))))
+            options)))
 
 (defn evidence-status
   "The normalizer status (`foerster.contract`) of savepoint SMC run with
@@ -343,18 +352,29 @@
   Heine 2016), and resample-move's MH moves leave each barrier's target
   invariant. A `:policy` that only fixes sites (`:constraints`, as PMMH's
   θ) or intervenes on them keeps that: the estimate is of the evidence of
-  the constrained or intervened program. :unverified when a correction
+  the constrained or intervened program. So does a built-in proposal
+  (`:proposal`, `foerster.proposal/verified?`): the weights correct for it
+  exactly. :unverified when a correction
   rests on the caller (a policy's proposals or other options, a policy
   function not made by `foerster.runtime.trace/policy`, SMCP3's kernels, a
   rejuvenation `:propose`), for conditional SMC (`:retained`), and for the
   variants not argued here (`:enumerate`, `:batch`, forked populations)."
   [{:keys [policy retained ancestor-sampling? enumerate smcp3 batch adopt rejuvenate]}]
   (if (or (and policy (not (fixing-policy? policy)))
-          retained ancestor-sampling? enumerate smcp3 batch adopt (:propose rejuvenate))
+          retained ancestor-sampling? enumerate smcp3 batch adopt
+          (and (:propose rejuvenate) (not (verified-proposal? (:propose rejuvenate)))))
     :unverified
     :unbiased))
 
+(declare run-particles*)
+
 (defn- run-particles
+  "`run-particles*` with the `:proposal` option made the policy's `:draw`
+  (`foerster.runtime.trace/with-proposal`)."
+  [model n opts callbacks]
+  (run-particles* model n (itrace/with-proposal opts) callbacks))
+
+(defn- run-particles*
   "The particle machinery shared by `smc` and `stream`. Starts `model` with
   `n` particles and returns `{:supply! (fn [value])}`.
 

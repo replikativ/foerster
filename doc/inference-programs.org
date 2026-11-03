@@ -150,9 +150,8 @@ estimation need separate contracts and retained inner state.
 - =inference/particle_mcmc.cljc= owns sweep normalization, PIMH acceptance and conditional
   SMC chain retention. Fresh-savepoint and canonical-world drivers inject their
   sweep operations instead of maintaining duplicate statistical chain loops.
-- =PInferenceKernel= describes site proposals; =PMarkovKernel= describes Markov
-  transitions. Existing constructors are unchanged. Use =transition-id= for the
-  latter; they no longer pretend to implement a site =step=.
+- =foerster.proposal= describes site proposals; =PMarkovKernel= describes Markov
+  transitions (=transition-id=).
 - =moves/transition.cljc= is the shared interpreter for built-in chains and population
   moves. Prepared transitions retain per-particle counters and tuning state;
   resampling resets that state for new descendants. =moves/transport.cljc= separately

@@ -3,6 +3,7 @@
   mu ~ N(2z, 1), y = 1.5 ~ N(mu, 0.5). Cycled or mixed with single-site
   moves, and nested, the random walk reaches the posterior of both sites."
   (:require [clojure.test :refer [deftest is testing]]
+            [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.dist :as dist]
@@ -47,7 +48,7 @@
 
 (deftest only-chain-kernels-compose
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Only Markov-chain kernels compose"
-                        (k/cycle 10 [(k/prior-kernel)]))))
+                        (k/cycle 10 [proposal/prior]))))
 
 (deftest a-component-keeps-its-state-across-iterations
   ;; NUTS adapts as it runs: in a cycle its step is made once per chain, not

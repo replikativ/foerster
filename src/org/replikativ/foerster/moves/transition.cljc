@@ -67,7 +67,7 @@
          ;; A block kernel's move is taken to be symmetric (the random walk
          ;; is; a custom kernel must be).
          {:value (get proposed (:savepoint/address sp-value)) :symmetric? true}
-         (itrace/prior-proposal sp-value old-entry)))}))
+         (itrace/prior-draw sp-value old-entry)))}))
 
 (defn- leaf-options [kernel]
   (case (k/transition-id kernel)

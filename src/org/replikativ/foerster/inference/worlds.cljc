@@ -34,7 +34,7 @@
 
 (def particle-options
   "What every particle method takes."
-  #{:world-policy :world-opts :authority :grant :executor :resample-threshold :policy :seed})
+  #{:world-policy :world-opts :authority :grant :executor :resample-threshold :policy :proposal :seed})
 
 (def rejuvenation-options
   "Resample-move and SMCP3 (`foerster.inference.smc`): SMC and PIMH in fresh worlds

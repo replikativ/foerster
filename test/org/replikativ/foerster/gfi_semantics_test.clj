@@ -4,6 +4,7 @@
   afresh or drops, constrained sites across replays, and constraints the run
   never reaches. Each is checked against an exact answer."
   (:require [clojure.test :refer [deftest is testing]]
+            [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.moves.involutive :as inv]
             [org.replikativ.foerster.runtime.trace :as itrace]
@@ -92,7 +93,7 @@
   (let [a (v-site t)]
     (itrace/mh-step t {:iteration i
                        :select (fn [_ _] {:targets #{a} :log-selection (constantly 0.0)})
-                       :propose (itrace/random-walk-proposal 0.7)})))
+                       :propose (proposal/random-walk 0.7)})))
 
 (defn- p-b-chain
   "Alternate `flip-step` with a random walk on v; the fraction of b = true

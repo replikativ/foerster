@@ -36,7 +36,8 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.dist :as dist])
+            [org.replikativ.foerster.dist :as dist]
+            [org.replikativ.foerster.proposal :as proposal])
   #?(:cljs (:require-macros [is.simm.partial-cps.async :as pcps])))
 
 (def choose-site :inference/choose)
@@ -140,6 +141,31 @@
   [policy]
   (::options (meta policy)))
 
+(declare policy)
+
+(defn with-proposal
+  "`opts` with its `:proposal` (a `foerster.proposal`) made its `:policy`'s
+  `:draw`: the particle methods' `:proposal` option. The prior needs no
+  policy. A policy that is not made by `policy`, or that has its own
+  `:draw`, cannot take one, and is refused."
+  [{p :proposal pol :policy :as opts}]
+  (cond
+    (nil? p) opts
+    (not (proposal/proposal? p))
+    (throw (ex-info ":proposal is a foerster.proposal (prior, distribution, random-walk, from-fn …)"
+                    {:type ::invalid-proposal :proposal p}))
+    (proposal/prior? p) (dissoc opts :proposal)
+    :else
+    (let [base (if pol
+                 (or (policy-options pol)
+                     (throw (ex-info ":proposal needs a :policy made by foerster.runtime.trace/policy"
+                                     {:type ::invalid-proposal})))
+                 {})]
+      (when (:draw base)
+        (throw (ex-info ":proposal and a :policy with its own :draw both propose: pass one"
+                        {:type ::invalid-proposal})))
+      (assoc (dissoc opts :proposal) :policy (policy (assoc base :draw p))))))
+
 (defn- tempered
   "`log-lik` under the policy's `:temperature` β: β·log-lik, and 0 at β = 0
   (the prior, whatever the likelihood)."
@@ -195,6 +221,38 @@
           (assoc decision :note (assoc note :log-prob (+ base tempered-rest)
                                        :log-base base :log-lik rest)))
         decision))))
+
+(declare world-legacy-trace)
+
+(defn- site-of
+  "The `foerster.proposal` site of the savepoint `sp`, with `old-entry`'s
+  value when the trace being moved has one."
+  [sp old-entry]
+  (let [{:keys [dist options]} (:savepoint/payload sp)
+        world (:savepoint/world sp)]
+    (cond-> {:address (:savepoint/address sp) :dist dist :options options
+             :trace (delay (world-legacy-trace world))}
+      old-entry (assoc :old (:value old-entry)))))
+
+(defn as-draw
+  "A policy `:draw`, `(fn [sp old-entry])`, from a `foerster.proposal` (or
+  `d` itself when it is already such a function). A proposal's `:log-q`
+  becomes the draw's `:log-proposal`; when it moves a site that had a value
+  and is not the prior, its density of proposing that old value back,
+  `:reverse-log-proposal`, is what an MH move scores the reverse with
+  (`mh-log-ratio`)."
+  [d]
+  (if-not (proposal/proposal? d)
+    d
+    (fn [sp old-entry]
+      (let [site (site-of sp old-entry)]
+        (when-let [{:keys [value symmetric? log-q]} (proposal/propose d site)]
+          (if symmetric?
+            {:value value :symmetric? true}
+            (let [reverse (when (and old-entry (not (proposal/prior? d)))
+                            (proposal/log-q d (assoc site :old value) (:value old-entry)))]
+              (cond-> {:value value :log-proposal log-q}
+                (some? reverse) (assoc :reverse-log-proposal reverse)))))))))
 
 (defn- decide-choose
   "A choose site's decision; the note keeps the site's own `:proposal`, the
@@ -255,7 +313,7 @@
         {:value v :note {:dist dist :log-prob lp :constrained? true}})
 
       :else
-      (let [drawn (when draw (draw sp old-entry))
+      (let [drawn (when draw ((as-draw draw) sp old-entry))
             old-note (:note old-entry)
             kept-lp (when (and (not drawn) keep? old-entry
                                (not (:observed? old-note)))
@@ -288,7 +346,8 @@
              :note (cond-> {:dist dist :log-prob lp
                             :log-proposal (:log-proposal drawn)
                             :moved? true}
-                     (:symmetric? drawn) (assoc :symmetric? true))})
+                     (:symmetric? drawn) (assoc :symmetric? true)
+                     (:reverse-log-proposal drawn) (assoc :reverse-log-proposal (:reverse-log-proposal drawn)))})
 
           ;; A kept value outside the new distribution's support is drawn
           ;; again instead (the site's parents moved it out from under it).
@@ -721,14 +780,19 @@
                          (remove #(same? % (get new-by-address (:address %))))
                          (remove #(:kept? (:note (get new-by-address (:address %)))))
                          (remove #(:symmetric? (:note (get new-by-address (:address %)))))
-                         ;; the reverse move draws its own target as the prior
-                         ;; proposal does, and any other site it reaches
+                         ;; the reverse move draws its own target as the
+                         ;; move's proposal would (its `:reverse-log-proposal`,
+                         ;; else the prior), and any other site it reaches
                          ;; afresh as a replay does: from the site's
                          ;; `:proposal`, if it has one
                          (map (fn [{:keys [address note value]}]
-                                (if (:moved? (:note (get new-by-address address)))
-                                  (redraw-log-density (dissoc note :proposal) value)
-                                  (redraw-log-density note value)))))
+                                (let [new-note (:note (get new-by-address address))]
+                                  (cond
+                                    ;; the proposal's own density of
+                                    ;; proposing the old value back
+                                    (some? (:reverse-log-proposal new-note)) (:reverse-log-proposal new-note)
+                                    (:moved? new-note) (redraw-log-density (dissoc note :proposal) value)
+                                    :else (redraw-log-density note value))))))
                    + 0.0 old-entries)
          irreversible? (irreversible-redraw? old-by-address new-entries)]
      (if irreversible?
@@ -752,23 +816,13 @@
   {:targets #{(random/pick-uniformly (:addresses (latent-index trace)))}
    :log-selection (fn [t] (- (Math/log (double (latent-count t)))))})
 
-(defn prior-proposal
-  "Propose a fresh draw from a target site's own distribution."
+(defn prior-draw
+  "A policy `:draw` of a fresh value from a site's own distribution (the
+  savepoint-level form of `foerster.proposal/prior`, for internal policies)."
   [sp _old-entry]
   (let [dist (:dist (:savepoint/payload sp))
         v (dist/draw dist)]
     {:value v :log-proposal (dist/draw-logpdf dist v)}))
-
-(defn random-walk-proposal
-  "A symmetric Gaussian step of `step-size` around a real-valued target's
-  old value. A target whose law is not continuous (a boolean, an integer
-  count, a vector) has no such step; it gets a prior proposal."
-  [step-size]
-  (fn [sp old-entry]
-    (if (dist/continuous? (:dist (:savepoint/payload sp)))
-      {:value (+ (:value old-entry) (* step-size (dist/draw (dist/normal 0.0 1.0))))
-       :symmetric? true}
-      (prior-proposal sp old-entry))))
 
 (defn- subtree [world ids]
   (loop [todo (vec ids) seen #{}]
@@ -911,18 +965,19 @@
   policies; :until denotes an anchored replay frontier."
   ([t] (mh-step t nil))
   ([t {:keys [select propose iteration constraints policy-options temperature keep-old? shared-anchors? until]
-       :or {select uniform-site propose prior-proposal iteration 0} :as opts}]
+       :or {select uniform-site propose proposal/prior iteration 0} :as opts}]
    (pcps/async
     (let [{:keys [targets log-selection]}
           (when (or until (pos? (latent-count t)))
             (random/in-world-stream (:trace/world t) [::select iteration] #(select t iteration)))]
       (if-not (seq targets)
         {:trace t :accepted? false :log-ratio 0.0}
-        (let [move (policy (cond-> (assoc policy-options :keep? true
+        (let [draw (as-draw propose)
+              move (policy (cond-> (assoc policy-options :keep? true
                                           :constraints (merge (:constraints policy-options) constraints)
                                           :draw (fn [site old-entry]
                                                   (when (contains? targets (:savepoint/address site))
-                                                    (propose site old-entry))))
+                                                    (draw site old-entry))))
                              (some? temperature) (assoc :temperature temperature)))
               proposed (pcps/await
                         (reexecute t targets move

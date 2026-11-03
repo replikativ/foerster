@@ -1,72 +1,23 @@
 (ns org.replikativ.foerster.moves.kernel
-  "Inference kernels: what decides a particle's latent sites.
+  "Markov kernels: transitions that leave the posterior invariant, which
+  `foerster.moves.transition` prepares and runs over traces — as chains
+  (`foerster.core/kernel-infer`) and as moves of populations
+  (`foerster.program/move`). They compose: `cycle` runs parts in turn,
+  `mixture` picks one by fixed weights.
 
-  A `PInferenceKernel` decides a particle's latent sites during execution:
-  `foerster.core/kernel-infer` runs savepoint SMC whose sample sites take the
-  value the kernel's `step` gives, which makes importance sampling vs SMC a
-  choice of proposal policy, not of engine. `PMarkovKernel` describes
-  transitions that `foerster.moves.transition` compiles and runs over traces."
+  A proposal of a site's value is not a kernel: see `foerster.proposal`."
   (:refer-clojure :exclude [cycle])
   (:require [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.dist :as dist]))
 
-;; =============================================================================
-;; InferenceKernel Protocol - Checkpoint-Level Inference Control
-;; =============================================================================
-
-(defprotocol PInferenceKernel
-  "Protocol for kernels that operate at the random choices of a particle.
-
-  It decides what value a latent site of a particle takes:
-  `foerster.core/kernel-infer` asks its `step` at every sample site of savepoint
-  SMC.
-
-  Site kernels choose and correct proposals; they are distinct from
-  target-invariant Markov transitions described by `PMarkovKernel`."
-
-  (kernel-id [this]
-    "Identifier for this site-proposal policy (e.g., :prior).")
-
-  (step [this ctx checkpoint trace]
-    "Decide a latent site of the particle whose world is `ctx`: `checkpoint`
-    is {:source distribution :options site-options :address address},
-    `trace` the particle's trace so far.
-
-    Returns {:value v} and optionally `:log-weight-delta`,
-    what the value adds to the particle's weight (default 0: a draw from the
-    site's distribution)."))
-
 (defprotocol PMarkovKernel
-  "Descriptions of Markov transitions, distinct from site proposal policies.
-  Fixed-tuning transitions preserve their target under the individual kernel's
-  assumptions; warm-up is not an evidence-estimating inference algorithm."
+  "Descriptions of Markov transitions. Fixed-tuning transitions preserve
+  their target under the individual kernel's assumptions; warm-up is not an
+  evidence-estimating inference algorithm."
   (transition-id [this] "The transition family compiled by foerster.moves.transition."))
 
 (defn markov-kernel? [kernel]
   (satisfies? PMarkovKernel kernel))
-
-;; =============================================================================
-;; PriorKernel - Simple Forward Sampling (Importance Sampling)
-;; =============================================================================
-
-(defrecord PriorKernel []
-  PInferenceKernel
-
-  (kernel-id [_] :prior)
-
-  (step [_ _ctx checkpoint _trace]
-    (let [{:keys [source options]} checkpoint
-          {:keys [observe init]} options
-          value (cond
-                  (some? observe) observe
-                  (some? init) init
-                  :else (dist/draw source))]
-      {:value value})))
-
-(defn prior-kernel
-  "Create a PriorKernel for simple importance sampling."
-  []
-  (->PriorKernel))
 
 ;; =============================================================================
 ;; SingleSiteMHKernel - Lightweight Metropolis-Hastings

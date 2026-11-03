@@ -62,9 +62,9 @@ under a policy, and `trace/reexecute` re-runs a trace after a move.
   world is discarded first (below).
 - **Importance sampling** is the same with `:resample-threshold` 0: particles
   still park at each observation, but the population is never resampled.
-- **A `PInferenceKernel`** (`kernel-infer`) runs as SMC whose latent sites
-  take the value the kernel's `step` gives, its `:log-weight-delta` added to
-  the weight; the prior kernel draws from the prior.
+- **A proposal** (`foerster.proposal`, the particle methods' `:proposal`)
+  draws latent sites from something other than their law; the weight takes
+  log p − log q, so the target is unchanged.
 - **The particle cascade** (`foerster.inference.cascade`) has no barrier: each
   savepoint arriving at an observation is decided on its own, against the
   running mean weight of those that arrived there so far, itself included —

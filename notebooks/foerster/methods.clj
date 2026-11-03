@@ -26,7 +26,7 @@
             [org.replikativ.foerster.inference.optimize :as optimize]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.inference.scmc :as scmc]
-            [org.replikativ.foerster.runtime.trace :as trace]
+            [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -284,7 +284,7 @@ exact
    "SMC" (run 6 #(infer/smc-infer (normal-mean) 500))
    "resample-move" (run 6 #(infer/smc-infer (normal-mean) 500
                                             {:anchors #{:mu}
-                                             :rejuvenate {:moves 2 :propose (trace/random-walk-proposal 0.2)}}))
+                                             :rejuvenate {:moves 2 :propose (proposal/random-walk 0.2)}}))
    "SMCP3" (run 6 #(infer/smc-infer (normal-mean) 500 {:anchors #{:mu} :smcp3 random-walk-kernel}))))
 
 (kind/table
@@ -360,7 +360,7 @@ exact
                             ["particle Gibbs, 50 × 40" #(infer/pgibbs-infer (normal-mean) 50 40)]
                             ["particle Gibbs with moves" #(infer/pgibbs-infer (normal-mean) 50 40
                                                                               {:anchors #{:mu}
-                                                                               :rejuvenate {:moves 2 :propose (trace/random-walk-proposal 0.2)}})]
+                                                                               :rejuvenate {:moves 2 :propose (proposal/random-walk 0.2)}})]
                             ["PGAS, 50 × 20" #(infer/pgas-infer (normal-mean) 50 20)]
                             ["IPMCMC, 4 nodes" #(infer/ipmcmc-infer (normal-mean) 50 10 {:num-nodes 4})]]]
           (let [{:keys [measure ms]} (run 8 make)

@@ -116,7 +116,7 @@
    q is under `:variational-dists` (see `get-variational-dists`)."
   [model-task num-particles num-iterations & [opts]]
   (check-options! opts (-> particle-options
-                           (disj :policy :resample-threshold)
+                           (disj :policy :proposal :resample-threshold)
                            (into #{:base-lr :robbins-monro :adagrad})))
   (with-frozen-caller opts #(bbvi model-task num-particles num-iterations %)))
 

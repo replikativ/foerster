@@ -22,7 +22,6 @@ Coverage, exactly:
 | `smc-infer`, `importance-sampling` (`:smc`, `:importance`) | yes, `:batch` included; under `:fork` SMC refuses `:anchors`, `:rejuvenate` and `:smcp3` (resample-move and SMCP3 replay from anchors, which copied worlds do not keep yet) |
 | `pimh-infer`, `pgibbs-infer`, `pgas-infer`, `ipmcmc-infer` | yes: every sweep (every node's) in canonical worlds of its own, all forked from one frozen fork of the caller |
 | `bbvi-infer` | yes: every iteration's importance sweep, as above |
-| `kernel-infer` with the prior kernel or another non-Markov `PInferenceKernel` (particle kernels) | yes |
 | `:enumerate` (`infer/infer`) | yes: the model runs in a copy of the root, and every branch is a copy of its world |
 | `kernel-infer` with a Markov-chain kernel (`single-site-mh-kernel`, `random-walk-mh-kernel`, `finite-gibbs-kernel`, `block-gibbs-kernel`, `hmc-kernel`, `nuts-kernel`, `delayed-acceptance-kernel`, `cycle`, `mixture`, …), `:mh`, `:rmh`, `:nuts` | yes: every chain in a world of its own; no `:authority` yet |
 | `tempered-infer`, `parallel-tempering-infer` | yes: every particle (PT: the program's one run) in a world of its own; no `:authority` yet |
