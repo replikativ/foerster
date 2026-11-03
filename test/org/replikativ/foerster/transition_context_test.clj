@@ -36,7 +36,7 @@
                                         (fn [resolve _] (resolve {:trace t :accepted? true}))))]
       (let [prepared (transition/prepare
                       (k/cycle 1 [(k/single-site-mh-kernel 100)
-                                  (k/nuts-kernel 1 {:burn 10})]))]
+                                  (k/within-gibbs (k/nuts-kernel 1 {:burn 10}))]))]
         (dotimes [_ 10]
           (let [result (await-cps (transition/step prepared current (assoc context :on-visit #(swap! visits conj %))))]
             (is (= 101 (:moves result)))
@@ -60,7 +60,7 @@
                                         (swap! seen conj opts)
                                         (fn [resolve _] (resolve {:trace t :accepted? true}))))]
       (let [prepared (transition/prepare
-                      (k/cycle 1 [(k/mixture 2 [[1 (k/nuts-kernel 1)]
+                      (k/cycle 1 [(k/mixture 2 [[1 (k/within-gibbs (k/nuts-kernel 1))]
                                                 [1 (k/single-site-mh-kernel 1)]])
                                   (k/single-site-mh-kernel 3)]))]
         (dotimes [_ 2] (await-cps (transition/step prepared current context)))
@@ -98,7 +98,7 @@
   (let [moves (atom 0)]
     (with-redefs [it/mh-step (fn [_ _] (swap! moves inc))]
       (let [prepared (transition/prepare (k/cycle 1 [(k/single-site-mh-kernel 2)
-                                                     (k/nuts-kernel 1)]))]
+                                                     (k/within-gibbs (k/nuts-kernel 1))]))]
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"temperature one"
                               (transition/step prepared {} {:temperature 0.5})))
         (is (zero? @moves))))))
@@ -130,5 +130,5 @@
                           (infer/kernel-infer
                            (spin (sample (block/block-dist gaussian nil) :id :x :init [0.2]))
                            (k/cycle 11 [(k/single-site-mh-kernel 100)
-                                        (k/nuts-kernel 1 {:burn 10})]) 1))))
+                                        (k/within-gibbs (k/nuts-kernel 1 {:burn 10}))]) 1))))
     (is (= (range 10) @seen))))

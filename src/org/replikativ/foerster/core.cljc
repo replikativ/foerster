@@ -370,8 +370,9 @@
              (kernel-infer model (k/random-walk-mh-kernel iterations (merge chain-output (when step-size {:step-size step-size})))
                            (or chains 4) rest-opts))
       :nuts (let [nuts-opts [:target-accept :max-depth :metric :inverse-metric :jitter]]
-              (kernel-infer model (k/nuts-kernel iterations (cond-> (merge chain-output (select-keys rest-opts nuts-opts))
-                                                              step-size (assoc :step-size step-size)))
+              (kernel-infer model (k/within-gibbs
+                                   (k/nuts-kernel iterations (cond-> (merge chain-output (select-keys rest-opts nuts-opts))
+                                                               step-size (assoc :step-size step-size))))
                             (or chains 4) (apply dissoc rest-opts nuts-opts)))
       :kernel (kernel-infer model kernel (or chains 4) rest-opts)
       :pmmh (pmmh model particles iterations (cond-> rest-opts burn (assoc :burn burn))))))

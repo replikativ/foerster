@@ -108,14 +108,17 @@
 
 (defn within-gibbs
   "A step for `foerster.runtime.trace/mh-chain` (`:step`): an HMC move of every
-  block site, then one single-site MH move of a latent that is not a block
-  site, if there is one. `opts`: `:step-size`, `:steps`. Resolves the step
-  with `:moves` (how many moves it made) and `:accepted-moves`; the step as a
-  whole is `:accepted?` when any of them was."
-  [{:keys [step-size steps] :as opts}]
+  block site (those `:only` names, when given), then, with `:others?` (the
+  default), one single-site MH move of a latent that is not a block site, if
+  there is one. `opts`: `:step-size`, `:steps`, `:only`, `:others?`.
+  Resolves the step with `:moves` (how many moves it made) and
+  `:accepted-moves`; the step as a whole is `:accepted?` when any of them
+  was."
+  [{:keys [step-size steps only others?] :or {others? true} :as opts}]
   (fn [trace {:keys [iteration] :as chain-opts}]
     (fn [resolve reject]
-      (let [blocks (filterv #(block-site? trace %) (itrace/latent-addresses trace))]
+      (let [blocks (filterv #(and (block-site? trace %) (or (nil? only) (only %)))
+                            (itrace/latent-addresses trace))]
         (letfn [(others [t] (vec (remove #(block-site? t %) (itrace/latent-addresses t))))
                 (go [t [address & more] moves accepted incomplete?]
                     (if address
@@ -130,7 +133,7 @@
                                    (resolve {:trace t :accepted? (pos? accepted)
                                              :moves moves :accepted-moves accepted
                                              :incomplete-target? incomplete?}))]
-                        (if (seq (others t))
+                        (if (and others? (seq (others t)))
                           ((itrace/mh-step t (assoc chain-opts
                                                     :select (fn [t' _]
                                                               {:targets #{(random/pick-uniformly (others t'))}

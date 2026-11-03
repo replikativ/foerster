@@ -472,7 +472,8 @@
 
 (defn within-gibbs
   "A step for `foerster.runtime.trace/mh-chain` (`:step`): a NUTS move of every block
-  site, then one single-site MH move of a latent that is not a block site, if
+  site (those `:only` names, when given), then, with `:others?` (the
+  default), one single-site MH move of a latent that is not a block site, if
   there is one. A fresh adaptation state per call (per chain). `opts`:
   `:burn`, `:target-accept` (0.8), `:max-depth` (10), `:metric` (`:variance`,
   Stan's estimate from the positions, or `:fisher`, from positions and
@@ -485,15 +486,16 @@
   `:reached-max-depth?` reports depth attainment, including transitions that
   stop naturally or diverge at that depth; it does not identify cap exhaustion.
   Composed kernels and final-state-only output do not retain these statistics."
-  [{:keys [burn target-accept max-depth metric step-size inverse-metric]
-    :or {burn 0 target-accept 0.8 max-depth 10 metric :variance}}]
+  [{:keys [burn target-accept max-depth metric step-size inverse-metric only others?]
+    :or {burn 0 target-accept 0.8 max-depth 10 metric :variance others? true}}]
   (let [adaptation (atom {})
         divergences (atom 0)]
     (fn [trace {:keys [iteration] :as chain-opts}]
       (fn [resolve reject]
         (let [opts (assoc chain-opts :burn burn :target-accept target-accept :max-depth max-depth :metric metric
                           :step-size step-size :inverse-metric inverse-metric)
-              blocks (filterv #(block-site? trace %) (itrace/latent-addresses trace))]
+              blocks (filterv #(and (block-site? trace %) (or (nil? only) (only %)))
+                              (itrace/latent-addresses trace))]
           (letfn [(others [t] (vec (remove #(block-site? t %) (itrace/latent-addresses t))))
                   (go [t [address & more] moves stats]
                       (if address
@@ -520,7 +522,7 @@
                                                 :step-size (into {} (map (juxt :address :step-size)) stats)
                                                 :inverse-metric (into {} (map (juxt :address :inverse-metric)) stats)
                                                 :blocks (count stats)}}))]
-                          (if (seq (others t))
+                          (if (and others? (seq (others t)))
                             ((itrace/mh-step t (assoc chain-opts
                                                       :select (fn [t' _]
                                                                 {:targets #{(random/pick-uniformly (others t'))}

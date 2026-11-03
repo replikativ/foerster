@@ -91,7 +91,7 @@
 (def posterior
   (sp/with-context world
     @(infer/kernel-infer (regression)
-                         (k/hmc-kernel 1500 {:step-size 0.1 :steps 8 :samples :all :burn 200})
+                         (k/within-gibbs (k/hmc-kernel 1500 {:step-size 0.1 :steps 8 :samples :all :burn 200}))
                          2)))
 
 (def draws (mapv (comp m/get-value first) (m/get-particles posterior)))

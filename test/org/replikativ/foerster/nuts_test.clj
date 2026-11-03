@@ -394,7 +394,7 @@
   (testing "HMC, a suggested workaround, samples the same model exactly"
     ;; a ~ N(0,1), b | a ~ N(a,1), 2 | b ~ N(b,1): E[a | y] = y/3, E[b | y] = 2y/3
     (let [measure (b/run-infer 129 #(infer/kernel-infer (dependent-blocks)
-                                                        (k/hmc-kernel 4000 {:step-size 0.3 :steps 5 :samples :all :burn 500})
+                                                        (k/within-gibbs (k/hmc-kernel 4000 {:step-size 0.3 :steps 5 :samples :all :burn 500}))
                                                         4))
           s (fn [i] (d/summary measure #(nth % i)))]
       (is (< (Math/abs (- (:mean (s 0)) (/ 2.0 3.0))) (* 4 (:mcse (s 0)))) (str (s 0)))

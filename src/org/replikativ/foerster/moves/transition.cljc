@@ -76,9 +76,27 @@
     {:step (k/custom-step kernel)}
     (builtin-leaf-options kernel)))
 
+(defn- only-site
+  "A selection of one latent site among those `only` (a set or a predicate
+  of an address) names, uniformly."
+  [only]
+  (let [movable (fn [t] (filterv only (:addresses (itrace/latent-index t))))]
+    (fn [t _]
+      (let [ms (movable t)]
+        (if (empty? ms)
+          {:targets #{} :log-selection (constantly 0.0)}
+          {:targets #{(random/pick-uniformly ms)}
+           :log-selection #(- (Math/log (double (count (movable %)))))})))))
+
+(defn- block-kernel
+  "The block kernel of a leaf: `within-gibbs`'s, or the leaf itself."
+  [leaf]
+  (if (= :within-gibbs (k/transition-id leaf)) (:kernel leaf) leaf))
+
 (defn- builtin-leaf-options [kernel]
   (case (k/transition-id kernel)
-    :single-site-mh {}
+    :single-site-mh (if-let [only (:only kernel)] {:select (only-site only)} {})
+    :within-gibbs (builtin-leaf-options (assoc (:kernel kernel) ::others? true))
     :finite-gibbs {:step (fn [current opts]
                            (itrace/update-gibbs current (:address kernel) opts))}
     :random-walk-mh {:step (block-mh/within-gibbs {:step-size (:step-size kernel)
@@ -86,7 +104,8 @@
     :delayed-acceptance {:step (block-mh/delayed-acceptance
                                 (select-keys kernel [:coarse :scales :steps :step-size]))}
     :block-gibbs (block-gibbs-options kernel)
-    :hmc {:step (hmc/within-gibbs (select-keys kernel [:step-size :steps]))}
+    :hmc {:step (hmc/within-gibbs (assoc (select-keys kernel [:step-size :steps :only])
+                                         :others? (::others? kernel false)))}
     :involutive {:step (fn [current _] (involutive/step current (:move kernel)))}
     :proposal-mh {:step (fn [current _] (apply gfi/mh-proposal current (:proposal kernel) (:args kernel)))}
     :nuts {:step (nuts/within-gibbs {:burn (:burn kernel 0)
@@ -94,7 +113,9 @@
                                      :max-depth (:max-depth kernel)
                                      :metric (:metric kernel)
                                      :step-size (:step-size kernel)
-                                     :inverse-metric (:inverse-metric kernel)})}
+                                     :inverse-metric (:inverse-metric kernel)
+                                     :only (:only kernel)
+                                     :others? (::others? kernel false)})}
     (throw (ex-info "Unsupported Markov transition"
                     {:type ::unsupported-kernel :kernel (k/transition-id kernel)}))))
 
@@ -117,7 +138,7 @@
   "Whether a leaf kernel tunes itself during its `:burn` (NUTS and the
   adaptive random walk); other kernels' `:burn` only drops output."
   [leaf]
-  (contains? #{:nuts :random-walk-mh} (k/transition-id leaf)))
+  (contains? #{:nuts :random-walk-mh} (k/transition-id (block-kernel leaf))))
 
 (declare leaf-capabilities)
 
@@ -293,6 +314,30 @@
            (catch #?(:clj Throwable :cljs :default) error (give-up error))))
        give-up))))
 
+(defn- covers
+  "A predicate (fn [trace legacy address]) of the latent sites `leaf` can
+  move, or nil when that is its author's (a custom step, an involution, a
+  proposal program)."
+  [leaf]
+  (case (k/transition-id leaf)
+    :single-site-mh (if-let [only (:only leaf)] (fn [_ _ a] (boolean (only a))) (constantly true))
+    (:hmc :nuts) (let [only (:only leaf)]
+                   (fn [t _ a] (and (hmc/block-site? t a) (or (nil? only) (boolean (only a))))))
+    :finite-gibbs (fn [_ _ a] (= a (:address leaf)))
+    :block-gibbs (fn [_ legacy a]
+                   (contains? (:block-kernels leaf) ((:address-classifier leaf) a (get legacy a))))
+    (:within-gibbs :random-walk-mh :delayed-acceptance) (constantly true)
+    nil))
+
+(defn- uncovered
+  "The latent sites of `trace` no leaf of `kernel` moves, or nil when a leaf
+  does not say which it moves."
+  [kernel trace]
+  (let [cs (mapv covers (leaves kernel))]
+    (when (every? some? cs)
+      (let [legacy (itrace/legacy-trace trace)]
+        (seq (remove (fn [a] (some #(% trace legacy a) cs)) (itrace/latent-addresses trace)))))))
+
 (defn- run-markov-chain
   "One chain in its own world: run the model, move it `iterations` times,
   give every world back. Returns the chain's particles: its projected final
@@ -336,9 +381,18 @@
                _ (when (= ##-Inf (itrace/log-joint initial))
                    (throw (ex-info "The initial state of the chain has zero density"
                                    {:type :org.replikativ.foerster.core/impossible-initial-state})))
+               ;; a site no part of the kernel moves keeps its initial value:
+               ;; the chain would not target the posterior
+               _ (when-let [missing (uncovered kernel initial)]
+                   (throw (ex-info (str "No part of the kernel moves the latent sites "
+                                        (vec (take 5 missing)) (when (next (drop 4 missing)) " …")
+                                        ": add a kernel that does (single-site-mh-kernel, finite-gibbs-kernel,"
+                                        " or within-gibbs around a block kernel)")
+                                   {:type ::uncovered-sites :sites (vec missing)})))
                ;; NUTS chains start jittered around their :init (Stan's
                ;; random initialization); population moves never do
-               initial (if (some #(and (= :nuts (k/transition-id %)) (:jitter % true)) (leaves kernel))
+               initial (if (some #(let [b (block-kernel %)] (and (= :nuts (k/transition-id b)) (:jitter b true)))
+                                 (leaves kernel))
                          (await (nuts/jitter initial))
                          initial)
                samples (volatile! [])

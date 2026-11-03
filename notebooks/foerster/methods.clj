@@ -505,7 +505,7 @@ exact
   :row-vectors
   [["exact" 1.0 0.3 "–" "–" "–"]
    (chain-row "HMC, 0.1 × 8 steps" :a (run 13 #(infer/kernel-infer (block-model gauss-block)
-                                                                   (k/hmc-kernel 600 {:step-size 0.1 :steps 8 :samples :all :burn 100})
+                                                                   (k/within-gibbs (k/hmc-kernel 600 {:step-size 0.1 :steps 8 :samples :all :burn 100}))
                                                                    2)))
    (chain-row "NUTS, variance metric" :a (run 13 #(infer/infer (block-model gauss-block)
                                                                {:method :nuts :iterations 600 :burn 300 :chains 2})))
