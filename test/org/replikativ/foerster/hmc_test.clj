@@ -8,6 +8,7 @@
             [org.replikativ.foerster.moves.hmc :as hmc]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.moves.kernel :as k]
+            [org.replikativ.foerster.moves.transition :as transition]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.effects.savepoint :as sp]
@@ -102,8 +103,8 @@
   [b inputs init {:keys [iterations step-size steps seed]}]
   (let [wv (weighted-values
             (run-infer seed #(infer/kernel-infer ((block-model b inputs init))
-                                                 (k/hmc-kernel iterations {:step-size step-size :steps steps
-                                                                           :samples :all :burn 100})
+                                                 (k/within-gibbs (k/hmc-kernel iterations {:step-size step-size :steps steps
+                                                                                           :samples :all :burn 100}))
                                                  2 {})))
         d (count init)]
     (vec (for [j (range d)]
@@ -259,6 +260,44 @@
                        (when (pos? (first x)) (sample (dist/normal 0.0 0.1) :id :w))
                        (first x)))
         wv (weighted-values
-            (run-infer 12 #(infer/kernel-infer (model) (k/hmc-kernel 3000 {:step-size 0.5 :steps 4 :samples :all :burn 200}) 4 {})))
+            (run-infer 12 #(infer/kernel-infer (model) (k/within-gibbs (k/hmc-kernel 3000 {:step-size 0.5 :steps 4 :samples :all :burn 200})) 4 {})))
         p (reduce + (map (fn [[x w]] (if (pos? x) w 0.0)) wv))]
     (is (< (Math/abs (- p 0.5)) 0.04) (str "P(x > 0) " p))))
+
+;; --- block kernels move block sites only -------------------------------------
+
+(defn- mixed-model
+  "A Gaussian block :mu and a free latent z ~ N(0, 1) with 1 ~ N(z, 1):
+  z | y ~ N(0.5, 1/2)."
+  [b]
+  (fn [] (spin (let [mu (sample (block/block-dist b gauss-inputs) :id :mu :init [0.0 0.0])
+                     z (sample (dist/normal 0.0 1.0) :id :z)]
+                 (observe (dist/normal z 1.0) 1.0 :id :y)
+                 [mu z]))))
+
+(defn- uncovered-sites
+  "The sites a chain refused because no part of its kernel moves them."
+  [f]
+  (try (f) nil
+       (catch Throwable e
+         (some #(when (= ::transition/uncovered-sites (:type (ex-data %))) (:sites (ex-data %)))
+               (take-while some? (iterate ex-cause e))))))
+
+(deftest block-kernels-move-block-sites-only
+  (let [b (gaussian-block 2 true)
+        hmc (k/hmc-kernel 1 {:step-size 0.1 :steps 8})]
+    (testing "a latent site no part of the kernel moves is refused, by name"
+      (is (= [:z] (uncovered-sites #(run-infer 31 (fn [] (infer/kernel-infer ((mixed-model b)) (k/hmc-kernel 50) 2))))))
+      (is (= [:mu] (uncovered-sites #(run-infer 31 (fn [] (infer/kernel-infer ((mixed-model b))
+                                                                              (k/single-site-mh-kernel 50 {:only #{:z}}) 2)))))))
+    (testing "a cycle with a kernel for the other sites, restricted by :only"
+      (let [wv (weighted-values
+                (run-infer 32 #(infer/kernel-infer ((mixed-model b))
+                                                   (k/cycle 1500 [hmc (k/single-site-mh-kernel 1 {:only #{:z}})]
+                                                            {:samples :all :burn 200})
+                                                   2)))
+            [[mu0 _]] (gauss-posterior gauss-inputs 2)]
+        (is (< (Math/abs (- (reduce + (map (fn [[v w]] (* w (second v))) wv)) 0.5)) 0.12) "z")
+        (is (< (Math/abs (- (reduce + (map (fn [[v w]] (* w (nth (first v) 0))) wv)) mu0)) 0.1) "mu")))
+    (testing "within-gibbs moves the other sites itself"
+      (is (nil? (uncovered-sites #(run-infer 33 (fn [] (infer/kernel-infer ((mixed-model b)) (k/within-gibbs (k/hmc-kernel 20)) 2)))))))))

@@ -88,7 +88,7 @@
   (let [iterations (+ burn (* thin draws))
         meas (run-infer seed #(infer/kernel-infer
                                (spin (sample (block/block-dist block data) :id :theta :init init))
-                               (k/hmc-kernel iterations (assoc hmc :samples :all :burn burn))
+                               (k/within-gibbs (k/hmc-kernel iterations (assoc hmc :samples :all :burn burn)))
                                1 {}))
         chain (mapv (comp m/get-value first) (m/get-particles meas))]
     (vec (take draws (take-nth thin chain)))))

@@ -57,7 +57,7 @@
         made (fn [iterations]
                (let [n (atom 0)]
                  (with-redefs [nuts/within-gibbs (fn [opts] (swap! n inc) (within-gibbs opts))]
-                   (b/run-infer 72 #(infer/kernel-infer (model) (k/cycle iterations [(k/nuts-kernel 1 {:burn 10})
+                   (b/run-infer 72 #(infer/kernel-infer (model) (k/cycle iterations [(k/within-gibbs (k/nuts-kernel 1 {:burn 10}))
                                                                                      (k/single-site-mh-kernel 1)])
                                                         2)))
                  @n))]

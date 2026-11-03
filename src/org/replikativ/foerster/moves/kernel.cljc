@@ -39,10 +39,14 @@
   Output options (all Markov-chain kernels): `:samples :final` (default)
   emits each chain's last state; `:samples :all` emits every state after
   the first `:burn` moves, equally weighted — an MCMC estimate from few
-  chains instead of one draw per chain."
-  [num-iterations & [opts]]
-  {:pre [(pos-int? num-iterations)]}
-  (chain-output (->SingleSiteMHKernel num-iterations) opts))
+  chains instead of one draw per chain.
+
+  `:only` (a set of addresses or a predicate of an address) restricts the
+  moves to those latent sites: each move picks one of them uniformly."
+  [num-iterations & [{:keys [only] :as opts}]]
+  {:pre [(pos-int? num-iterations) (or (nil? only) (ifn? only))]}
+  (cond-> (chain-output (->SingleSiteMHKernel num-iterations) opts)
+    only (assoc :only only)))
 
 (defrecord FiniteGibbsKernel [num-iterations address]
   PMarkovKernel
@@ -123,13 +127,15 @@
 
 (defn hmc-kernel
   "Hamiltonian Monte Carlo on the block sites of a program
-  (`foerster.block`), within Gibbs: every iteration moves each block site by
-  HMC (`:step-size`, `:steps` leapfrog steps) and one other latent site by
-  single-site MH (`foerster.moves.hmc/within-gibbs`). Output options as for every
-  Markov-chain kernel."
-  [num-iterations & [{:keys [step-size steps] :or {step-size 0.1 steps 10} :as opts}]]
-  {:pre [(pos-int? num-iterations) (pos? step-size) (pos-int? steps)]}
-  (chain-output (->HMCKernel num-iterations step-size steps) opts))
+  (`foerster.block`): every iteration moves each block site (those `:only`
+  names, when given: a set of addresses or a predicate) by HMC
+  (`:step-size`, `:steps` leapfrog steps), and nothing else. Other latent
+  sites need a kernel of their own: compose with `cycle`, or use
+  `within-gibbs`. Output options as for every Markov-chain kernel."
+  [num-iterations & [{:keys [step-size steps only] :or {step-size 0.1 steps 10} :as opts}]]
+  {:pre [(pos-int? num-iterations) (pos? step-size) (pos-int? steps) (or (nil? only) (ifn? only))]}
+  (cond-> (chain-output (->HMCKernel num-iterations step-size steps) opts)
+    only (assoc :only only)))
 
 ;; =============================================================================
 ;; BlockGibbsKernel
@@ -249,7 +255,10 @@
   (or (ok? x) (and (map? x) (seq x) (every? ok? (vals x)))))
 
 (defn nuts-kernel
-  "The No-U-Turn sampler on block sites (`foerster.moves.nuts`), within Gibbs: the
+  "The No-U-Turn sampler on block sites (`foerster.moves.nuts`), and nothing
+  else: other latent sites need a kernel of their own (compose with
+  `cycle`, or use `within-gibbs`, which `infer :nuts` does). `:only` (a set
+  of addresses or a predicate) restricts it to those block sites. The
   first `:burn` iterations adapt the step size (to `:target-accept`, default
   0.8) and a diagonal metric, and are dropped; `:max-depth` (10) bounds a
   trajectory at 2^depth leapfrog steps; `:metric` estimates the metric from
@@ -272,15 +281,31 @@
   is kept: resuming a frozen chain from a posterior draw (`:init` that
   draw, the exported `:step-size` and `:inverse-metric`) needs `:jitter
   false`. A population move never jitters."
-  [num-iterations & [{:keys [target-accept max-depth metric step-size inverse-metric jitter]
+  [num-iterations & [{:keys [target-accept max-depth metric step-size inverse-metric jitter only]
                       :or {target-accept 0.8 max-depth 10 metric :variance jitter true} :as opts}]]
   {:pre [(pos-int? num-iterations) (#{:variance :fisher} metric)
-         (boolean? jitter)
+         (boolean? jitter) (or (nil? only) (ifn? only))
          (or (nil? step-size) (per-block? positive-finite? step-size))
          (or (nil? inverse-metric)
              (per-block? #(and (sequential? %) (seq %) (every? positive-finite? %)) inverse-metric))]}
-  (chain-output (->NUTSKernel num-iterations target-accept max-depth metric step-size inverse-metric jitter)
-                (select-keys opts [:samples :burn])))
+  (cond-> (chain-output (->NUTSKernel num-iterations target-accept max-depth metric step-size inverse-metric jitter)
+                        (select-keys opts [:samples :burn]))
+    only (assoc :only only)))
+
+(defrecord WithinGibbsKernel [num-iterations kernel]
+  PMarkovKernel
+  (transition-id [_] :within-gibbs))
+
+(defn within-gibbs
+  "A block kernel (`hmc-kernel` or `nuts-kernel`) within Gibbs: every
+  iteration moves the block sites by `kernel`, then one latent site that is
+  not a block site, picked uniformly, by single-site MH — a whole model
+  with blocks and other latents. `infer :nuts` runs this. It takes
+  `kernel`'s iterations, warm-up and output options."
+  [kernel]
+  {:pre [(#{:hmc :nuts} (transition-id kernel))]}
+  (merge (->WithinGibbsKernel (:num-iterations kernel) kernel)
+         (select-keys kernel [:samples :burn])))
 
 ;; =============================================================================
 ;; Programmable moves as chain components
