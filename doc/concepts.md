@@ -14,7 +14,9 @@ These five objects have different roles and lifetimes:
 A typical particle run starts from a world, records traces, maintains a
 population, then settles a measure and retires its owned worlds. Numerical
 methods can instead operate on block values. Read the [algorithm guide](algorithms.md)
-for each entry point's model and world-policy requirements.
+for each entry point's model and world-policy requirements, and [the
+programming model](programming-model.md) for how proposals, kernels, pairs
+and population programs plug into each other.
 
 ## Choose a path
 

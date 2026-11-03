@@ -19,6 +19,7 @@ Each runs as it renders, in CI on every pull request.
 | [Blocks and HMC](../notebooks/foerster/blocks.clj) | numerical blocks, HMC-within-Gibbs, checking a gradient |
 | [Streaming SMC](../notebooks/foerster/streaming.clj) | online filtering against the Kalman filter |
 | [Trace Programming and Custom Moves](../notebooks/foerster/programmable.clj) | the generative function interface, MH by selection, involutive MCMC |
+| [Composing Inference](../notebooks/foerster/composing.clj) | proposals, kernels, pairs and inference programs plugged into each other, each against a known posterior |
 | [Interventions and Counterfactuals](../notebooks/foerster/counterfactuals.clj) | seeing and doing, interventions by selector, twin-world counterfactuals |
 | [From Data to Counterfactual Repairs](../notebooks/foerster/causal_workflow.clj) | native mechanism fitting, held-out checks, bootstrap effect/attribution uncertainty and incident repairs against known truth |
 | [A Gallery of Classic Models](../notebooks/foerster/gallery.clj) | small models checked against exact answers, including branching and label switching |
@@ -31,6 +32,7 @@ Each runs as it renders, in CI on every pull request.
 | Guide | |
 |---|---|
 | [Concepts and Reading Paths](concepts.md) | worlds, traces, measures, populations, blocks and their boundaries |
+| [The Programming Model](programming-model.md) | proposals, kernels, pairs, population programs and contracts: where each plugs in, what is checked, what is not unified yet |
 | [Incremental Trace Inference](incremental-inference.org) | complete keyed traces, finite Gibbs, resumable SCMC and the proposed reactive boundary |
 | [Causal Queries and Identifiability](causal.md) | reusable abduction, nested worlds, ID/IDC, attribution, repairs and actual causality |
 | [Amortized Inference](amortized.md) | automatic RV schemas and masks, conditional sampling artifacts, causal reconstruction and intervention inference |

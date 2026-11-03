@@ -12,6 +12,7 @@
    ["blocks" "Blocks and HMC" "numerical blocks, HMC-within-Gibbs, checking gradients"]
    ["streaming" "Streaming SMC" "online filtering against the Kalman filter"]
    ["programmable" "Trace Programming and Custom Moves" "the generative function interface, MH by selection, involutive MCMC"]
+   ["composing" "Composing Inference" "proposals, kernels, pairs and inference programs, plugged into each other on a known posterior"]
    ["steering" "Steering a Process" "tilting a process by a reward with SMC; trajectories as training data"]
    ["counterfactuals" "Interventions and Counterfactuals" "seeing, doing, and what would have been"]
    ["causal_workflow" "From Data to Counterfactual Repairs" "fit mechanisms, check held-out data, quantify effect and attribution uncertainty, and compare repairs"]
@@ -21,6 +22,7 @@
 
 (def guides
   [["concepts.md" "Concepts and Reading Paths" "worlds, traces, measures, populations and numerical blocks"]
+   ["programming-model.md" "The Programming Model" "proposals, kernels, pairs, population programs and contracts: where each plugs in"]
    ["language.md" "Language" "sites, addresses and explicit spin scopes"]
    ["algorithms.md" "Algorithms" "entry points and their model requirements"]
    ["posteriors.md" "Posteriors" "summaries, diagnostics and evidence"]

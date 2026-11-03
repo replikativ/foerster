@@ -31,6 +31,7 @@
             [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.moves.transition :as transition]
+            [org.replikativ.foerster.moves.pair :as pair]
             [org.replikativ.foerster.inference.particle-mcmc :as pmcmc]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.dist :as dist]
@@ -465,6 +466,7 @@
   (when (and smcp3 (not anchors))
     (throw (ex-info ":smcp3 needs :anchors to replay from"
                     {:type ::smcp3-without-anchors})))
+  (when smcp3 (pair/check! smcp3 ":smcp3"))
   (when (and smcp3 retained)
     (throw (ex-info ":smcp3 is not supported in conditional SMC (:retained)"
                     {:type ::smcp3-with-retained})))
@@ -1185,7 +1187,9 @@
   The measure's `:rejuvenation` counts `:moves`, `:accepted` and
   `:max-anchors`, the most anchors alive at a barrier.
 
-  SMCP3 (Lew et al. 2023): `:smcp3 {:forward K :backward L}` gives every
+  SMCP3 (Lew et al. 2023): `:smcp3` a pair (`foerster.moves.pair`: {:forward
+  K :backward L}, or an involutive move made one by `pair/from-involution`)
+  gives every
   particle parked at a barrier a move-reweight step before the resampling
   decision. `(K choices trace)` — the particle's `foerster.runtime.trace/choices` and
   its partial trace — returns `{:updates {address value} :log-q lq :reverse
