@@ -688,9 +688,9 @@
                                                    ;; K's value; its density is
                                                    ;; in K's log-q, not here
                                                    {:value (get updates a) :symmetric? true})))))]
-                      ((trace/replay t0 from move {:anchor? anchor?
-                                                   :until (until-barrier k)
-                                                   :seed (sp/derive-seed (sp/seed world0) ::smcp3 k)})
+                      ((itrace/replay-sound t0 from move {:anchor? anchor?
+                                                          :until (until-barrier k)
+                                                          :seed (sp/derive-seed (sp/seed world0) ::smcp3 k)})
                        (fn [t1]
                          (try
                            (if (or (:trace/error t1) (not (:trace/pending t1)))
@@ -893,10 +893,10 @@
                   (reset! retained-now (retained-policy after policy))
                   (if (empty? changed)
                     (done entry)
-                    ((trace/replay t0 (trace/earliest t0 changed) @retained-now
-                                   {:anchor? anchor?
-                                    :until (until-barrier k)
-                                    :seed (sp/derive-seed (sp/seed world0) ::retained k)})
+                    ((itrace/replay-sound t0 (trace/earliest t0 changed) @retained-now
+                                          {:anchor? anchor?
+                                           :until (until-barrier k)
+                                           :seed (sp/derive-seed (sp/seed world0) ::retained k)})
                      (fn [t1]
                        (try
                          (if (or (:trace/error t1) (not (:trace/pending t1)))

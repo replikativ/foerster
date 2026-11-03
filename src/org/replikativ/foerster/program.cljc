@@ -41,7 +41,27 @@
   (transport-particles [representation source destination particles kernel opts])
   (project-particle [representation target particle]))
 
-(defn- sequential [xs f]
+(defn- unnested
+  "The CPS operation `op`, resolving only after its own call has returned:
+  a resolution `op` delivers synchronously, from deep inside its own stack
+  (a trace copy's `spindel.trace/update` does, from inside its fork), is
+  handed back to the caller's frame and delivered there, where the awaiting
+  spin's trampoline does not nest the next step in it. A resample of about
+  130 trace particles overflowed the stack without it, and the error, raised
+  in a callback, was lost."
+  [op]
+  (fn [resolve reject]
+    (let [cell (atom ::pending)]
+      (op (fn [v] (when-not (compare-and-set! cell ::pending [::value v]) (resolve v)))
+          (fn [e] (when-not (compare-and-set! cell ::pending [::error e]) (reject e))))
+      (when-not (compare-and-set! cell ::pending ::returned)
+        (let [[k v] @cell]
+          (if (= ::value k) (resolve v) (reject v)))))))
+
+(defn- sequential
+  "A spin running the operation `(f x)` for each of `xs`, one after another,
+  resolving the vector of their values."
+  [xs f]
   (spin
    (loop [remaining (seq xs) out []]
      (if-not remaining
@@ -129,7 +149,10 @@
     (sequential (map-indexed vector ancestors)
                 (fn [[i a]]
                   (let [t (nth particles a)]
-                    (it/copy-complete t {:seed (sp/derive-seed seed ::copy [step i])})))))
+                    ;; a copy resolves synchronously from inside its fork:
+                    ;; resumed there, every copy nested in the previous one's
+                    ;; stack and a resample of about 130 particles overflowed
+                    (unnested (it/copy-complete t {:seed (sp/derive-seed seed ::copy [step i])}))))))
 
   (move-particles [_ _ target particles _ {:keys [prepared on-visit]}]
     (sequential (map-indexed vector particles)

@@ -490,6 +490,73 @@
   [sp]
   (or (= canonical-start (:savepoint/site sp)) (anchor? sp)))
 
+;; -----------------------------------------------------------------------------
+;; World state a run wrote
+;; -----------------------------------------------------------------------------
+;;
+;; Incremental reuse — a keyed `trace/update`, which re-runs a key in a fork
+;; of the world the trace ENDED in, and a replay that adopts finished
+;; computations from the replayed world (its reuse source) — is sound only
+;; for code that depends on its arguments and choices. A model that writes
+;; world state breaks both: a re-run key finds its own earlier writes, and
+;; those of siblings and of later code, still in place (an append is applied
+;; twice), and an adopted computation that read an atom keeps a result the
+;; changed run would not compute (Spindel records tracked signals as
+;; dependencies, not atom reads). Reads of state nothing writes during the
+;; run (the frozen caller state of `:world-policy :fork`) are safe.
+;;
+;; So reuse is used only for runs that wrote no world state: no Spindel atom
+;; holds another value than where the run started, and the run created none.
+;; A run's base is the cells of its root when the model started
+;; (`[:inference :base-cells]`, set by `mark-canonical!` for a fork of the
+;; caller's world; a fresh world starts with none). Signals are not compared:
+;; a model that writes a signal it tracks re-runs reactively, which Spindel
+;; does not support inside a traced computation.
+
+(defn mark-canonical!
+  "Mark `world`, a fork of the caller's world in which a model is about to
+  run (`:world-policy :fork`), as canonical and record its cells as the
+  base `wrote-state?` compares a run's cells with."
+  [world]
+  (rtp/swap-state! world [:inference :base-cells] (constantly (or (rtp/get-state world [:atoms]) {})))
+  (rtp/swap-state! world [:inference :canonical?] (constantly true)))
+
+(defn wrote-state?
+  "Whether the run that produced `trace` wrote world state (see above): a
+  Spindel atom whose value is not the identical value it had at the run's
+  base, or one the run created. A trace without a world counts as having
+  written."
+  [trace]
+  (if-let [world (:trace/world trace)]
+    (let [base (or (rtp/get-state world [:inference :base-cells]) {})
+          cells (or (rtp/get-state world [:atoms]) {})]
+      (not (and (= (count base) (count cells))
+                (every? (fn [[id entry]]
+                          (when-let [b (get base id)]
+                            (identical? (:value entry) (:value b))))
+                        cells))))
+    true))
+
+(defn replay-sound
+  "`trace/replay` of `trace` from `address`, adopting finished computations
+  from `trace`'s world only when that is sound: neither `trace`'s run nor the
+  replay wrote world state (`wrote-state?`). A replay that adopted and then
+  wrote state is given back and run again without adoption. `reuse?` false
+  never adopts."
+  ([trace address policy opts] (replay-sound trace address policy opts true))
+  ([trace address policy opts reuse?]
+   (let [plain #(trace/replay (dissoc trace :trace/world) address policy opts)]
+     (if-not (and reuse? (:trace/world trace) (not (wrote-state? trace)))
+       (plain)
+       (fn [resolve reject]
+         ((trace/replay trace address policy opts)
+          (fn [t']
+            (if (and (:trace/world t') (wrote-state? t'))
+              (do (owner/reclaim! [t'] [trace])
+                  ((plain) resolve reject))
+              (resolve t')))
+          reject))))))
+
 (defn latent?
   "Whether a trace entry is a sample site inference may move: not observed,
   not constrained."
@@ -770,16 +837,14 @@
   streaming frontiers are refused unless safe prefix replay is available.
   Result metadata ::changed / ::restart describes the score delta to compare.
 
-  In canonical worlds (`canonical?`) nothing is reused incrementally: a
-  keyed update re-runs a key in the world the trace ENDED in, and a replay
-  may adopt a finished computation from the replayed world, and both are
-  sound only for code that depends on its arguments and choices alone; a
-  model that reads state it (or a later part of it) wrote breaks both, and
-  Spindel does not track which state a computation read. So a move there
-  replays from the latest anchor before its sites (the world as it was at
-  that site), without adoption, and a keyed model re-executes from its start
-  (`canonical-anchor?`). Incremental reuse returns when Spindel can tell
-  which worlds' state a computation wrote."
+  Incremental reuse (a keyed update; a replay adopting the replayed world's
+  finished computations) is used only when the run wrote no world state
+  (`wrote-state?`), under either world policy. A move on a run that wrote
+  state replays from the latest anchor before its sites (the world as it was
+  at that site) without adoption; in canonical worlds a keyed model
+  re-executes from its start site (`canonical-anchor?`). A keyed update or
+  adopting replay whose own run writes state is given back and replayed
+  without reuse."
   [t targets move opts]
   (pcps/async
    (when-let [missing (seq (remove #(contains? (:trace/entries t) %) targets))]
@@ -804,19 +869,26 @@
          ;; A resumed parent can drop a whole later keyed collection, whose
          ;; dead sites the released runtime would otherwise retain.
          canonical (canonical? t)
-         local? (and keyed? region (not overlap?) (not canonical)
+         stateful (wrote-state? t)
+         local? (and keyed? region (not overlap?) (not stateful)
                      (not-any? #(not (contains? region (get-in t [:trace/entries % :spin]))) suffix))
          replay (fn []
                   (let [from (replay-origin t targets)]
                     (when-not from
-                      (throw (ex-info "No safe replay anchor precedes the requested sites; use self-contained keyed regions or an anchored prefix"
-                                      {:type ::no-replay-origin :targets (vec targets)})))
+                      (throw (if (and keyed? stateful)
+                               (ex-info (str "This keyed model writes world state, so a key cannot be re-run "
+                                             "in the world its run ended in, and no anchor precedes its keys: "
+                                             "run it with :world-policy :fork (moves then re-run it from its "
+                                             "start), or sample a site before its keyed region")
+                                        {:type ::stateful-keyed-move :targets (vec targets)})
+                               (ex-info "No safe replay anchor precedes the requested sites; use self-contained keyed regions or an anchored prefix"
+                                        {:type ::no-replay-origin :targets (vec targets)}))))
                     (fn [deliver fail]
                       ;; A replay beginning before a key must visit that key,
                       ;; even when its captured inputs are unchanged.
-                      ((trace/replay (if (and (= #{from} (set targets)) (not canonical)) t (dissoc t :trace/world))
-                                     from move (assoc opts :anchor? (or (:anchor? opts)
-                                                                        (if canonical canonical-anchor? anchor?))))
+                      ((replay-sound t from move (assoc opts :anchor? (or (:anchor? opts)
+                                                                          (if canonical canonical-anchor? anchor?)))
+                                     (= #{from} (set targets)))
                        #(deliver (assoc % ::restart from)) fail))))]
      (if-not local?
        (pcps/await (replay))
@@ -825,7 +897,7 @@
              updated (set (:trace/updated next))
              unvisited? (some #(and (contains? (:trace/entries next) %) (not (contains? updated %))) targets)
              outside? (some #(not (contains? allowed (get-in next [:trace/entries % :spin]))) updated)]
-         (if (and (or outside? unvisited?) (not (:trace/error next)))
+         (if (and (or outside? unvisited? (wrote-state? next)) (not (:trace/error next)))
            (do (owner/reclaim! [next] [t])
                (pcps/await (replay)))
            (let [changed (changed-addresses t next)]

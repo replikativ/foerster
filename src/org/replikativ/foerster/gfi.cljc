@@ -96,7 +96,7 @@
             (if (:released? @state)
               (give-up (ex-info "The run was released before it started" {:type ::released}))
               (try
-                (rtp/swap-state! root [:inference :canonical?] (constantly true))
+                (itrace/mark-canonical! root)
                 (let [session (sp/open! root session-opts)
                       after (swap! state #(if (:released? %) % (assoc % :session session)))]
                   (if (:released? after)
