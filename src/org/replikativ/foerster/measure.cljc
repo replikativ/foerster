@@ -55,7 +55,9 @@
     "Effective sample size (ESS) for particle degeneracy detection.
 
     ESS = (sum w_i)^2 / sum(w_i^2) where w_i are normalized weights.
-    Low ESS indicates degeneracy -> trigger resampling.")
+    Low ESS indicates degeneracy -> trigger resampling. For Markov-chain
+    draws (equal weights) this is the number of draws, not the chain ESS:
+    use `foerster.diagnostics/summary`.")
 
   (measure-stats [this query-fn]
     "Compute statistics over the measure using query-fn.
@@ -225,7 +227,11 @@
   (log-marginal [this]
     ;; the normalizer accumulated at earlier resampling steps (SMC attaches
     ;; it as :log-normalizer) plus the log MEAN current weight
-    (when-not (= :unavailable (get-in this [:inference-contract :normalizer :status]))
+    (case (get-in this [:inference-contract :normalizer :status])
+      :unavailable nil
+      ;; a chain's separate evidence estimate: the draws' weights combine
+      ;; samples and carry no evidence
+      :estimate (:log-normalizer this)
       (+ (or (:log-normalizer this) 0.0)
          (log-mean-exp (mapv second particles)))))
 
@@ -266,10 +272,21 @@
                               :normalizer {:status :unverified}}))
 
 (defn markov-measure
-  "Settled chain draws. Their weights combine samples, not evidence estimates."
-  [particles]
-  (assoc (empirical particles) :inference-contract
-         {:semantics :markov-chain :normalizer {:status :unavailable}}))
+  "Settled chain draws. Their weights combine samples, not evidence estimates,
+  so `log-marginal` is nil. A chain method that computes a separate evidence
+  estimate (parallel tempering's stepping stones) passes it as `normalizer`
+  {:estimator e :log-normalizer l}: the contract then names that estimator,
+  status `:estimate`, and `log-marginal` returns it. Either way the draws are
+  autocorrelated: their weight-based `effective-sample-size` is not the chain
+  ESS (see `foerster.diagnostics/summary`, which uses `:chain-lengths`)."
+  ([particles] (markov-measure particles nil))
+  ([particles {:keys [estimator log-normalizer]}]
+   (cond-> (assoc (empirical particles) :inference-contract
+                  {:semantics :markov-chain
+                   :normalizer (if estimator
+                                 {:status :estimate :estimator estimator}
+                                 {:status :unavailable})})
+     estimator (assoc :log-normalizer log-normalizer))))
 
 ;; =============================================================================
 ;; Helper Functions for Particle Manipulation

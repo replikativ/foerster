@@ -313,8 +313,8 @@
 
 (defn move [scope population kernel]
   (spin
-   (claim! scope population)
-   (w/selection (:mass population))
+   ;; a kernel the population cannot take is refused before the population
+   ;; is claimed, so it stays usable
    (let [traced? (some? (:lease population))
          prepared (when traced?
                     (or (get (:transitions population) kernel)
@@ -322,6 +322,12 @@
          _ (when (some transition/adaptation? prepared)
              (throw (ex-info "Population transitions require frozen tuning; run chain warm-up separately"
                              {:type ::adaptive-population-kernel})))
+         _ (when-not (every? #(contains? (get-in % [:capabilities :retention]) :keep-old?) prepared)
+             (throw (ex-info (str "This transition gives back the state it leaves, which a population "
+                                  "keeps for its other owners: use it in chains, not population moves")
+                             {:type ::unretaining-population-kernel})))
+         _ (claim! scope population)
+         _ (w/selection (:mass population))
          current (when traced? (atom (:particles population)))
          moved (await (move-particles (get-in population [:target :representation]) (:resources scope)
                                       (:target population) (:particles population) kernel

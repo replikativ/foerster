@@ -243,10 +243,13 @@
                    (let [particles (mapv (fn [t] [(m/sample-particle (:trace/result t) (itrace/legacy-trace t)) 0.0])
                                          ts)]
                      (resolve
-                      (assoc (m/empirical particles)
-                             :log-normalizer log-z
-                             :temperatures temperatures
-                             :rejuvenation @stats))))]
+                      (-> (m/empirical particles)
+                          (assoc :log-normalizer log-z
+                                 :temperatures temperatures
+                                 :rejuvenation @stats)
+                          ;; the random-walk scales of every move are set from
+                          ;; the population it moves (fixed during the move)
+                          (assoc-in [:inference-contract :adaptation] :population)))))]
         ;; One run first: a model that is one block needs no other run, its
         ;; particles are draws of the block until the end.
            ((run!)

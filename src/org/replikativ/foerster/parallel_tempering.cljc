@@ -171,9 +171,10 @@
     :executor the worlds' executor
     :seed     fixes every draw (default: one from the process generator)
 
-  Returns a CPS operation resolving an EmpiricalMeasure of `Sample`s, each
-  written back to a trace once per distinct θ, whose `m/log-marginal` is the
-  stepping-stone evidence; `:temperatures`, `:barrier` Λ, `:local-barrier`
+  Returns a CPS operation resolving a Markov-chain measure of the target
+  chain's `Sample`s (one chain, `:chain-lengths`), each written back to a
+  trace once per distinct θ. Its contract names the stepping-stone evidence
+  estimate, which `m/log-marginal` returns; `:temperatures`, `:barrier` Λ, `:local-barrier`
   [[β r] …], `:round-trips` and `:swap-acceptance` diagnose the run."
   [model & [{:keys [chains steps executor seed] n-rounds :rounds :or {chains 10 n-rounds 10}}]]
   (when-not (and (int? chains) (>= chains 2))
@@ -213,9 +214,12 @@
                   ((pop/write-back-all template address (:samples res))
                    (fn [traces]
                      (resolve
-                      (assoc (m/empirical (mapv (fn [t] [(m/sample-particle (:trace/result t) (itrace/legacy-trace t)) 0.0])
-                                                traces))
-                             :log-normalizer (:log-z res)
+                      ;; the target chain's states: a Markov output, with
+                      ;; the stepping-stone evidence as a separate estimate
+                      (assoc (m/markov-measure (mapv (fn [t] [(m/sample-particle (:trace/result t) (itrace/legacy-trace t)) 0.0])
+                                                     traces)
+                                               {:estimator :stepping-stone :log-normalizer (:log-z res)})
+                             :chain-lengths [(count traces)]
                              :temperatures (:betas res)
                              :barrier (:barrier res)
                              :local-barrier (:local-barrier res)

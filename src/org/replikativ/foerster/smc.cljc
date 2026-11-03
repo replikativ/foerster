@@ -965,11 +965,15 @@
                           (throw (ex-info "The population is not waiting for a value"
                                           {:type ::not-waiting})))
                       {:keys [streaming]} before
+                      ;; the pushed value is data: the site is decided as an
+                      ;; observation of it, under the particle's own policy
+                      ;; (tempered as an observe is, an intervention taking
+                      ;; precedence), and the particle continues with the
+                      ;; value decided
                       parked (into {} (map (fn [[slot sp]]
-                                             (let [policy (itrace/policy
-                                                           {:constraints {(:savepoint/address sp) value}})]
-                                               (decide! policy sp)
-                                               [slot {:sp sp :value value}])))
+                                             (let [as-data (update sp :savepoint/payload assoc :observed? true :value value)
+                                                   {decided :value} (decide! (policy-of slot) as-data)]
+                                               [slot {:sp sp :value decided}])))
                                    streaming)]
                   (swap! state assoc :streaming {} :parked parked :in-barrier? false)
                   (arrived!))
