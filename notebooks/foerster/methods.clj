@@ -275,7 +275,8 @@ exact
   ;; K: μ' = μ + u, u ~ N(0, 0.05²); L: u' = −u under the same law
   {:forward (fn [{mu :mu} _]
               (let [u (dist/draw step-law)]
-                {:updates {:mu (+ mu u)} :log-q (dist/logpdf step-law u) :reverse (- u)}))
+                {:updates {:mu (+ mu u)} :log-q (dist/logpdf step-law u) :reverse (- u)
+                 :log-jacobian 0.0}))   ; a random walk preserves volume
    :backward (fn [_ u'] (dist/logpdf step-law u'))})
 
 (def rejuvenation-runs

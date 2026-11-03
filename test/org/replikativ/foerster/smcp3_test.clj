@@ -40,7 +40,7 @@
   ;; K: μ' = μ + u, u ~ N(0, .05); back: u' = −u under the same law
   {:forward (fn [{mu :mu} _]
               (let [u (dist/draw step)]
-                {:updates {:mu (+ mu u)} :log-q (dist/logpdf step u) :reverse (- u)}))
+                {:updates {:mu (+ mu u)} :log-q (dist/logpdf step u) :reverse (- u) :log-jacobian 0.0}))
    :backward (fn [_ u'] (dist/logpdf step u'))})
 
 (deftest move-reweight-keeps-the-posterior-and-the-evidence
@@ -67,7 +67,7 @@
   {:forward (fn [{mu :mu} trace]
               (let [q (posterior-after trace)
                     mu' (dist/draw q)]
-                {:updates {:mu mu'} :log-q (dist/logpdf q mu') :reverse [q mu]}))
+                {:updates {:mu mu'} :log-q (dist/logpdf q mu') :reverse [q mu] :log-jacobian 0.0}))
    :backward (fn [_ [q mu]] (dist/logpdf q mu))})
 
 (deftest an-exact-data-driven-kernel
@@ -104,7 +104,7 @@
                 (if (pos? t)
                   (let [u (dist/draw step)]
                     {:updates {[:x (dec t)] (+ (get choices [:x (dec t)]) u)}
-                     :log-q (dist/logpdf step u) :reverse (- u)})
+                     :log-q (dist/logpdf step u) :reverse (- u) :log-jacobian 0.0})
                   {:updates {}})))
    :backward (fn [_ u'] (if (number? u') (dist/logpdf step u') 0.0))})
 
@@ -132,7 +132,7 @@
               (if (< (random/uniform01) 0.9)
                 {:updates {} :log-q (Math/log 0.9) :reverse :stay}
                 (let [u (dist/draw step)]
-                  {:updates {:mu (+ mu u)} :log-q (+ (Math/log 0.1) (dist/logpdf step u)) :reverse (- u)})))
+                  {:updates {:mu (+ mu u)} :log-q (+ (Math/log 0.1) (dist/logpdf step u)) :reverse (- u) :log-jacobian 0.0})))
    :backward (fn [_ u'] (if (= :stay u') (Math/log 0.5) (+ (Math/log 0.5) (dist/logpdf step u'))))})
 
 (deftest a-kernel-that-stays-still-weighs
@@ -144,7 +144,7 @@
         (str (m/log-marginal measure) " vs " log-evidence))))
 
 (deftest an-update-to-an-observed-site-is-refused
-  (let [kernel {:forward (fn [_ _] {:updates {[:y 0] 0.0} :log-q 0.0 :reverse nil})
+  (let [kernel {:forward (fn [_ _] {:updates {[:y 0] 0.0} :log-q 0.0 :reverse nil :log-jacobian 0.0})
                 :backward (fn [_ _] 0.0)}]
     (is (thrown-with-msg? Exception #"observed or constrained"
                           (b/run-infer 35 #(smc/smc (static-model) 10 {:anchors :all :smcp3 kernel}))))))

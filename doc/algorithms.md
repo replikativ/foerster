@@ -350,14 +350,16 @@ the weight keeps the particle properly weighted:
                (let [u (dist/draw (dist/normal 0.0 0.05))]
                  {:updates {:mu (+ mu u)}    ; new values
                   :log-q (dist/logpdf (dist/normal 0.0 0.05) u)
-                  :reverse (- u)}))          ; what L would draw to go back
+                  :reverse (- u)             ; what L would draw to go back
+                  :log-jacobian 0.0}))       ; a random walk preserves volume
    :backward (fn [choices' u'] (dist/logpdf (dist/normal 0.0 0.05) u'))})
 
 (infer/smc-infer (model) 1000 {:anchors #{:mu} :smcp3 random-walk-kernel})
 ```
 
-K draws from `foerster.random` (it runs in the particle's stream), may
-return `:log-jacobian` for a deterministic continuous map, and needs an
+K draws from `foerster.random` (it runs in the particle's stream), must
+return `:log-jacobian` (the log |det| of its deterministic map; 0.0 for a
+random walk or a discrete move), and needs an
 anchor at the earliest site it updates. Sites it does not update are kept,
 and sites the replay reaches afresh are drawn from their prior. The weight's
 variance depends on how well L reverses K: a symmetric random walk as L
@@ -487,7 +489,7 @@ provided.
 | a custom `PInferenceKernel` | SMC whose latent sites take the kernel's `step` value ([extending](extending.md)) |
 | `(k/single-site-mh-kernel iterations opts)` | `n` independent Markov chains of single-site MH, proposals from the prior |
 | `(k/random-walk-mh-kernel iterations {:step-size 0.1})` | random-walk MH on continuous sites |
-| `(k/block-gibbs-kernel iterations selector block-kernels classifier opts)` | block Gibbs: `classifier` `(fn [address entry])` assigns sites to block ids, `selector` (`k/round-robin-selector`, `k/random-selector`) picks a block per iteration, `block-kernels` `{block-id kernel}` moves it (`k/prior-block-kernel`, `k/random-walk-block-kernel`) |
+| `(k/block-gibbs-kernel iterations selector block-kernels classifier opts)` | block Gibbs: `classifier` `(fn [address entry])` assigns sites to block ids, `selector` (`k/round-robin-selector`, `k/random-selector`) picks a block per iteration, `block-kernels` `{block-id kernel}` moves it (`k/prior-block-kernel`, `k/random-walk-block-kernel` on continuous sites, or a custom kernel marked `k/PSymmetricBlockKernel`); a move that changes the block's membership is rejected |
 | `(k/hmc-kernel iterations {:step-size 0.1 :steps 10})` | HMC-within-Gibbs on block sites ([blocks](https://replikativ.github.io/foerster/foerster.blocks.html)) |
 | `(k/nuts-kernel iterations {:burn … :target-accept 0.8 :max-depth 10 :metric :variance})` | the No-U-Turn sampler on block sites, Stan's algorithm: multinomial trajectories, the generalized U-turn criterion, divergences, and during `:burn` dual-averaging step size and windowed diagonal-metric adaptation. `:metric :fisher` estimates the metric from both the warm-up positions and their gradients, √(Var q / Var ∇log p), the diagonal metric minimizing the Fisher divergence (nutpie; Seyboldt, Carlson & Carpenter 2024). On posteriordb, `:fisher` gives 2.8× the ESS/s on wells (logistic, 3020 rows). The default `:variance` gives 1.5× on earnings, a regression with strongly correlated coefficients, and 1.2× on mesquite. Try both on your model; the block's target must be its complete conditional, and its gradient hand-written, compiled by foerster-raster (`defdensity`), or — an explicit opt-in for small blocks — numeric (`block/with-numeric-gradient`) ([nuts](https://cljdoc.org/d/org.replikativ/foerster/CURRENT/api/org.replikativ.foerster.nuts)) |
 | `(k/delayed-acceptance-kernel iterations {address coarse} {:scales 0.1 :steps …})` | two-stage delayed acceptance on block sites (Christen & Fox 2005): a random walk on a cheap `coarse` log density of θ (a surrogate, a coarser model, a Laplace fit) proposes, one replay of the program decides on its own ratio corrected by the coarse one. The chain targets the program's exact posterior whatever `coarse` is (a poor one costs acceptance); the block need not be its complete conditional, since the replay scores every observation |

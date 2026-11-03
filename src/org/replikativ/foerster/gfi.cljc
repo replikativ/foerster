@@ -27,9 +27,9 @@
   (:require [org.replikativ.foerster.scope :as scope]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]))
@@ -98,14 +98,50 @@
 (defn- fresh-log-q
   "Σ log q of the latent choices `new` drew afresh: not shared with `old`
   (upstream of a replay the entries are the same objects), not kept, not
-  constrained."
+  constrained, not set to a given value (`:moved?`)."
   [old new]
   (let [old-by (entry-map old)]
     (transduce (comp (filter itrace/latent?)
                      (remove #(identical? (:note %) (:note (get old-by (:address %)))))
                      (remove (comp :kept? :note))
+                     (remove (comp :moved? :note))
                      (map (comp :log-proposal :note)))
                + 0.0 (itrace/entries new))))
+
+(defn- visited-addresses
+  "The addresses of the sample sites `t` reached."
+  [t]
+  (into #{} (keep #(when (= itrace/choose-site (:site %)) (:address %))) (itrace/entries t)))
+
+(defn- unvisited-error
+  "An error for the `constraints` addresses `t` never reached, or nil. Gen
+  requires every constrained address to be a choice of the new trace; a
+  constraint the run does not reach is most often a misspelled address or a
+  branch the caller did not expect."
+  [operation t constraints]
+  (let [visited (visited-addresses t)
+        missing (vec (remove visited (keys constraints)))]
+    (when (seq missing)
+      (ex-info (str operation ": constraints on sample sites the run never reached "
+                    "(pass :allow-unvisited? true to ignore them)")
+               {:type ::unvisited-constraints :addresses missing}))))
+
+(defn- check-visited
+  "A CPS operation resolving `(f t)` for the trace `operation` resolves,
+  unless `constraints` hold addresses it never reached: then the trace's
+  session — every world of a fresh run — is closed and the operation rejects
+  with `::unvisited-constraints`."
+  [name operation constraints allow-unvisited? close-on-error f]
+  (fn [resolve reject]
+    (operation (fn [t]
+                 ;; a run the program aborted reached only part of its
+                 ;; sites: its own error is what to report, not theirs
+                 (if-let [error (when-not (or allow-unvisited? (:trace/error t))
+                                  (unvisited-error name t constraints))]
+                   (close-on-error t (fn [] (reject error)))
+                   (try (resolve (f t))
+                        (catch #?(:clj Throwable :cljs :default) e (reject e)))))
+               reject)))
 
 (defn simulate
   "Run `model` (a spin) drawing every sample site from its prior. Resolves the
@@ -117,11 +153,19 @@
 (defn generate
   "Run `model` with the sample sites in `constraints` ({address value}) fixed.
   Resolves {:trace t :weight w}, w = Σ log p of the constrained and observed
-  sites: an importance weight for the prior as proposal."
+  sites: an importance weight for the prior as proposal.
+
+  Every constrained address must be reached by the run; otherwise the run's
+  worlds are closed and the operation rejects with `::unvisited-constraints`.
+  `:allow-unvisited? true` ignores such constraints instead. The other options
+  are those of `simulate`."
   ([model constraints] (generate model constraints nil))
-  ([model constraints opts]
-   (then (run model (itrace/policy {:constraints constraints}) opts)
-         (fn [t] {:trace t :weight (itrace/log-weight t)}))))
+  ([model constraints {:keys [allow-unvisited?] :as opts}]
+   (check-visited "generate"
+                  (run model (itrace/policy {:constraints constraints}) (dissoc opts :allow-unvisited?))
+                  constraints allow-unvisited?
+                  (fn [t done] ((close! t) (fn [_] (done)) (fn [_] (done))))
+                  (fn [t] {:trace t :weight (itrace/log-weight t)}))))
 
 (defn assess
   "log p of `choices` ({address value}), which must fix every sample site the
@@ -145,9 +189,9 @@
 (defn- assess-visiting
   "As `assess`, resolving also `:visited`, the addresses of the sample sites
   the run reached; `choices` may hold others, which it ignores."
-  [model choices]
+  [model choices opts]
   (fn [resolve reject]
-    ((run model (itrace/policy {:constraints choices}) nil)
+    ((run model (itrace/policy {:constraints choices}) opts)
      (fn [t]
        (let [free (itrace/latent-addresses t)
              out {:weight (itrace/log-joint t)
@@ -161,9 +205,15 @@
           reject)))
      reject)))
 
-(defn- replay-from [trace addresses]
+(defn- replay-from
+  "The earliest of `addresses` in `trace`, or else its first sample site that
+  is not an observation, so that a replay can reach sites the trace never
+  did."
+  [trace addresses]
   (or (trace/earliest trace addresses)
-      (first (itrace/latent-addresses trace))))
+      (some (fn [e] (when (and (= itrace/choose-site (:site e)) (not (:observed? (:note e))))
+                      (:address e)))
+            (itrace/entries trace))))
 
 (defn update
   "Change the sample sites in `constraints` ({address value}) and run the
@@ -176,31 +226,56 @@
     d = {address value} of the choices of t that t' does not keep: the
         overwritten values of constrained sites, and the sites no longer
         reached.
+  As in Gen, a kept value is kept even when the change moved it outside its
+  site's support: t' then has density zero and w = −∞. `constraints` are new
+  values, not new conditioning: a site that was latent stays latent with its
+  new value (so a later move can change it again), and one that was
+  constrained stays constrained. A replay the program aborts resolves with
+  w = −∞ and the program's error under `:error`.
+
   A constraint on a site `trace` never reached replays from its first
-  sample site, so the program can get there."
-  [trace constraints]
-  (let [from (replay-from trace (filter #(contains? (entry-map trace) %) (keys constraints)))]
-    (if-not from
-      (fn [_ reject]
-        (reject (ex-info "update: the trace has no sample site to replay from"
-                         {:type ::nothing-to-replay})))
-      (then (itrace/reexecute trace (let [existing (filter #(contains? (entry-map trace) %) (keys constraints))]
-                                      (if (seq existing) (set existing) #{from}))
-                              (itrace/policy {:keep? true :constraints constraints})
-                              {:anchor? itrace/anchor?})
-            (fn [t']
-              (let [new-by (entry-map t')
-                    discard (into {}
-                                  (keep (fn [{:keys [address value] :as e}]
-                                          (when (and (= itrace/choose-site (:site e))
-                                                     (not (:observed? (:note e)))
-                                                     (or (not (contains? new-by address))
-                                                         (contains? constraints address)))
-                                            [address value])))
-                                  (itrace/entries trace))]
-                {:trace t'
-                 :weight (- (itrace/log-joint t') (itrace/log-joint trace) (fresh-log-q trace t'))
-                 :discard discard}))))))
+  sample site, so the program can get there. A constraint the new run still
+  does not reach is an error (`::unvisited-constraints`; the replayed worlds
+  are given back) unless `:allow-unvisited? true`."
+  ([trace constraints] (update trace constraints nil))
+  ([trace constraints {:keys [allow-unvisited?]}]
+   (let [from (replay-from trace (filter #(contains? (entry-map trace) %) (keys constraints)))]
+     (if-not from
+       (fn [_ reject]
+         (reject (ex-info "update: the trace has no sample site to replay from"
+                          {:type ::nothing-to-replay})))
+       (check-visited "update"
+                      (let [old-by (entry-map trace)
+                            fixed? (fn [a] (let [n (:note (get old-by a))]
+                                             (and (:constrained? n) (not (:intervened? n)))))
+                            fixed (into {} (filter (comp fixed? key)) constraints)
+                            moved (into {} (remove (comp fixed? key)) constraints)]
+                        (itrace/reexecute trace (let [existing (filter #(contains? old-by %) (keys constraints))]
+                                                  (if (seq existing) (set existing) #{from}))
+                                          (itrace/policy {:keep? true :constraints fixed :out-of-support :keep
+                                                          :draw (fn [sp _]
+                                                                  (when-let [[_ v] (find moved (:savepoint/address sp))]
+                                                                    {:value v :symmetric? true}))})
+                                          {:anchor? itrace/anchor?}))
+                      constraints allow-unvisited?
+                      (fn [t' done] (trace/release! t' trace) (done))
+                      (fn [t']
+                        (let [error (:trace/error t')
+                              new-by (entry-map t')
+                              discard (into {}
+                                            (keep (fn [{:keys [address value] :as e}]
+                                                    (when (and (= itrace/choose-site (:site e))
+                                                               (not (:observed? (:note e)))
+                                                               (or (not (contains? new-by address))
+                                                                   (contains? constraints address)))
+                                                      [address value])))
+                                            (itrace/entries trace))]
+                          (cond-> {:trace t'
+                                   :weight (if error
+                                             ##-Inf
+                                             (- (itrace/log-joint t') (itrace/log-joint trace) (fresh-log-q trace t')))
+                                   :discard discard}
+                            error (assoc :error error)))))))))
 
 (defn- selected [trace selection]
   (let [entries (:trace/entries trace)]
@@ -262,34 +337,40 @@
     log α = w(update) + log q(c | t') − log q(c' | t).
   The proposal must be able to propose the reverse move (it reaches the same
   addresses from t'). The loser's worlds are given back. Resolves
-  {:trace t :accepted? b}."
+  {:trace t :accepted? b}. The proposal's own runs are seeded from the
+  trace's world, so a chain seeded by `:seed` reproduces its moves."
   [trace proposal & args]
   (fn [resolve reject]
-    ((simulate (apply proposal (itrace/choices trace) args))
-     (fn [fwd]
-       (let [proposed (itrace/choices fwd)
-             fwd-score (itrace/log-joint fwd)]
-         ((close! fwd)
-          (fn [_]
-            ((update trace proposed)
-             (fn [{t' :trace w :weight discard :discard}]
-               ((assess-visiting (apply proposal (itrace/choices t') args) discard)
-                (fn [{bwd-score :weight visited :visited}]
+    (let [world (:trace/world trace)
+          move (rtp/swap-state! world [:inference ::proposals] (fnil inc 0))
+          seed-of (fn [role] (sp/derive-seed (sp/seed world) ::proposal [move role]))]
+      ((simulate (apply proposal (itrace/choices trace) args) {:seed (seed-of :forward)})
+       (fn [fwd]
+         (let [proposed (itrace/choices fwd)
+               fwd-score (itrace/log-joint fwd)]
+           ((close! fwd)
+            (fn [_]
+              ((update trace proposed)
+               (fn [{t' :trace w :weight discard :discard}]
+                 ((assess-visiting (apply proposal (itrace/choices t') args) discard {:seed (seed-of :reverse)})
+                  (fn [{bwd-score :weight visited :visited}]
                   ;; a discarded site the reverse proposal does not propose
-                  ;; would be drawn afresh from its prior by the reverse
-                  ;; update: its prior density belongs to the reverse move
-                  (let [regenerated (reduce + 0.0 (for [[a v] discard
-                                                        :when (not (contains? visited a))]
-                                                    (dist/logpdf (get-in (entry-map trace) [a :note :dist]) v)))
-                        log-alpha (+ w (- (+ bwd-score regenerated) fwd-score))
-                        accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) log-alpha))
-                                     (or (>= log-alpha 0.0)
-                                         (< (Math/log (random/in-world-stream (:trace/world t') ::accept
-                                                                              m/uniform01))
-                                            log-alpha)))]
-                    (if accept? (trace/release! trace t') (trace/release! t' trace))
-                    (resolve {:trace (if accept? t' trace) :accepted? accept?})))
-                (fn [e] (trace/release! t' trace) (reject e))))
-             reject))
-          reject)))
-     reject)))
+                  ;; would be drawn afresh by the reverse update, as a replay
+                  ;; draws it (its prior, its site proposal or a block's
+                  ;; :sample): that density belongs to the reverse move
+                    (let [old-by (entry-map trace)
+                          regenerated (reduce + 0.0 (for [[a v] discard
+                                                          :when (not (contains? visited a))]
+                                                      (itrace/redraw-log-density (get-in old-by [a :note]) v)))
+                          log-alpha (+ w (- (+ bwd-score regenerated) fwd-score))
+                          accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) log-alpha))
+                                       (or (>= log-alpha 0.0)
+                                           (< (Math/log (random/in-world-stream (:trace/world t') ::accept
+                                                                                m/uniform01))
+                                              log-alpha)))]
+                      (if accept? (trace/release! trace t') (trace/release! t' trace))
+                      (resolve {:trace (if accept? t' trace) :accepted? accept?})))
+                  (fn [e] (trace/release! t' trace) (reject e))))
+               reject))
+            reject)))
+       reject))))

@@ -53,7 +53,7 @@
                                                  kernel (ip/transport-kernel
                                                          source destination
                                                          (fn [choices _] {:updates {:h (not (:h choices))}
-                                                                          :log-q 0.0 :reverse nil})
+                                                                          :log-q 0.0 :reverse nil :log-jacobian 0.0})
                                                          (fn [_ _] 0.0))
                                                  p (await (ip/initialize scope source 1024))
                                                  _ (reset! before (mapv :trace/result (:particles p)))
@@ -80,7 +80,7 @@
                                    (let [source (ip/trace-target (coin))
                                          destination (ip/temperature source 1.0)
                                          kernel (ip/transport-kernel source destination
-                                                                     (fn [_ _] {:updates {:typo true} :log-q 0.0})
+                                                                     (fn [_ _] {:updates {:typo true} :log-q 0.0 :log-jacobian 0.0})
                                                                      (fn [_ _] 0.0))
                                          p (await (ip/initialize scope source 2))
                                          p (await (ip/transport scope p destination kernel))]
@@ -95,8 +95,15 @@
                                    (let [source (ip/value-target (constantly 0.0) (constantly 0.0) (constantly 0.0))
                                          destination (ip/trace-target (coin))
                                          kernel (ip/transport-kernel source destination
-                                                                     (fn [x] {:value x :log-q 0.0})
+                                                                     (fn [x] {:value x :log-q 0.0 :log-jacobian 0.0})
                                                                      (fn [_ _] 0.0))
                                          p (await (ip/initialize scope source 1))
                                          p (await (ip/transport scope p destination kernel))]
                                      (ip/finish scope p)))))))))
+
+(deftest a-transport-must-state-its-jacobian
+  (is (= ::transport/missing-jacobian
+         (:type (ex-data (try (transport/require-jacobian! {:value 1.0 :log-q 0.0} "A kernel")
+                              (catch Exception e e))))))
+  (is (map? (transport/require-jacobian! {:value 1.0 :log-q 0.0 :log-jacobian 0.0} "A kernel")))
+  (is (map? (transport/require-jacobian! {:updates {}} "A kernel")) "staying put needs none"))

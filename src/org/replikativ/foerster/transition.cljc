@@ -27,28 +27,35 @@
   "Translate a BlockGibbsKernel into `itrace/mh-step` options. The classifier
   and the selector see the trace in its legacy shape; only latent
   sites are classified, and a step whose block is empty or has no kernel moves
-  nothing. The selection probability is taken to be the same in both traces,
-  which holds when a move does not change which sites belong to the block."
+  nothing. Blocks are selected by id, independently of the trace; a move that
+  changes which sites belong to the selected block is rejected (its selection
+  term is −∞), because its reverse would move a different set of sites.
+  Rejecting it in both directions keeps detailed balance."
   [{:keys [block-selector block-kernels address-classifier]}]
-  (let [proposals (atom nil)]
+  (let [proposals (atom nil)
+        block-of (fn [t legacy block-id]
+                   (let [latent (set (itrace/latent-addresses t))]
+                     (into #{} (keep (fn [[address entry]]
+                                       (when (and (some? block-id)
+                                                  (latent address)
+                                                  (= block-id (address-classifier address entry)))
+                                         address)))
+                           legacy)))]
     {:select
      (fn [current iteration]
        (let [legacy (itrace/legacy-trace current)
-             latent (set (itrace/latent-addresses current))
-             blocks (reduce-kv (fn [acc address entry]
-                                 (if-let [block-id (and (latent address)
-                                                        (address-classifier address entry))]
-                                   (update acc block-id (fnil conj #{}) address)
-                                   acc))
-                               {} legacy)
              block-id (k/select-block block-selector legacy iteration)
-             targets (get blocks block-id #{})
+             targets (block-of current legacy block-id)
              kernel (get block-kernels block-id)]
          (reset! proposals (when (and kernel (seq targets)
                                       (not (instance? org.replikativ.foerster.kernel.PriorBlockKernel kernel)))
                              (k/propose-block kernel legacy targets)))
-         ;; Blocks are selected by id, independently of the trace.
-         {:targets targets :log-selection (constantly 0.0)}))
+         {:targets targets
+          :log-selection (fn [t]
+                           (if (or (identical? t current)
+                                   (= targets (block-of t (itrace/legacy-trace t) block-id)))
+                             0.0
+                             ##-Inf))}))
      :propose
      (fn [sp-value old-entry]
        (if-let [proposed @proposals]
@@ -90,6 +97,12 @@
   (if (#{:cycle :mixture} (k/transition-id tree))
     (mapcat leaves (:kernels tree)) [tree]))
 
+(defn- adaptive-leaf?
+  "Whether a leaf kernel tunes itself during its `:burn` (NUTS and the
+  adaptive random walk); other kernels' `:burn` only drops output."
+  [leaf]
+  (contains? #{:nuts :random-walk-mh} (k/transition-id leaf)))
+
 (defn prepare
   "Compile once per independently moving chain or particle. The result owns
   local tuning counters and must not be shared by resampled descendants.
@@ -100,13 +113,21 @@
     (throw (ex-info "Only Markov kernels can be prepared" {:type ::unsupported-kernel})))
   (let [tree (compile-tree kernel [])]
     {::tree tree
-     :adaptation? (boolean (some #(and (#{:nuts :random-walk-mh} (k/transition-id %))
-                                       (pos? (:burn % 0))) (leaves tree)))
+     :adaptation? (boolean (some #(and (adaptive-leaf? %) (pos? (:burn % 0))) (leaves tree)))
      :capabilities {:retention #{:keep-old? :shared-anchors?}
                     :tempering? (every? #(#{:single-site-mh :block-gibbs :finite-gibbs}
                                           (k/transition-id %)) (leaves tree))}}))
 
 (defn adaptation? [prepared] (:adaptation? prepared))
+
+(defn- warming-up-fn
+  "A function of no arguments: whether some leaf of `tree` with a warm-up
+  (`:burn`, NUTS and adaptive random-walk MH) has not yet finished it. A
+  leaf's local counter is the index of its latest move; the state after move
+  `burn` − 1 is still warm-up."
+  [tree]
+  (let [adaptive (filterv #(and (adaptive-leaf? %) (pos? (:burn % 0))) (leaves tree))]
+    (fn [] (boolean (some #(< @(::local-counter %) (:burn %)) adaptive)))))
 
 (defn- validate-context! [prepared context]
   (let [beta (itrace/target-temperature context)]
@@ -189,6 +210,7 @@
         tree (::tree prepared)]
     {:iterations (:num-iterations kernel)
      :iteration-stride (::span tree)
+     :warming-up? (warming-up-fn tree)
      :step (fn [current context]
              (validate-context! prepared context)
              (iteration-of tree current (:iteration context)
@@ -213,12 +235,16 @@
 (defn- run-markov-chain
   "One chain in its own world: run the model, move it `iterations` times,
   give every world back. Returns the chain's particles: its projected final
-  state, or (kernel `:samples :all`) every state after `:burn` as a Sample."
+  state, or (kernel `:samples :all`) every state after `:burn` as a Sample.
+  A state is never a draw while a component kernel is still in its own
+  warm-up (a NUTS or adaptive random-walk leaf's `:burn` inside a `cycle` or
+  `mixture`); a chain that ends before every warm-up finished is an error."
   [model-task kernel executor seed]
   (spin-core/with-causal-descendant-egress
     (spin
      (let [;; per chain: a block Gibbs description closes over its own state
-           {:keys [iterations] :as step-opts} (options kernel)
+           {:keys [iterations warming-up?] :as step-opts} (options kernel)
+           step-opts (dissoc step-opts :warming-up?)
            _ (when (and (= :all (:samples kernel)) (>= (:burn kernel 0) iterations))
                (throw (ex-info ":burn leaves no draws: it must be below :iterations"
                                {:type :org.replikativ.foerster.core/burn-exceeds-iterations :burn (:burn kernel) :iterations iterations})))
@@ -243,7 +269,8 @@
                            (assoc :on-step
                                   (let [i (volatile! 0)]
                                     (fn [{t :trace :keys [sampler-stats]}]
-                                      (when (> (vswap! i inc) (:burn kernel 0))
+                                      (when (and (> (vswap! i inc) (:burn kernel 0))
+                                                 (not (warming-up?)))
                                         (vswap! samples conj
                                                 [(cond-> (m/sample-particle (:trace/result t)
                                                                             (itrace/legacy-trace t))
@@ -251,6 +278,13 @@
                                                  0.0]))))))
                {final :trace moves :moves accepted :accepted}
                (await (itrace/mh-chain initial iterations step-opts))
+               _ (when (warming-up?)
+                   (throw (ex-info (str "A kernel's warm-up (:burn of a NUTS or adaptive random-walk kernel) "
+                                        "did not finish within the chain: the chain must run past it. In a cycle "
+                                        "or mixture the warm-up counts that kernel's own moves, which a mixture "
+                                        "makes only when it picks it: raise the iterations or lower its :burn")
+                                   {:type :org.replikativ.foerster.core/warm-up-unfinished
+                                    :iterations iterations})))
                world (:trace/world final)]
            (rtp/swap-state! world [:inference]
                             (fn [state]

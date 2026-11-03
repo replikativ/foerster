@@ -139,7 +139,7 @@
                   {:keys [value log-weight-delta]}
                   (k/step kernel world
                           {:source dist :options options :address (:savepoint/address sp)}
-                          (itrace/legacy-trace (rtp/get-state world [:savepoint/trace])))]
+                          (itrace/world-legacy-trace world))]
               {:value value
                :log-proposal (- (dist/logpdf dist value) (or log-weight-delta 0.0))}))}))
 

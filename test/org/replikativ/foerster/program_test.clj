@@ -203,7 +203,7 @@
         source (ip/value-target #(if % 0.0 ##-Inf) #(swap! draws not) (constantly (- (Math/log 2.0))))
         destination (ip/retarget source :next (constantly 0.0))
         kernel (ip/transport-kernel source destination
-                                    (fn [x] {:value x :log-q 0.0 :reverse nil})
+                                    (fn [x] {:value x :log-q 0.0 :reverse nil :log-jacobian 0.0})
                                     (fn [_ _] 0.0))]
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"resample first"
                           (run #(ip/run (fn [scope]

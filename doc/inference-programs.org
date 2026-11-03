@@ -91,7 +91,7 @@ should use =foerster.random= / =foerster.dist= so each particle has a keyed stre
 =transport-kernel= binds forward and backward proposal laws to source and
 destination target identities. =(await (ip/transport scope p destination kernel))=
 proposes new particles and corrects each weight by the target-score difference,
-minus the forward log density, plus the backward log density and any supplied
+minus the forward log density, plus the backward log density and the supplied
 log Jacobian. Value transport may change dimension when these laws justify it.
 Trace transport retains its model representation and updates anchored latent
 choices; observed and constrained sites cannot be changed. Forward/backward

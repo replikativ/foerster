@@ -194,6 +194,13 @@
   (propose-block [this trace block-addresses]
     "Returns {addr -> proposed-value} for addresses in this block."))
 
+(defprotocol PSymmetricBlockKernel
+  "Marks a `PBlockKernel` whose proposal is symmetric, q(x' | x) = q(x | x'):
+  block Gibbs accepts its moves on the ratio of target densities alone. A
+  kernel that is not symmetric has no place in block Gibbs; propose it with
+  `gfi/mh-proposal` (a proposal program, scored both ways) or as an
+  involutive move instead.")
+
 (defrecord RoundRobinSelector [block-ids]
   PBlockSelector
   (select-block [_ _trace iteration]
@@ -227,14 +234,19 @@
 (defn prior-block-kernel [] (->PriorBlockKernel))
 
 (defrecord RandomWalkBlockKernel [step-size]
+  PSymmetricBlockKernel
   PBlockKernel
   (propose-block [_ trace block-addresses]
     (into {}
           (map (fn [addr]
                  (let [entry (get trace addr)
-                       current (:value entry)
-                       proposed (random-walk-propose current step-size)]
-                   [addr proposed]))
+                       current (:value entry)]
+                   ;; a Gaussian step is a move on the reals: noise on a
+                   ;; discrete value is not a value of its law
+                   (when-not (and (number? current) (dist/continuous? (:distribution entry)))
+                     (throw (ex-info "A random-walk block kernel moves real-valued sites only"
+                                     {:type ::not-real-valued :address addr})))
+                   [addr (random-walk-propose current step-size)]))
                block-addresses))))
 
 (defn random-walk-block-kernel
@@ -248,7 +260,12 @@
   (transition-id [_] :block-gibbs))
 
 (defn block-gibbs-kernel
-  "Create a BlockGibbsKernel for block Gibbs sampling.
+  "Create a BlockGibbsKernel for block Gibbs sampling: `address-classifier`
+  (fn [address entry]) assigns latent sites to block ids, `block-selector`
+  picks a block id per iteration, and `block-kernels` {block-id kernel}
+  moves the block (the prior kernel, or a symmetric kernel). A move that
+  changes which sites belong to the moved block is rejected: its reverse
+  would move a different block.
 
   Output options (all Markov-chain kernels): `:samples :final` (default)
   emits each chain's last state; `:samples :all` emits every state after
@@ -259,6 +276,13 @@
          (satisfies? PBlockSelector block-selector)
          (map? block-kernels)
          (fn? address-classifier)]}
+  (when-let [bad (seq (remove (fn [[_ kernel]]
+                                (or (instance? PriorBlockKernel kernel)
+                                    (satisfies? PSymmetricBlockKernel kernel)))
+                              block-kernels))]
+    (throw (ex-info (str "Block Gibbs accepts on the target ratio alone, so a block kernel "
+                         "must be the prior kernel or symmetric (PSymmetricBlockKernel)")
+                    {:type ::asymmetric-block-kernel :blocks (mapv first bad)})))
   (chain-output (->BlockGibbsKernel num-iterations block-selector block-kernels address-classifier)
                 opts))
 
