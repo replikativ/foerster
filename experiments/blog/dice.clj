@@ -5,11 +5,12 @@
          '[org.replikativ.foerster.dist :as dist]
          '[org.replikativ.foerster.effects :refer [sample observe factor]]
          '[org.replikativ.foerster.measure :as m]
+         '[org.replikativ.foerster.weights :as weights]
          '[org.replikativ.spindel.core :as sp])
 (def world (sp/create-execution-context))
 (defn posterior [make]
   (let [ms (sp/with-context world @(infer/infer (make) {:method :enumerate}))
-        ps (m/get-particles ms) ws (m/normalize-log-weights (mapv second ps))]
+        ps (m/get-particles ms) ws (weights/normalize-log-weights (mapv second ps))]
     (->> (map (fn [[p _] w] [(m/get-value p) w]) ps ws)
          (reduce (fn [acc [v w]] (update acc v (fnil + 0.0) w)) {})
          (filter (comp pos? second)) (sort-by first) (mapv (fn [[v w]] [v (/ (Math/round (* 1000 w)) 1000.0)])))))

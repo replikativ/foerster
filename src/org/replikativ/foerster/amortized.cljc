@@ -6,12 +6,12 @@
   (:refer-clojure :exclude [await])
   (:require [clojure.set :as set]
             [org.replikativ.foerster.block :as block]
-            [org.replikativ.foerster.counterfactual :as cf]
+            [org.replikativ.foerster.causal.counterfactual :as cf]
             [org.replikativ.foerster.dist :as dist]
-            [org.replikativ.foerster.gfi :as gfi]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.trace :as trace]
+            [org.replikativ.foerster.runtime.trace :as trace]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))

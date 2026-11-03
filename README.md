@@ -126,7 +126,7 @@ for posterior diagnostics and validation; a successful run alone is not a fit ch
   tempering**; kernels composed by `k/cycle` and `k/mixture`
 - **MAP** (L-BFGS), the **Laplace approximation** and **Pathfinder** on
   blocks; **BBVI** (black-box variational inference); evidence maximization
-  for a model's parameters (`foerster.learn`)
+  for a model's parameters (`foerster.amortized.learn`)
 - **Anglican's toolkit**: `mem`, Chinese restaurant processes, nested
   inference (`infer/conditional`)
 - **checking**: R-hat, bulk and tail ESS and MCSE as ArviZ computes them,
@@ -136,8 +136,8 @@ for posterior diagnostics and validation; a successful run alone is not a fit ch
   posteriors, accuracy and speed of NUTS, tempered SMC and parallel
   tempering)
 - **steering** a process — a language model's turns, a simulator — by SMC
-  over scored steps, twisted by a value estimate (`foerster.steer`), with
-  the trajectories as training data (`foerster.learn`)
+  over scored steps, twisted by a value estimate (`foerster.inference.steer`), with
+  the trajectories as training data (`foerster.amortized.learn`)
 - **guides**: a sample site's `:proposal` draws from a distribution the
   program computes, weighted by log p − log q
 - **counterfactuals** and interventions (Pearl's `do`), selectors over sites
@@ -225,7 +225,7 @@ foerster stands on earlier probabilistic programming systems:
 - [Gen](https://www.gen.dev/) ([Gen.jl](https://github.com/probcomp/Gen.jl)),
   programmable inference through the generative function interface —
   `simulate`, `generate`, `assess`, `update`, `regenerate` over traces — which
-  foerster implements (`foerster.gfi`), and involutive MCMC.
+  foerster implements (`foerster.runtime.gfi`), and involutive MCMC.
 
 foerster grew inside spindel and was split out with its history.
 

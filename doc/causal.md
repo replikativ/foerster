@@ -31,7 +31,7 @@ repairs and allocates excess latency. It also shows a nonlinear mechanism
 that the linear model's residual checks reject.
 
 ```clojure
-(require '[org.replikativ.foerster.causal-model :as cm])
+(require '[org.replikativ.foerster.causal.model :as cm])
 
 (def fitted
   (cm/fit {:directed [[:load :queue] [:load :latency] [:queue :latency]]}
@@ -118,10 +118,10 @@ automatic model-family selection.
 The namespaces used below are:
 
 ```clojure
-(require '[org.replikativ.foerster.counterfactual :as cf]
-         '[org.replikativ.foerster.causal :as causal]
-         '[org.replikativ.foerster.attribution :as attribution]
-         '[org.replikativ.foerster.mechanism :as mechanism])
+(require '[org.replikativ.foerster.causal.counterfactual :as cf]
+         '[org.replikativ.foerster.causal.identification :as causal]
+         '[org.replikativ.foerster.causal.attribution :as attribution]
+         '[org.replikativ.foerster.model.mechanism :as mechanism])
 ```
 
 `cf/query` returns a CPS operation, as GFI does. Invoke it with success and

@@ -4,7 +4,7 @@
   (:require [clojure.edn :as edn]
             [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.reactive-telemetry :as telemetry]
-            [org.replikativ.foerster.scmc :as scmc]))
+            [org.replikativ.foerster.inference.scmc :as scmc]))
 
 (def receipt
   (delay

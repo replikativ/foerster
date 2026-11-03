@@ -11,8 +11,9 @@
   (:require [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -54,7 +55,7 @@
   "Posterior mean and standard deviation of x_t."
   [measure t]
   (let [ps (m/get-particles measure)
-        ws (m/normalize-log-weights (mapv second ps))
+        ws (weights/normalize-log-weights (mapv second ps))
         xs (mapv (fn [[s _]] (:value (get (m/get-trace s) [:x t]))) ps)
         mu (reduce + (map * ws xs))]
     [mu (Math/sqrt (reduce + (map (fn [w x] (* w (let [d (- x mu)] (* d d)))) ws xs)))]))
@@ -108,7 +109,7 @@
 
 ;; Static parameters of a streamed model degenerate under plain SMC: give
 ;; them resample-move moves (`:anchors {:lag L}` bounds the replay), carry a
-;; conjugate posterior (`foerster.conjugate`), or infer them by SMC²
+;; conjugate posterior (`foerster.model.conjugate`), or infer them by SMC²
 ;; (`smc2/smc2`, the same step shape). For a stream of exchangeable data,
 ;; sequential core-set Monte Carlo (`scmc/scmc`) runs in bounded memory. See
 ;; [Inference Methods](foerster.methods.html).

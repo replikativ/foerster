@@ -8,7 +8,7 @@
             [raster.dl.gsdm :as g]
             [raster.dl.diffusion :as diffusion]
             [raster.params :as params]
-            [org.replikativ.foerster.counterfactual :as cf]
+            [org.replikativ.foerster.causal.counterfactual :as cf]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.spindel.engine.context :as context]

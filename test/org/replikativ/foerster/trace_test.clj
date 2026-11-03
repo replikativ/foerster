@@ -4,7 +4,7 @@
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.effects :refer [sample observe factor]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]

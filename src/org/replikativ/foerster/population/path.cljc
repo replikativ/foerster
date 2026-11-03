@@ -5,7 +5,6 @@
   (:require [is.simm.partial-cps.async :as pcps]
             [is.simm.partial-cps.runtime :as cps-runtime]
             [org.replikativ.foerster.weights :as weights]
-            [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random])
   #?(:cljs (:require-macros [is.simm.partial-cps.async :as pcps])))
 
@@ -19,7 +18,7 @@
   (when-not (pos-int? n)
     (throw (ex-info "Selection requires positive population size" {:type ::invalid-size :size n})))
   (let [selection (weights/selection (:mass population))
-        ancestors (random/with-stream* seed key #(m/resample method selection n))]
+        ancestors (random/with-stream* seed key #(weights/resample method selection n))]
     {:ancestors ancestors :mass (weights/resampled (:mass population) n)}))
 
 (defn selected [population plan particles]

@@ -4,7 +4,7 @@
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
             [org.replikativ.foerster.dist :as d]
-            [org.replikativ.foerster.mechanism :as mech]
+            [org.replikativ.foerster.model.mechanism :as mech]
             [org.replikativ.foerster.random :as random]))
 
 (defn- close? [a b] (< (Math/abs (- a b)) (* 1e-12 (max 1.0 (Math/abs b)))))

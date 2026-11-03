@@ -4,9 +4,9 @@
   afresh or drops, constrained sites across replays, and constraints the run
   never reaches. Each is checked against an exact answer."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.foerster.gfi :as gfi]
-            [org.replikativ.foerster.involutive :as inv]
-            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
+            [org.replikativ.foerster.moves.involutive :as inv]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
@@ -201,7 +201,7 @@
 (deftest constraints-must-be-visited
   (with-root [root]
     (testing "generate"
-      (is (= :org.replikativ.foerster.gfi/unvisited-constraints
+      (is (= :org.replikativ.foerster.runtime.gfi/unvisited-constraints
              (:type (ex-data (try (await-cps (gfi/generate (switch root) {:b true :v1 3.0}))
                                   (catch Exception e e))))))
       (let [{t :trace} (await-cps (gfi/generate (switch root) {:b true :v1 3.0}
@@ -210,7 +210,7 @@
         (await-cps (gfi/close! t))))
     (testing "update"
       (let [{t :trace} (await-cps (gfi/generate (switch root) {:b true :v0 0.3}))]
-        (is (= :org.replikativ.foerster.gfi/unvisited-constraints
+        (is (= :org.replikativ.foerster.runtime.gfi/unvisited-constraints
                (:type (ex-data (try (await-cps (gfi/update t {:v1 3.0}))
                                     (catch Exception e e))))))
         (is (map? (await-cps (gfi/update t {:v1 3.0} {:allow-unvisited? true}))))

@@ -2,7 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.block :as block]
-            [org.replikativ.foerster.optimize :as opt]
+            [org.replikativ.foerster.inference.optimize :as opt]
             [org.replikativ.foerster.random :as random]))
 
 (def ^:private m [1.0 -2.0 0.5])

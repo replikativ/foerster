@@ -9,9 +9,9 @@
             [clojure.walk :as walk]
             [org.replikativ.foerster.analysis :as analysis]
             [org.replikativ.foerster.amortized :as amortized]
-            [org.replikativ.foerster.counterfactual :as cf]
-            [org.replikativ.foerster.gfi :as gfi]
-            [org.replikativ.foerster.trace :as trace]
+            [org.replikativ.foerster.causal.counterfactual :as cf]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
+            [org.replikativ.foerster.runtime.trace :as trace]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 

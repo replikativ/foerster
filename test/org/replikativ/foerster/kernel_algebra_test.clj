@@ -7,8 +7,8 @@
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
-            [org.replikativ.foerster.kernel :as k]
-            [org.replikativ.foerster.nuts :as nuts]
+            [org.replikativ.foerster.moves.kernel :as k]
+            [org.replikativ.foerster.moves.nuts :as nuts]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn- model []

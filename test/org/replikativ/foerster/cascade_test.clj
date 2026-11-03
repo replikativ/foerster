@@ -4,7 +4,7 @@
   multiplicities) and the HMM's marginals on a thread pool."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :as b]
-            [org.replikativ.foerster.cascade :as cascade]
+            [org.replikativ.foerster.inference.cascade :as cascade]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.spindel.engine.executor :as executor]))

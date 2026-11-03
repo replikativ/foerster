@@ -3,7 +3,7 @@
   method does not take, and a canonical-world option in fresh worlds."
   (:require [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.core :as infer]
-            [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]))

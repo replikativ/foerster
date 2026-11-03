@@ -7,6 +7,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn- model []
@@ -63,9 +64,9 @@
   (testing "no particles, no measure"
     (is (thrown? Throwable (b/run-infer 4 #(infer/infer (model) {:method :smc :particles 0}))))
     (is (thrown? AssertionError (m/empirical [])))
-    (is (thrown? clojure.lang.ExceptionInfo (m/normalize-log-weights [0.0 ##NaN]))))
+    (is (thrown? clojure.lang.ExceptionInfo (weights/normalize-log-weights [0.0 ##NaN]))))
   (testing "infinite weights share the mass"
-    (is (= [0.5 0.0 0.5] (m/normalize-log-weights [##Inf 0.0 ##Inf])))))
+    (is (= [0.5 0.0 0.5] (weights/normalize-log-weights [##Inf 0.0 ##Inf])))))
 
 (deftest a-burn-that-leaves-no-draws-is-refused
   (is (thrown-with-msg? Throwable #":burn leaves no draws"

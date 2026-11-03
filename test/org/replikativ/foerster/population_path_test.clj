@@ -2,8 +2,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [is.simm.partial-cps.async :as pcps]
             [is.simm.partial-cps.runtime :as cps-runtime]
-            [org.replikativ.foerster.execution :as execution]
-            [org.replikativ.foerster.population :as pop]
+            [org.replikativ.foerster.runtime.execution :as execution]
+            [org.replikativ.foerster.population.theta :as pop]
             [org.replikativ.foerster.population.path :as path]
             [org.replikativ.foerster.weights :as weights]))
 

@@ -2,7 +2,7 @@
   "A reviewed fixed-shape telemetry fixture; not automatic update admission."
   (:require [clojure.string :as str]
             [org.replikativ.foerster.dist :as d]
-            [org.replikativ.foerster.scmc :as scmc]
+            [org.replikativ.foerster.inference.scmc :as scmc]
             [org.replikativ.spindel.atom :as sa]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]

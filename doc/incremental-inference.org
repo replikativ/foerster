@@ -113,7 +113,7 @@ update-plan validator remain future work.
 
 * Resumable SCMC and a reactive fixture
 
-=org.replikativ.foerster.scmc/start= initializes persistent numeric inference
+=org.replikativ.foerster.inference.scmc/start= initializes persistent numeric inference
 state; =append-batch= advances it; =result= projects a snapshot to the common
 measure API without consuming it. The batch-to-completion =scmc= entry point
 uses these same operations and the shared population-path engine. Snapshots

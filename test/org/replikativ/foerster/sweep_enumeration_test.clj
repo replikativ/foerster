@@ -10,14 +10,15 @@
   and a valid particle Gibbs kernel must leave the exact posterior
   invariant: πK = π to rounding. Statistical tests cannot see biases of
   1e-4..1e-3 in total variation; this can."
-  (:require [org.replikativ.foerster.particle-mcmc :as pmcmc]
+  (:require [org.replikativ.foerster.inference.particle-mcmc :as pmcmc]
             [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 ;; -----------------------------------------------------------------------------
@@ -134,8 +135,8 @@
                            (fn [measure]
                              (let [ps (m/get-particles measure)
                                    i (random/with-stream* [7 8] ::pick
-                                       #(m/sample-categorical
-                                         (m/normalize-log-weights (mapv second ps))))
+                                       #(weights/sample-categorical
+                                         (weights/normalize-log-weights (mapv second ps))))
                                    choices (pmcmc/retained-choices (m/get-trace (first (nth ps i))))]
                                (resolve (mapv choices addresses))))
                            reject)))))))]
@@ -167,7 +168,7 @@
   (testing "a Bernoulli(0.3) draw and a fair choice among three"
     (is (= {0 0.7 1 0.3}
            (update-vals (enumerate-paths #(if (random/below? 0.3) 1 0)) #(/ (Math/round (* % 1e12)) 1e12))))
-    (let [law (enumerate-paths #(m/sample-categorical [0.2 0.5 0.3]))]
+    (let [law (enumerate-paths #(weights/sample-categorical [0.2 0.5 0.3]))]
       (is (< (Math/abs (- 0.5 (get law 1))) 1e-15)))))
 
 (deftest particle-gibbs-leaves-the-posterior-invariant

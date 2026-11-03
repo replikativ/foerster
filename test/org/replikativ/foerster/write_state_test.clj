@@ -3,11 +3,11 @@
   an incremental move must give the trace a from-scratch run of the same
   choices gives — the same score and the same result."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.foerster.canonical :as canonical]
+            [org.replikativ.foerster.runtime.canonical :as canonical]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
-            [org.replikativ.foerster.gfi :as gfi]
-            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.atom :as sa]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.effects.await :as aw]

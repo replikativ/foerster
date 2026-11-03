@@ -9,8 +9,8 @@
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.smc :as smc]
-            [org.replikativ.foerster.steer :as steer]
+            [org.replikativ.foerster.inference.smc :as smc]
+            [org.replikativ.foerster.inference.steer :as steer]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (def ^:private lambda 0.8)

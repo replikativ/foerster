@@ -7,8 +7,9 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.smc2 :as smc2]
+            [org.replikativ.foerster.inference.smc2 :as smc2]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
@@ -72,7 +73,7 @@
         final (reduce (fn [step y] (await-cps ((:push step) y))) step0 ys)
         measure (:measure final)
         ps (m/get-particles measure)
-        ws (m/normalize-log-weights (mapv second ps))
+        ws (weights/normalize-log-weights (mapv second ps))
         mean (reduce + (map (fn [[p _] w] (* w (:s (m/get-value p)))) ps ws))
         {exact-mean :mean exact-z :log-evidence} (exact ys)]
     (is (:done? final))
@@ -103,7 +104,7 @@
         final (reduce (fn [step y] (await-cps ((:push step) y))) step0 ys)
         measure (:measure final)
         ps (m/get-particles measure)
-        ws (m/normalize-log-weights (mapv second ps))
+        ws (weights/normalize-log-weights (mapv second ps))
         mean (reduce + (map (fn [[p _] w] (* w (:s (m/get-value p)))) ps ws))
         {exact-mean :mean exact-z :log-evidence} (exact ys true)]
     (is (< (Math/abs (- mean exact-mean)) 0.2) (str mean " vs " exact-mean))

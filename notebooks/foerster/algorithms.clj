@@ -11,8 +11,9 @@
   (:require [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample observe]]
-            [org.replikativ.foerster.kernel :as k]
+            [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -33,7 +34,7 @@
   "Posterior mean and standard deviation of `f` of the program's value."
   [measure f]
   (let [ps (m/get-particles measure)
-        ws (m/normalize-log-weights (mapv second ps))
+        ws (weights/normalize-log-weights (mapv second ps))
         xs (mapv #(double (f (m/get-value (first %)))) ps)
         mu (reduce + (map * ws xs))]
     [mu (Math/sqrt (reduce + (map (fn [w x] (* w (let [d (- x mu)] (* d d)))) ws xs)))]))
@@ -142,7 +143,7 @@
   "Root mean square error of the posterior state marginals."
   [measure]
   (let [ps (m/get-particles measure)
-        ws (m/normalize-log-weights (mapv second ps))
+        ws (weights/normalize-log-weights (mapv second ps))
         paths (mapv (comp m/get-value first) ps)
         errs (for [t (range 17) s (range 3)]
                (- (reduce + (map (fn [w path] (if (= s (nth path t)) w 0.0)) ws paths))

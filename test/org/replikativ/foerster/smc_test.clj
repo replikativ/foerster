@@ -5,7 +5,8 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.weights :as weights]
+            [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
@@ -31,7 +32,7 @@
                     (nil? ancestors)))
                 history))
     (testing "the evidence is the sum of the barriers' factors and the final mean weight"
-      (let [final (m/log-mean-exp (m/get-log-weights measure))
+      (let [final (weights/log-mean-exp (m/get-log-weights measure))
             factors (reduce + (keep :log-mean-weight history))]
         (is (< (Math/abs (- (m/log-marginal measure) (+ factors final))) 1e-9))))))
 

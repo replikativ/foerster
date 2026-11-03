@@ -56,7 +56,7 @@ many threads ran them.
 
 ## Exact enumeration
 
-`{:method :enumerate}` (`org.replikativ.foerster.enumerate`) computes the
+`{:method :enumerate}` (`org.replikativ.foerster.inference.enumerate`) computes the
 exact posterior of a program whose latent choices all have finite support
 (`dist/support`: Bernoulli, flip, discrete, categorical, binomial,
 uniform-discrete): at every latent site the particle's world forks once per
@@ -80,7 +80,7 @@ non-Markov-chain kernel:
 | `:authority`, `:grant` | — | budgets under `:fork` ([worlds](worlds.md#budgets)) |
 | `:executor` | spindel's default | the executor the worlds run on |
 | `:resample-threshold` | `0.5` | SMC resamples when the effective sample size is below this fraction of the particles |
-| `:policy` | the prior | a `foerster.trace/policy` deciding the sites: constraints, interventions, custom proposals ([extending](extending.md)) |
+| `:policy` | the prior | a `foerster.runtime.trace/policy` deciding the sites: constraints, interventions, custom proposals ([extending](extending.md)) |
 | `:anchors`, `:rejuvenate` | — | resample-move (below); `smc-infer` and `pimh-infer`, fresh worlds |
 | `:resampling` | `:systematic` | `:stratified`, `:residual` or `:multinomial` (Douc, Cappé & Moulines 2005); `smc-infer`, `pimh-infer` |
 | `:genealogy?` | `false` | record every resampling's ancestor indices in the measure's `:history` |
@@ -119,7 +119,7 @@ estimate.
 
 ## Tempered SMC
 
-`(tempered-infer model n opts)` (`org.replikativ.foerster.tempering`) moves a
+`(tempered-infer model n opts)` (`org.replikativ.foerster.inference.tempering`) moves a
 population of complete program runs from the prior to the posterior through
 the targets p(x)·L(x)^β, L the observations' and factors' likelihood, with β
 rising from 0 to 1 (an SMC sampler; Del Moral, Doucet & Jasra 2006). Each
@@ -151,11 +151,11 @@ Block sites are tempered too. A block keeps its observations inside its
 target, so a block site with a draw density q (its `:sample-log-density`)
 follows the geometric path q^(1−β)·t^β from q to its target t, and is moved
 by random walks on its θ vector scaled by the population's spread at the
-step's temperature (`foerster.block-mh`). A block without
+step's temperature (`foerster.moves.block-mh`). A block without
 `:sample-log-density` is refused (`::block/no-sample-density`). A model
 that is **one block site and nothing else** never makes a world per
 particle: the population is a set of θ vectors that are reweighted,
-resampled and moved directly (`foerster.population`), and only the distinct
+resampled and moved directly (`foerster.population.theta`), and only the distinct
 final θ are written back to traces, by one replay each. On golf putting as
 one block, 1000 particles take about a second and estimate log Z within
 0.2 of the exact −191.93.
@@ -166,7 +166,7 @@ SMC with resample-move on the static parameters, below.
 ## Parallel tempering
 
 `(parallel-tempering-infer model chains opts)`
-(`org.replikativ.foerster.parallel-tempering`) runs non-reversible parallel
+(`org.replikativ.foerster.inference.parallel-tempering`) runs non-reversible parallel
 tempering (Syed, Bouchard-Côté, Deligiannidis & Doucet 2022) on a model that
 is one block site with a `:sample` and `:sample-log-density`. `chains`
 Markov chains sit on the path q^(1−β)·t^β from that draw density q to the
@@ -191,7 +191,7 @@ more rounds without rerunning.
 
 ## Sequential core-set Monte Carlo: bounded memory for streaming data
 
-`(scmc/scmc model opts)` (`org.replikativ.foerster.scmc`) is SMC over data
+`(scmc/scmc model opts)` (`org.replikativ.foerster.inference.scmc`) is SMC over data
 that arrive in batches, for a model given as a prior and a per-datum
 log-likelihood on θ vectors (Beronov, Weilbach, Wood & Campbell 2021).
 Resample-move SMC over all past data (IBIS) must score every past
@@ -288,7 +288,7 @@ executor runs are not reproducible from their seed. Not with stream sites,
 
 ## The particle cascade: no barriers at all
 
-`(cascade/cascade model n opts)` (`org.replikativ.foerster.cascade`; Paige,
+`(cascade/cascade model n opts)` (`org.replikativ.foerster.inference.cascade`; Paige,
 Wood, Doucet & Teh 2014) runs every particle on its own. At an observation a
 particle compares its weight W with the running mean W̄ of the weights that
 arrived there so far. Below the mean it survives with probability W/W̄, as
@@ -399,7 +399,7 @@ A program whose proposals come from an outside process — a language model's
 turn, a simulator — with no density to report, and whose data is a *score*
 (a verifier, a judge, a process reward model), is steered by factors that
 are barriers: `(factor w :barrier true)` makes SMC park and resample there,
-as at an observation. `foerster.steer/model` builds the step loop:
+as at an observation. `foerster.inference.steer/model` builds the step loop:
 
 ```clojure
 (infer/smc-infer
@@ -428,7 +428,7 @@ weight joins the step's factor and the target is still p·exp(reward).
 Each particle's trace holds its states (`[:steer/state t]`) and reward
 (`:steer/reward`); `:record` (`(fn [state])`, default the state) chooses
 what is kept of a state — a language model's tokens rather than its KV
-cache. `foerster.learn/trajectories` reads them back with the
+cache. `foerster.amortized.learn/trajectories` reads them back with the
 particles' normalized weights, and `learn/draws` resamples them into
 unweighted draws from the target: training data for the value estimates and
 proposals that make the next search cheaper.
@@ -436,7 +436,7 @@ proposals that make the next search cheaper.
 ## Conjugate parameters, never sampled
 
 When a static parameter is conjugate to its data, the program can carry its
-posterior instead of a sampled value (`org.replikativ.foerster.conjugate`):
+posterior instead of a sampled value (`org.replikativ.foerster.model.conjugate`):
 score each datum under the posterior predictive, update the posterior in
 closed form, and draw the parameter only if it is needed:
 
@@ -464,7 +464,7 @@ data needs PMMH or SMC² (below).
 ## Static parameters: PMMH and SMC²
 
 A state-space program with parameters θ — named sample sites — is filtered
-best by SMC once θ is known; `org.replikativ.foerster.smc2` infers θ by
+best by SMC once θ is known; `org.replikativ.foerster.inference.smc2` infers θ by
 running SMC conditioned on it. With the parameter sites constrained, SMC's
 evidence estimate is p(θ)·p̂(y | θ), so two parameter values compare by the
 difference of their SMC log-evidences.
@@ -506,7 +506,7 @@ provided.
 ## Kernels
 
 `(kernel-infer model kernel n opts)` runs a kernel from
-`org.replikativ.foerster.kernel` (`k`):
+`org.replikativ.foerster.moves.kernel` (`k`):
 
 | Kernel | Runs |
 |---|---|
@@ -516,9 +516,9 @@ provided.
 | `(k/random-walk-mh-kernel iterations {:step-size 0.1})` | random-walk MH on continuous sites |
 | `(k/block-gibbs-kernel iterations selector block-kernels classifier opts)` | block Gibbs: `classifier` `(fn [address entry])` assigns sites to block ids, `selector` (`k/round-robin-selector`, `k/random-selector`) picks a block per iteration, `block-kernels` `{block-id kernel}` moves it (`k/prior-block-kernel`, `k/random-walk-block-kernel` on continuous sites, or a custom kernel marked `k/PSymmetricBlockKernel`); a move that changes the block's membership is rejected |
 | `(k/hmc-kernel iterations {:step-size 0.1 :steps 10})` | HMC-within-Gibbs on block sites ([blocks](https://replikativ.github.io/foerster/foerster.blocks.html)) |
-| `(k/nuts-kernel iterations {:burn … :target-accept 0.8 :max-depth 10 :metric :variance})` | the No-U-Turn sampler on block sites, Stan's algorithm: multinomial trajectories, the generalized U-turn criterion, divergences, and during `:burn` dual-averaging step size and windowed diagonal-metric adaptation. `:metric :fisher` estimates the metric from both the warm-up positions and their gradients, √(Var q / Var ∇log p), the diagonal metric minimizing the Fisher divergence (nutpie; Seyboldt, Carlson & Carpenter 2024). On posteriordb, `:fisher` gives 2.8× the ESS/s on wells (logistic, 3020 rows). The default `:variance` gives 1.5× on earnings, a regression with strongly correlated coefficients, and 1.2× on mesquite. Try both on your model; the block's target must be its complete conditional (see below), and its gradient hand-written, compiled by foerster-raster (`defdensity`), or — an explicit opt-in for small blocks — numeric (`block/with-numeric-gradient`). Warm-up starts, and restarts after every metric window, from Stan's step size heuristic (`init_stepsize`), and dual averaging restarts at μ = log 10ε from the step size it found — at the start of warm-up too, a deliberate deviation from Stan, whose first μ comes from its configured step size (default 1). `:step-size` and `:inverse-metric` (diagonal, in θ) set where warm-up starts, or with `:burn 0` the fixed values NUTS runs at; every retained draw's `:sampler-stats` report the `:step-size` and `:inverse-metric` it ran with, so a warmed-up run's tuning starts a frozen one. Each chain starts at its block sites' `:init` plus U(−2, 2) per coordinate of θ (Stan's initialization radius, from the chain's seeded stream); `:jitter false` starts exactly at `:init`. Jitter stays on with `:burn 0`, where every draw is kept, so resuming a frozen chain — `:init` a posterior draw, `:burn 0`, the exported `:step-size` and `:inverse-metric` — needs `:jitter false` ([nuts](https://cljdoc.org/d/org.replikativ/foerster/CURRENT/api/org.replikativ.foerster.nuts)) |
+| `(k/nuts-kernel iterations {:burn … :target-accept 0.8 :max-depth 10 :metric :variance})` | the No-U-Turn sampler on block sites, Stan's algorithm: multinomial trajectories, the generalized U-turn criterion, divergences, and during `:burn` dual-averaging step size and windowed diagonal-metric adaptation. `:metric :fisher` estimates the metric from both the warm-up positions and their gradients, √(Var q / Var ∇log p), the diagonal metric minimizing the Fisher divergence (nutpie; Seyboldt, Carlson & Carpenter 2024). On posteriordb, `:fisher` gives 2.8× the ESS/s on wells (logistic, 3020 rows). The default `:variance` gives 1.5× on earnings, a regression with strongly correlated coefficients, and 1.2× on mesquite. Try both on your model; the block's target must be its complete conditional (see below), and its gradient hand-written, compiled by foerster-raster (`defdensity`), or — an explicit opt-in for small blocks — numeric (`block/with-numeric-gradient`). Warm-up starts, and restarts after every metric window, from Stan's step size heuristic (`init_stepsize`), and dual averaging restarts at μ = log 10ε from the step size it found — at the start of warm-up too, a deliberate deviation from Stan, whose first μ comes from its configured step size (default 1). `:step-size` and `:inverse-metric` (diagonal, in θ) set where warm-up starts, or with `:burn 0` the fixed values NUTS runs at; every retained draw's `:sampler-stats` report the `:step-size` and `:inverse-metric` it ran with, so a warmed-up run's tuning starts a frozen one. Each chain starts at its block sites' `:init` plus U(−2, 2) per coordinate of θ (Stan's initialization radius, from the chain's seeded stream); `:jitter false` starts exactly at `:init`. Jitter stays on with `:burn 0`, where every draw is kept, so resuming a frozen chain — `:init` a posterior draw, `:burn 0`, the exported `:step-size` and `:inverse-metric` — needs `:jitter false` ([nuts](https://cljdoc.org/d/org.replikativ/foerster/CURRENT/api/org.replikativ.foerster.moves.nuts)) |
 | `(k/delayed-acceptance-kernel iterations {address coarse} {:scales 0.1 :steps …})` | two-stage delayed acceptance on block sites (Christen & Fox 2005): a random walk on a cheap `coarse` log density of θ (a surrogate, a coarser model, a Laplace fit) proposes, one replay of the program decides on its own ratio corrected by the coarse one. The chain targets the program's exact posterior whatever `coarse` is (a poor one costs acceptance); the block need not be its complete conditional, since the replay scores every observation |
-| `(k/involutive-kernel iterations {:propose :log-q :involution})` | involutive MH moves (`foerster.involutive`), reversible jump included; chains only (population programs refuse it) |
+| `(k/involutive-kernel iterations {:propose :log-q :involution})` | involutive MH moves (`foerster.moves.involutive`), reversible jump included; chains only (population programs refuse it) |
 | `(k/proposal-mh-kernel iterations proposal {:args […]})` | MH with a proposal program (`gfi/mh-proposal`), scored forward and backward; chains only |
 | `(k/cycle iterations [k₁ k₂ …])` | each iteration runs k₁'s moves, then k₂'s, … — the composition K₂∘K₁ |
 | `(k/mixture iterations [[w₁ k₁] [w₂ k₂] …])` | each iteration runs one kᵢ, picked with probability ∝ wᵢ |
@@ -535,7 +535,7 @@ state; `:samples :all` emits every state after the first `:burn` moves,
 equally weighted. `kernel-infer` takes `:seed`, from which each chain's
 seed is derived.
 
-Random-walk MH moves a block site on its θ vector (`foerster.block-mh`):
+Random-walk MH moves a block site on its θ vector (`foerster.moves.block-mh`):
 several Gaussian steps against the block's own density, written back to the
 trace by one replay, as NUTS does. The per-coordinate scales adapt during
 `:burn`, steering the acceptance towards 0.234. The block's target must be
@@ -573,7 +573,7 @@ the replay); it is not implemented.
 
 ## Point estimates and the Laplace approximation
 
-`org.replikativ.foerster.optimize` works on a block site's target directly
+`org.replikativ.foerster.inference.optimize` works on a block site's target directly
 (a `block/block-dist` at its inputs), no sampling:
 
 ```clojure
@@ -624,7 +624,7 @@ posterior.
 
 ## Streaming
 
-`(smc/stream model n opts)` (`org.replikativ.foerster.smc`) is a CPS
+`(smc/stream model n opts)` (`org.replikativ.foerster.inference.smc`) is a CPS
 operation resolving a step `{:measure :push :fork :done? :close}` once every
 particle waits at its next `:stream` site; `((:push step) value)` scores the
 value and runs on ([streaming notebook](https://replikativ.github.io/foerster/foerster.streaming.html)).
@@ -633,9 +633,9 @@ waiting particle's world forked — to be pushed and closed on its own.
 
 ## Programmable inference and counterfactuals
 
-- `org.replikativ.foerster.gfi`: `simulate`, `generate`, `assess`, `update`,
+- `org.replikativ.foerster.runtime.gfi`: `simulate`, `generate`, `assess`, `update`,
   `regenerate`, `mh`, `close!` — CPS operations on traces of a model spin.
-- `org.replikativ.foerster.involutive/step`: an involutive MCMC move.
+- `org.replikativ.foerster.moves.involutive/step`: an involutive MCMC move.
 - `(counterfactual/counterfactual model {:evidence :interventions
   :particles})`: twin-world counterfactuals of the model spin.
 

@@ -9,9 +9,9 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.parallel-tempering :as pt]
-            [org.replikativ.foerster.population :as pop]
-            [org.replikativ.foerster.tempering :as tempering]
+            [org.replikativ.foerster.inference.parallel-tempering :as pt]
+            [org.replikativ.foerster.population.theta :as pop]
+            [org.replikativ.foerster.inference.tempering :as tempering]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn- lnorm [x mu s] (dist/logpdf (dist/normal mu s) x))

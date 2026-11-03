@@ -14,7 +14,7 @@
   and the fork index (`savepoint/fork`), so a replay's fresh proposal draws
   from a fresh stream and the same run draws the same numbers. A draw a world
   makes outside any keyed stream — the model's own randomness, a step whose
-  proposal is the process itself (`foerster.steer`), a simulator's noise —
+  proposal is the process itself (`foerster.inference.steer`), a simulator's noise —
   comes from that world's free stream, seeded by its seed, so it too is
   reproducible however the particles interleave, and the copies of a
   resampled particle (forks, with seeds of their own) diverge. Draws outside
@@ -233,3 +233,9 @@
   []
   (let [g (current)]
     [(next-u32! g) (next-u32! g)]))
+
+(defn pick-uniformly
+  "A uniformly chosen element of a vector, drawn through `uniform01`."
+  [v]
+  (let [n (count v)]
+    (nth v (decide #(repeat n (/ 1.0 n)) #(int (* (uniform01) n))))))

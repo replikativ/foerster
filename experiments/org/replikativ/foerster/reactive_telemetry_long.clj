@@ -28,7 +28,7 @@
             [org.replikativ.foerster.dist :as d]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.reactive-telemetry :as telemetry]
-            [org.replikativ.foerster.scmc :as scmc]))
+            [org.replikativ.foerster.inference.scmc :as scmc]))
 
 (def defaults
   {:windows 6000 :batch-size 15 :requests 8

@@ -5,7 +5,7 @@
   - choose: Unified effect for both sampling and observation
 
   A choose site is a savepoint when its world handles `:inference/choose`
-  (inference: `foerster.smc`, `foerster.trace`); otherwise it is forward
+  (inference: `foerster.inference.smc`, `foerster.runtime.trace`); otherwise it is forward
   simulation."
   (:require [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.engine.protocols :as rtp]
@@ -97,7 +97,7 @@
 
 (defn- choose-handler-fn
   "A choose site is a savepoint when its world handles `:inference/choose`: it
-  is published, and a trace policy decides and scores it (`foerster.trace`).
+  is published, and a trace policy decides and scores it (`foerster.runtime.trace`).
   Otherwise it is forward simulation."
   [runtime args resolve reject]
   (let [ctx rtc/*execution-context*]
@@ -219,7 +219,7 @@
   `(factor w :barrier true)` is also a barrier of SMC: particles park there
   and the population is resampled, as at an observation — a scored step of a
   program whose data is a score (a verifier's, a value estimate's; see
-  `foerster.steer`).
+  `foerster.inference.steer`).
 
   Must only be called inside a spin; outside, this throws."
   [& _]

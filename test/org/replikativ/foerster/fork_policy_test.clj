@@ -7,14 +7,14 @@
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.analysis :as a]
             [org.replikativ.foerster.block :as block]
-            [org.replikativ.foerster.kernel :as kernel]
+            [org.replikativ.foerster.moves.kernel :as kernel]
             [org.replikativ.foerster.core :as inference]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as measure]
             [org.replikativ.foerster.program :as ip]
-            [org.replikativ.foerster.smc :as smc]
-            [org.replikativ.foerster.smc2 :as smc2]
+            [org.replikativ.foerster.inference.smc :as smc]
+            [org.replikativ.foerster.inference.smc2 :as smc2]
             [org.replikativ.spindel.atom :as sa]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.engine.context :as context]
@@ -275,7 +275,8 @@
        (capturing-scopes [scopes]
                          (let [posterior @(spin (await (run (queue-model queue) seed)))
                                values (map measure/get-value (measure/get-contexts posterior))]
-                           (is (< (Math/abs (- p-fast (fast-fraction posterior))) 0.06)
+                           ;; seed-to-seed SD over 12 seeds: MH 0.058, Gibbs 0.028
+                           (is (< (Math/abs (- p-fast (fast-fraction posterior))) (if (= :mh method) 0.2 0.1))
                                (str method " " seed ": " (fast-fraction posterior) " vs exact " p-fast))
                            (is (every? #(= [:in-flight :a :b :c] (mapv :id (:jobs (:queue %)))) values)
                                (str method ": every state served the caller's backlog, once"))

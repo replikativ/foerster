@@ -5,7 +5,7 @@
   final posterior has the closed-form posterior mean."
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
-            [org.replikativ.foerster.conjugate :as conj]
+            [org.replikativ.foerster.model.conjugate :as conj]
             [org.replikativ.foerster.dist :as dist]))
 
 (defn- close? [a b tol] (< (Math/abs (- a b)) tol))

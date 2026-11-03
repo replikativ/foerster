@@ -3,7 +3,7 @@
             [is.simm.partial-cps.async :as pcps]
             [org.replikativ.spindel.effects.await :as await]
             [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.foerster.scope :as scope]
+            [org.replikativ.foerster.runtime.scope :as scope]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]))

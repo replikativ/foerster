@@ -6,7 +6,7 @@
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.program :as ip]
-            [org.replikativ.foerster.transport :as transport]
+            [org.replikativ.foerster.moves.transport :as transport]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 

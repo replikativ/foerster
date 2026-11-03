@@ -16,9 +16,10 @@
    scheduling order; their budgets leave room for that."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.core :as infer]
-            [org.replikativ.foerster.kernel :as k]
-            [org.replikativ.foerster.smc :as smc]
+            [org.replikativ.foerster.moves.kernel :as k]
+            [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :as aw]
@@ -57,7 +58,7 @@
   "[[value normalized-weight] …] of a measure's program results."
   [measure]
   (let [ps (m/get-particles measure)
-        ws (m/normalize-log-weights (mapv second ps))]
+        ws (weights/normalize-log-weights (mapv second ps))]
     (mapv (fn [[c _] w] [(m/get-value c) w]) ps ws)))
 
 (defn w-mean [f wv] (reduce + (map (fn [[v w]] (* w (double (f v)))) wv)))
@@ -153,11 +154,11 @@
         joint (for [r (range 40)]
                 [r (if (< 4 r)
                      (+ (dist/logpdf cp r) (dist/logpdf (dist/poisson 6) 6))
-                     (m/log-sum-exp
+                     (weights/log-sum-exp
                       (for [s (range 60)]
                         (+ (dist/logpdf cp r) (dist/logpdf cp s)
                            (dist/logpdf (dist/poisson (+ 1 (fib (* 3 r)) s)) 6)))))])
-        z (m/log-sum-exp (map second joint))]
+        z (weights/log-sum-exp (map second joint))]
     (into {} (map (fn [[r lp]] [r (Math/exp (- lp z))]) joint))))
 
 ;; =============================================================================
@@ -287,8 +288,13 @@
             ;; before (one seed; two others above 0.1)
             ;; PIMH (20 particles, 300 sweeps): over 36 seeds KL ≤ 0.163, above
             ;; 0.1 in two or three — with sweep seeds drawn from the process
-            ;; generator (2/36) or derived from the run's :seed (3/36) alike
-            limit (get {:pgibbs 0.35 :pgas 0.35 :pimh 0.2} algo 0.1)]
+            ;; generator (2/36) or derived from the run's :seed (3/36) alike;
+            ;; over 24 further seeds ≤ 0.265 (above 0.2 once). SMC (3000
+            ;; particles, no moves for this static parameter): over 24 seeds
+            ;; ≤ 0.106, above 0.1 twice. Sites without :id are addressed by
+            ;; their source line, so editing this file above the model is a
+            ;; new seed.
+            limit (get {:pgibbs 0.35 :pgas 0.35 :pimh 0.4 :smc 0.2} algo 0.1)]
         (is (< kl limit) (str algo " KL " kl))))))
 
 (deftest hierarchical-latents

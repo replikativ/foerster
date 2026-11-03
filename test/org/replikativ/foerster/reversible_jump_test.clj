@@ -11,10 +11,10 @@
   (:require [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
-            [org.replikativ.foerster.gfi :as gfi]
-            [org.replikativ.foerster.involutive :as involutive]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
+            [org.replikativ.foerster.moves.involutive :as involutive]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.spin.cps :refer [spin]]))

@@ -5,9 +5,10 @@
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample factor intervene!]]
-            [org.replikativ.foerster.enumerate :as enumerate]
+            [org.replikativ.foerster.inference.enumerate :as enumerate]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.weights :as weights]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn- burglary
@@ -33,7 +34,7 @@
   (let [measure (b/run-infer 91 #(infer/infer (burglary) {:method :enumerate}))
         p (reduce + (map (fn [[s w]] (if (m/get-value s) w 0.0))
                          (map vector (map first (m/get-particles measure))
-                              (m/normalize-log-weights (mapv second (m/get-particles measure))))))]
+                              (weights/normalize-log-weights (mapv second (m/get-particles measure))))))]
     (is (= 8 (count (m/get-particles measure))) "every joint state once")
     (is (< (Math/abs (- p (:p burglary-exact))) 1e-12) (str p))
     (is (< (Math/abs (- (m/log-marginal measure) (:log-z burglary-exact))) 1e-12))))
@@ -50,7 +51,7 @@
         z (reduce + (vals w))
         post (reduce (fn [acc [s wt]] (update acc (m/get-value s) (fnil + 0.0) wt))
                      {} (map vector (map first (m/get-particles measure))
-                             (m/normalize-log-weights (mapv second (m/get-particles measure)))))]
+                             (weights/normalize-log-weights (mapv second (m/get-particles measure)))))]
     (doseq [k [1 2 3]]
       (is (< (Math/abs (- (get post k) (/ (w k) z))) 1e-12) (str k)))
     (is (< (Math/abs (- (m/log-marginal measure) (Math/log (/ z 3)))) 1e-12))))
@@ -92,7 +93,7 @@
 
 (defn- evidence-and-p-true [measure]
   (let [ps (m/get-particles measure)
-        ws (m/normalize-log-weights (mapv second ps))]
+        ws (weights/normalize-log-weights (mapv second ps))]
     [(Math/exp (m/log-marginal measure))
      (reduce + (map (fn [[s _] w] (if (m/get-value s) w 0.0)) ps ws))]))
 

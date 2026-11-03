@@ -4,13 +4,13 @@
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.effects :refer [sample]]
-            [org.replikativ.foerster.kernel :as k]
-            [org.replikativ.foerster.nuts :as nuts]
-            [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.moves.kernel :as k]
+            [org.replikativ.foerster.moves.nuts :as nuts]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.trace :as it]
-            [org.replikativ.foerster.transition :as transition]
-            [org.replikativ.foerster.transition-context :as tc]
+            [org.replikativ.foerster.runtime.trace :as it]
+            [org.replikativ.foerster.moves.transition :as transition]
+            [org.replikativ.foerster.moves.transition-context :as tc]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
@@ -54,7 +54,7 @@
     (with-redefs [rtp/swap-state! (fn [world _ f] (swap! world f))
                   it/mh-step (fn [t _] (fn [resolve _] (resolve {:trace t :accepted? false})))
                   random/in-world-stream (fn [_ _ f] (f))
-                  m/sample-categorical (constantly 0)
+                  weights/sample-categorical (constantly 0)
                   nuts/within-gibbs (fn [_]
                                       (fn [t opts]
                                         (swap! seen conj opts)

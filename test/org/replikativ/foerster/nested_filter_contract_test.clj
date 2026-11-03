@@ -3,9 +3,9 @@
             [org.replikativ.foerster.dist :as d]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.smc :as smc]
-            [org.replikativ.foerster.smc2 :as smc2]
-            [org.replikativ.foerster.scope :as scope]
+            [org.replikativ.foerster.inference.smc :as smc]
+            [org.replikativ.foerster.inference.smc2 :as smc2]
+            [org.replikativ.foerster.runtime.scope :as scope]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as engine]
             [org.replikativ.spindel.spin.cps :refer [spin]]))

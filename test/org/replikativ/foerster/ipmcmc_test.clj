@@ -6,6 +6,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn- sticky-hmm
@@ -23,7 +24,7 @@
 (defn- law [measure]
   (let [ps (m/get-particles measure)]
     (reduce (fn [acc [[s _] w]] (update acc (m/get-value s) (fnil + 0.0) w))
-            {} (map vector ps (m/normalize-log-weights (mapv second ps))))))
+            {} (map vector ps (weights/normalize-log-weights (mapv second ps))))))
 
 (defn- total-variation [p q]
   (* 0.5 (reduce + (map #(Math/abs (- (get p % 0.0) (get q % 0.0)))

@@ -6,10 +6,11 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.program :as ip]
-            [org.replikativ.foerster.kernel :as k]
-            [org.replikativ.foerster.counterfactual :as cf]
+            [org.replikativ.foerster.moves.kernel :as k]
+            [org.replikativ.foerster.causal.counterfactual :as cf]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
@@ -46,7 +47,7 @@
   (let [measure (m/empirical [[(m/sample-particle :a {}) (Math/log 1.0)]
                               [(m/sample-particle :b {}) (Math/log 3.0)]])]
     (is (= [0.25 0.75] (mapv #(/ (Math/round (* 100 %)) 100.0)
-                             (m/normalize-log-weights (mapv second (m/get-particles measure))))))
+                             (weights/normalize-log-weights (mapv second (m/get-particles measure))))))
     (is (< (Math/abs (- (m/effective-sample-size measure) 1.6)) 1e-9))))
 
 (defn- causal-model []

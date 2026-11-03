@@ -3,6 +3,7 @@
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]))
 
 (deftest multinomial-resampling-preserves-categorical-draws
@@ -11,8 +12,8 @@
     (let [draw (fn [f]
                  (random/with-stream* 42 :resample
                    #(let [indices (f)] [indices (random/uniform01)])))]
-      (is (= (draw #(vec (repeatedly n (fn [] (m/sample-categorical weights)))))
-             (draw #(m/multinomial-resample weights n)))))))
+      (is (= (draw #(vec (repeatedly n (fn [] (weights/sample-categorical weights)))))
+             (draw #(weights/multinomial-resample weights n)))))))
 
 (deftest quantiles-follow-the-weights
   (let [q (m/weighted-quantiles [3.0 1.0 2.0 4.0] [0.1 0.1 0.7 0.1])]
@@ -38,21 +39,21 @@
       (testing (name scheme)
         (let [counts (reduce (fn [acc indices] (reduce #(update %1 %2 inc) acc indices))
                              (vec (repeat 4 0))
-                             (repeatedly reps #(m/resample scheme weights n)))]
+                             (repeatedly reps #(weights/resample scheme weights n)))]
           (doseq [[i w] (map-indexed vector weights)]
             (is (< (Math/abs (- (/ (nth counts i) (* reps n)) w)) 0.01)
                 (str (name scheme) " " i))))))
     (testing "residual keeps the whole part of n·wᵢ"
       (is (every? (fn [indices] (>= (count (filter zero? indices)) 5))
-                  (repeatedly 50 #(m/resample :residual weights n)))))))
+                  (repeatedly 50 #(weights/resample :residual weights n)))))))
 
 (deftest resampling-edge-cases
   (testing "weights summing just below 1 by rounding"
     (let [ws (mapv #(* % (- 1.0 1e-7)) [0.25 0.25 0.25 0.25])]
       (doseq [scheme [:systematic :stratified :residual :multinomial]]
-        (is (= 8 (count (m/resample scheme ws 8))) (name scheme)))))
+        (is (= 8 (count (weights/resample scheme ws 8))) (name scheme)))))
   (testing "residual keeps every particle when the weights are equal"
     (doseq [n [49 98]]
-      (is (= (range n) (sort (m/resample :residual (vec (repeat n (/ 1.0 n))) n))))))
+      (is (= (range n) (sort (weights/resample :residual (vec (repeat n (/ 1.0 n))) n))))))
   (testing "a single particle"
-    (is (= [0 0 0] (m/resample :systematic [1.0] 3)))))
+    (is (= [0 0 0] (weights/resample :systematic [1.0] 3)))))

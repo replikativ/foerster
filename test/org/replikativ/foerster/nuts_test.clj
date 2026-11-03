@@ -8,11 +8,11 @@
             [org.replikativ.foerster.diagnostics :as d]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
-            [org.replikativ.foerster.kernel :as k]
-            [org.replikativ.foerster.nuts :as nuts]
+            [org.replikativ.foerster.moves.kernel :as k]
+            [org.replikativ.foerster.moves.nuts :as nuts]
             [org.replikativ.foerster.measure :as measure]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.transition :as transition]
+            [org.replikativ.foerster.moves.transition :as transition]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (def ^:private scales [0.05 0.2 0.5 1.0 2.0 3.0 5.0 8.0 12.0 20.0])

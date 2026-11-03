@@ -5,16 +5,17 @@
   result does not automatically certify an unbiased likelihood estimator."
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.weights :as w]
-            [org.replikativ.foerster.scope :as scope]
+            [org.replikativ.foerster.runtime.scope :as scope]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.contract :as contract]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.transition :as transition]
+            [org.replikativ.foerster.moves.transition :as transition]
             [org.replikativ.foerster.population.path :as path]
-            [org.replikativ.foerster.trace-owner :as owner]
-            [org.replikativ.foerster.transport :as transport]
-            [org.replikativ.foerster.gfi :as gfi]
-            [org.replikativ.foerster.canonical :as canonical]
-            [org.replikativ.foerster.trace :as it]
+            [org.replikativ.foerster.runtime.trace-owner :as owner]
+            [org.replikativ.foerster.moves.transport :as transport]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
+            [org.replikativ.foerster.runtime.canonical :as canonical]
+            [org.replikativ.foerster.runtime.trace :as it]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -178,8 +179,8 @@
   "A complete-trace target p(choices)*L(choices)^beta, not a streaming prefix.
   `:world-policy :fork` runs every particle in a fork of the caller's world;
   the target must then be used in a program `run` with `:world-policy
-  :fork`, whose frozen fork of the caller it forks (`foerster.canonical`).
-  Moves then reuse nothing incrementally (`foerster.trace/reexecute`).
+  :fork`, whose frozen fork of the caller it forks (`foerster.runtime.canonical`).
+  Moves then reuse nothing incrementally (`foerster.runtime.trace/reexecute`).
   Model effects obey the Spin discipline."
   [model & [{:keys [beta executor label world-policy] :or {beta 0.0 world-policy :fresh} :as opts}]]
   (options! opts #{:beta :executor :label :world-policy})
@@ -215,7 +216,7 @@
   Scope is passed explicitly; nested programs receive independent lifetimes.
   With `:world-policy :fork` (and `:world-opts`) the program forks the
   caller's world once; its `:world-policy :fork` trace targets run every
-  particle in a fork of that frozen fork (`foerster.canonical`)."
+  particle in a fork of that frozen fork (`foerster.runtime.canonical`)."
   ([body] (run {} body))
   ([opts body]
    (options! opts #{:seed :world-policy :world-opts})
@@ -299,9 +300,8 @@
       (remember! scope
                  {:target target :particles (mapv :particle draws) :mass (w/from-log (mapv :log-weight draws))
                   :owner (:owner scope) :population-id population-id :seed seed :step 0 :history []
-                  :inference-contract {:semantics :weighted-population
-                                       :weight-contract :requires-operation-assumptions
-                                       :normalizer {:status :unverified}}
+                  :inference-contract (contract/weighted-population
+                                       {:weight-contract :requires-operation-assumptions})
                   :lease (when (instance? TraceRepresentation (:representation target))
                            (atom {:phase :idle :version 0})) :version 0 :transitions {} :forks (atom 0)})))))
 
@@ -323,7 +323,7 @@
 
 (defn ess [population]
   (if (= :zero-mass (get-in population [:mass :status])) 0.0
-      (m/compute-ess (w/selection (:mass population)))))
+      (w/ess (w/selection (:mass population)))))
 
 (defn resample
   ([scope population] (resample scope population {}))

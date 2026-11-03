@@ -112,14 +112,14 @@ Draw from `random/uniform01` (or another distribution's `draw`), never from
 and `-quantile`, `dist/Moments` `-mean` and `-variance`.
 
 For counterfactuals a distribution must also be readable as a *mechanism*
-(`foerster.mechanism/PMechanism`: `noise`, `push`, `abduct`): the normal,
+(`foerster.model.mechanism/PMechanism`: `noise`, `push`, `abduct`): the normal,
 uniform, exponential, flip, Bernoulli, discrete, categorical, log-normal,
 half-normal, Cauchy, half-Cauchy, Weibull, Laplace and Gumbel are.
 `mechanism/mechanism` declares a custom noise/forward/abduction interpretation;
 `mechanism/inverse-cdf` explicitly selects quantile coupling for a law with
 working CDF and quantile. See [causal queries](causal.md) for coupling contracts.
 For BBVI, a site's
-distribution needs gradients (`foerster.gradient/PDistGradient`): the
+distribution needs gradients (`foerster.inference.gradient/PDistGradient`): the
 normal, gamma, beta, flip, exponential, Dirichlet, discrete and uniform have
 them.
 

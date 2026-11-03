@@ -1,7 +1,7 @@
 (ns org.replikativ.foerster.cursor-test
   (:require #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer-macros [deftest is]])
-            [org.replikativ.foerster.cursor :as cursor]
+            [org.replikativ.foerster.runtime.cursor :as cursor]
             [is.simm.partial-cps.async :as pcps])
   #?(:cljs (:require-macros [is.simm.partial-cps.async :as pcps])))
 

@@ -4,9 +4,10 @@
   each push the particle filter's x_t must match the Kalman filtering
   distribution, and its evidence the Kalman marginal likelihood."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.foerster.smc :as smc]
-            [org.replikativ.foerster.trace :as itrace]
+            [org.replikativ.foerster.inference.smc :as smc]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
@@ -49,7 +50,7 @@
 
 (defn- moments [measure t]
   (let [ps (m/get-particles measure)
-        ws (m/normalize-log-weights (mapv second ps))
+        ws (weights/normalize-log-weights (mapv second ps))
         xs (mapv (fn [[s _]] (:value (get (m/get-trace s) [:x t]))) ps)
         mean (reduce + (map * ws xs))]
     [mean (reduce + (map (fn [w x] (* w (let [d (- x mean)] (* d d)))) ws xs))]))

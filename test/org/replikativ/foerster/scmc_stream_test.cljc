@@ -3,7 +3,7 @@
                :cljs [cljs.test :refer-macros [deftest is]])
             [org.replikativ.foerster.dist :as d]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.scmc :as scmc]))
+            [org.replikativ.foerster.inference.scmc :as scmc]))
 
 (def model
   {:prior-sample #(vector (d/draw (d/normal 0.0 1.0)))

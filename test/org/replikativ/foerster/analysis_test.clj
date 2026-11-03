@@ -1,7 +1,7 @@
 (ns org.replikativ.foerster.analysis-test
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.analysis :as a]
-            [org.replikativ.foerster.conjugate :as conj]
+            [org.replikativ.foerster.model.conjugate :as conj]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.spindel.spin.cps :refer [spin]]))

@@ -3,10 +3,10 @@
   chains kept apart by kernel-infer, posterior predictive draws, pointwise
   log-likelihoods, one call shape for every method, and the distributions
   standard models need."
-  (:require [org.replikativ.foerster.kernel :as k]
+  (:require [org.replikativ.foerster.moves.kernel :as k]
             [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :as b]
-            [org.replikativ.foerster.arviz :as arviz]
+            [org.replikativ.foerster.diagnostics.arviz :as arviz]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.diagnostics :as d]
@@ -219,7 +219,9 @@
         done (b/run-infer 90 #(infer/predictive (line [10.0] [0.0]) measure 2000 {:interventions {:b 0.0}}))]
     (testing "a new input is predicted from the posterior, not its placeholder data"
       (is (= #{[:y 0]} (set (keys (:observations (first new))))))
-      (is (< (Math/abs (- (mean-of new [:y 0]) 21.04)) 0.3) (str (mean-of new [:y 0]))))
+      ;; seed-to-seed SD over 12 seeds: 0.35 (single-site MH on correlated a, b);
+      ;; conditioning on the placeholder y = 0 would be off by about 21
+      (is (< (Math/abs (- (mean-of new [:y 0]) 21.04)) 1.3) (str (mean-of new [:y 0]))))
     (testing "do(b = 0) leaves the intercept"
       (is (every? #(= 0.0 (second (:value %))) done))
       (is (< (Math/abs (- (mean-of done [:y 0]) 1.04)) 0.3) (str (mean-of done [:y 0]))))))

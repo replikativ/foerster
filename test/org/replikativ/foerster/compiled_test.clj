@@ -2,11 +2,11 @@
   (:require [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.analysis :as a]
             [org.replikativ.foerster.benchmark-test :as b]
-            [org.replikativ.foerster.compiled :as c]
+            [org.replikativ.foerster.inference.compiled :as c]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.core :as infer]
-            [org.replikativ.foerster.gfi :as gfi]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.engine.executor :as sched]))

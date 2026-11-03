@@ -4,28 +4,8 @@
   Measures represent probability distributions over execution traces.
   This is the foundation for compositional inference algorithms."
   (:require [org.replikativ.foerster.weights :as weights]
-            [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.foerster.random :as random]))
-
-;; =============================================================================
-;; Inference randomness
-;; =============================================================================
-
-(defn uniform01
-  "One uniform draw from the current generator (`foerster.random`), so
-   resampling, ancestor choice, the accept step and the site choice of every
-   kernel obey `random/set-seed!` exactly like the program's samples do.
-   `clojure.core/rand` did not: it reads `Math/random`'s own unseedable
-   generator, which made a seeded run reproducible in its prior draws and
-   random in its resampling and moves."
-  []
-  (random/uniform01))
-
-(defn pick-uniformly
-  "A uniformly chosen element of a vector, drawn through `uniform01`."
-  [v]
-  (let [n (count v)]
-    (nth v (random/decide #(repeat n (/ 1.0 n)) #(int (* (uniform01) n))))))
+            [org.replikativ.foerster.contract :as contract]
+            [org.replikativ.spindel.engine.protocols :as rtp]))
 
 ;; =============================================================================
 ;; PMeasure Protocol
@@ -71,35 +51,6 @@
 ;; Utility Functions
 ;; =============================================================================
 
-(def log-sum-exp weights/log-sum-exp)
-(def log-mean-exp weights/log-mean-exp)
-
-(defn- cumulative
-  "The running sums of `weights`, as a vector."
-  [weights]
-  (vec (reductions + weights)))
-
-(defn- search-cumulative
-  "The first index whose cumulative weight exceeds `u`, by bisection; the
-  last index when rounding leaves `u` above every sum."
-  [cumsum u]
-  (loop [lo 0 hi (dec (count cumsum))]
-    (if (>= lo hi)
-      lo
-      (let [mid (quot (+ lo hi) 2)]
-        (if (< u (nth cumsum mid)) (recur lo mid) (recur (inc mid) hi))))))
-
-(defn sample-categorical
-  "One index drawn from normalized weights, through `uniform01`."
-  [weights]
-  (random/decide (constantly weights) #(search-cumulative (cumulative weights) (uniform01))))
-
-(defn normalize-log-weights
-  "Legacy engine selection: equal mass among impossible candidates, or among
-  infinite-weight candidates. This does not make a zero-mass posterior valid."
-  [log-weights]
-  (weights/normalize log-weights {:zero :uniform :infinite :uniform}))
-
 (defn- possible!
   "Throw unless some weight is positive: a measure whose particles all have
   probability zero (evidence zero) has no posterior to report or draw from."
@@ -107,10 +58,6 @@
   (when (every? #(= ##-Inf %) log-weights)
     (throw (ex-info "Every particle has probability zero: the measure is impossible"
                     {:type ::impossible}))))
-
-(def compute-ess
-  "Effective sample size 1/Σw² of normalized weights (`weights/ess`)."
-  weights/ess)
 
 (defn weighted-quantiles
   "A function of p in [0, 1]: the p-quantile of `values` weighted by the
@@ -125,84 +72,6 @@
         (if (or (>= i last-index) (>= (nth cumulative i) p))
           (nth sorted i)
           (recur (inc i)))))))
-
-(defn systematic-resample
-  "Systematic resampling algorithm from Anglican.
-
-  Low-variance resampling for particle filters.
-  weights: normalized weights (sum to 1)
-  n: number of particles to sample
-
-  Returns vector of indices into original particle vector."
-  [weights n]
-  {:pre [(every? #(and (>= % 0) (<= % 1)) weights)
-         (< (Math/abs (- (reduce + weights) 1.0)) 1e-6)]}
-  (let [u (/ (uniform01) n)  ; Random offset, from the seeded generator
-        cumsum (cumulative weights)
-        last-index (dec (count weights))]
-    (loop [i 0
-           j 0
-           indices []]
-      (if (>= i n)
-        indices
-        (let [threshold (+ u (/ i n))]
-          ;; the last index takes whatever rounding leaves above the sum
-          (if (or (= j last-index) (< threshold (nth cumsum j)))
-            (recur (inc i) j (conj indices j))
-            (recur i (inc j) indices)))))))
-
-;; -----------------------------------------------------------------------------
-;; Other resampling schemes (Douc, Cappé & Moulines 2005)
-;; -----------------------------------------------------------------------------
-
-(defn multinomial-resample
-  "`n` indices drawn independently from the normalized `weights`."
-  [weights n]
-  (let [cumsum (cumulative weights)]
-    (vec (repeatedly n (fn [] (random/decide (constantly weights)
-                                             #(search-cumulative cumsum (uniform01))))))))
-
-(defn stratified-resample
-  "Stratified resampling: one uniform draw in each of the n strata [i/n,
-  (i+1)/n). Lower variance than multinomial, never more than systematic's
-  failure modes."
-  [weights n]
-  (let [cumsum (vec (reductions + weights))
-        last-index (dec (count weights))]
-    (loop [i 0 j 0 out []]
-      (if (= i n)
-        out
-        (let [u (/ (+ i (uniform01)) n)
-              j (loop [j j] (if (and (< j last-index) (< (nth cumsum j) u)) (recur (inc j)) j))]
-          (recur (inc i) j (conj out j)))))))
-
-(defn residual-resample
-  "Residual resampling: ⌊n·wᵢ⌋ copies of each particle, the rest drawn
-  multinomially from the residual weights."
-  [weights n]
-  ;; n·(1/n) may round to just below 1: the whole part is taken with a
-  ;; margin, or equal weights would fall back to multinomial draws
-  (let [copies (mapv #(long (Math/floor (+ (* n %) 1e-9))) weights)
-        fixed (into [] (mapcat (fn [i c] (repeat c i)) (range) copies))
-        left (- n (count fixed))]
-    (if (zero? left)
-      fixed
-      (let [residual (mapv (fn [w c] (max 0.0 (- (* n w) c))) weights copies)
-            total (reduce + residual)]
-        (into fixed (if (pos? total)
-                      (multinomial-resample (mapv #(/ % total) residual) left)
-                      (systematic-resample weights left)))))))
-
-(defn resample
-  "`n` ancestor indices from the normalized `weights` by `scheme`:
-  `:systematic` (default), `:stratified`, `:residual` or `:multinomial`."
-  [scheme weights n]
-  (case (or scheme :systematic)
-    :systematic (systematic-resample weights n)
-    :stratified (stratified-resample weights n)
-    :residual (residual-resample weights n)
-    :multinomial (multinomial-resample weights n)
-    (throw (ex-info "Unknown resampling scheme" {:type ::unknown-resampling :scheme scheme}))))
 
 ;; =============================================================================
 ;; EmpiricalMeasure - Weighted Particle Set
@@ -219,31 +88,31 @@
   (sample-measure [_ n]
     (let [log-weights (mapv second particles)
           _ (possible! log-weights)
-          weights (normalize-log-weights log-weights)
+          weights (weights/normalize-log-weights log-weights)
           ;; Systematic resampling (low-variance)
-          indices (systematic-resample weights n)]
+          indices (weights/systematic-resample weights n)]
       (mapv #(nth particles %) indices)))
 
   (log-marginal [this]
     ;; the normalizer accumulated at earlier resampling steps (SMC attaches
     ;; it as :log-normalizer) plus the log MEAN current weight
-    (case (get-in this [:inference-contract :normalizer :status])
+    (case (contract/normalizer-status this)
       :unavailable nil
       ;; a chain's separate evidence estimate: the draws' weights combine
       ;; samples and carry no evidence
       :estimate (:log-normalizer this)
       (+ (or (:log-normalizer this) 0.0)
-         (log-mean-exp (mapv second particles)))))
+         (weights/log-mean-exp (mapv second particles)))))
 
   (effective-sample-size [_]
     (let [log-weights (mapv second particles)
-          weights (normalize-log-weights log-weights)]
-      (compute-ess weights)))
+          weights (weights/normalize-log-weights log-weights)]
+      (weights/ess weights)))
 
   (measure-stats [_ query-fn]
     (let [log-weights (mapv second particles)
           _ (possible! log-weights)
-          weights (normalize-log-weights log-weights)
+          weights (weights/normalize-log-weights log-weights)
           values (mapv (fn [[ctx _]] (query-fn ctx)) particles)
           mean (reduce + (map * weights values))
           variance (reduce + (map (fn [w v] (* w (Math/pow (- v mean) 2)))
@@ -268,8 +137,7 @@
          (seq particles)
          (every? (fn [[ctx lw]] (and (map? ctx) (number? lw) (not (NaN? lw)))) particles)]}
   (assoc (->EmpiricalMeasure particles)
-         :inference-contract {:semantics :weighted-population
-                              :normalizer {:status :unverified}}))
+         :inference-contract (contract/weighted-population)))
 
 (defn markov-measure
   "Settled chain draws. Their weights combine samples, not evidence estimates,
@@ -282,10 +150,7 @@
   ([particles] (markov-measure particles nil))
   ([particles {:keys [estimator log-normalizer]}]
    (cond-> (assoc (empirical particles) :inference-contract
-                  {:semantics :markov-chain
-                   :normalizer (if estimator
-                                 {:status :estimate :estimator estimator}
-                                 {:status :unavailable})})
+                  (contract/markov-chain (if estimator {:estimator estimator} {})))
      estimator (assoc :log-normalizer log-normalizer))))
 
 ;; =============================================================================

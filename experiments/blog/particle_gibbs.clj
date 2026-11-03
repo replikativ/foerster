@@ -8,6 +8,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.core :as sp]))
 
@@ -32,7 +33,7 @@
     (->> (partition particles ps)
          (drop burn)
          (mapv (fn [sweep]
-                 (let [ws (m/normalize-log-weights (mapv second sweep))]
+                 (let [ws (weights/normalize-log-weights (mapv second sweep))]
                    (reduce + (map (fn [[p _] w] (* w (double (f p)))) sweep ws))))))))
 
 (defn chains [method particles sweeps burn]

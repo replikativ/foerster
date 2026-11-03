@@ -15,10 +15,10 @@
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample observe]]
-            [org.replikativ.foerster.gfi :as gfi]
-            [org.replikativ.foerster.involutive :as inv]
+            [org.replikativ.foerster.runtime.gfi :as gfi]
+            [org.replikativ.foerster.moves.involutive :as inv]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.foerster.trace :as trace]
+            [org.replikativ.foerster.runtime.trace :as trace]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.select :as select]

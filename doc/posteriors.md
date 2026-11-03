@@ -20,7 +20,7 @@ chains' `:samples :all`), or a projected context (a chain's final state):
 (m/site-value particle :bmi)  ; the value of one site, a `deterministic` one included
 ```
 
-Weights are log-scale and unnormalized; `(m/normalize-log-weights lws)`
+Weights are log-scale and unnormalized; `(weights/normalize-log-weights lws)`
 turns them into probabilities. A canonical-world particle also carries its
 world's descriptor (`:world-descriptor`; `(m/world-descriptors measure)`
 collects them).
@@ -80,8 +80,15 @@ population degenerated and to trace lineages.
 normalizer of the posterior, for importance sampling and the SMC methods
 (tempered and batched SMC, the cascade, SMC²): compare models by it. For
 Markov-chain and pooled particle-MCMC output it returns `nil`: sample weights
-are not evidence estimates. Results carry an `:inference-contract` describing
-their semantics and normalizer status.
+are not evidence estimates. Results carry an `:inference-contract`
+(`foerster.contract`) describing their semantics and how to read the
+evidence: `:exact` (enumeration), `:unbiased` (SMC and importance sampling
+with prior proposals, adaptive resampling and resample-move included),
+`:estimate` (a named estimator, such as parallel tempering's stepping
+stones), `:unverified` (correct only if a caller's policy, kernels or
+program meet their obligations, or an adaptive or approximate method), or
+`:unavailable` (chain draws). `(contract/unbiased-evidence? measure)` says
+whether a pseudo-marginal method may use it.
 
 **Surviving histories** — `(diagnostics/distinct-count measure [:x 0])`:
 how many distinct values an early site still takes after SMC resampled —
@@ -112,8 +119,8 @@ resample a weighted measure first).
 ## Training data
 
 The particles' traces are also training data. For a steered program
-(`foerster.steer/model`), which records its states under `[:steer/state t]`
-and its reward under `:steer/reward`, `org.replikativ.foerster.learn` reads
+(`foerster.inference.steer/model`), which records its states under `[:steer/state t]`
+and its reward under `:steer/reward`, `org.replikativ.foerster.amortized.learn` reads
 them back:
 
 ```clojure

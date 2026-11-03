@@ -93,7 +93,7 @@
                nil
                (catch Exception e
                  (loop [e e] (cond (nil? e) nil
-                                   (= :org.replikativ.foerster.block-mh/incomplete-target (:type (ex-data e))) e
+                                   (= :org.replikativ.foerster.moves.block-mh/incomplete-target (:type (ex-data e))) e
                                    :else (recur (ex-cause e))))))]
     (is (some? e))
     (is (= [:b] (:changed (ex-data e))))
