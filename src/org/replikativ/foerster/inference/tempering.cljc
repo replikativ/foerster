@@ -71,7 +71,7 @@
           v (:value old-entry)]
       (if (and sd (number? v) (dist/continuous? (:dist (:savepoint/payload sp))))
         {:value (+ v (* scale sd (dist/draw (dist/normal 0.0 1.0)))) :symmetric? true}
-        (itrace/prior-proposal sp old-entry)))))
+        (itrace/prior-draw sp old-entry)))))
 
 (defn- block-scales
   "{address [step …]} for the block sites of `traces`: each coordinate's

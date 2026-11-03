@@ -9,6 +9,7 @@
   Jacobian of the split is 1 (|det [[½ 1] [½ −1]]| = 1), and of the merge
   its inverse."
   (:require [clojure.test :refer [deftest is]]
+            [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.runtime.gfi :as gfi]
@@ -64,7 +65,7 @@
                      (do (is (< 300 jumps) (str jumps " jumps")) out)
                      (let [{t1 :trace jumped? :accepted?} (await* (involutive/step t split-merge))
                            ;; and a within-model move of every continuous site
-                           {t2 :trace} (await* (itrace/mh-chain t1 2 {:propose (itrace/random-walk-proposal 0.8)}))]
+                           {t2 :trace} (await* (itrace/mh-chain t1 2 {:propose (proposal/random-walk 0.8)}))]
                        (recur (inc i) t2 (if (>= i burn) (conj out (:trace/result t2)) out)
                               (if jumped? (inc jumps) jumps)))))
               p2 (/ (count (filter #(= 2 %) ks)) (double (count ks)))]

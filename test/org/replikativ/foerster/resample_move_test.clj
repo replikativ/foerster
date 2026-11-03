@@ -4,13 +4,13 @@
   exact, degeneracy falls, a lag window bounds the live anchors, and seeded
   runs reproduce."
   (:require [clojure.test :refer [deftest is]]
+            [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.inference.smc :as smc]
-            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.effects.await :as aw]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.world.scope :as world-scope]
@@ -38,7 +38,7 @@
   (let [plain (b/weighted-values (b/run-infer 5 #(smc/smc (static-model) 200 {})))
         moved (b/run-infer 5 #(smc/smc (static-model) 200
                                        {:anchors #{:mu}
-                                        :rejuvenate {:moves 2 :propose (itrace/random-walk-proposal 0.2)}}))
+                                        :rejuvenate {:moves 2 :propose (proposal/random-walk 0.2)}}))
         wv (b/weighted-values moved)]
     (is (< (b/kl-normal (b/w-mean-sd identity wv) truth) 0.03)
         (str (b/w-mean-sd identity wv) " vs " truth))

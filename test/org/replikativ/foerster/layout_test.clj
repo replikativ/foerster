@@ -13,7 +13,7 @@
   top-level namespace by its own name). Equal ranks may require each other."
   {"random" 0
    "dist" 1 "weights" 1 "contract" 1
-   "measure" 2 "effects" 2 "block" 2 "diagnostics" 3
+   "measure" 2 "effects" 2 "block" 2 "proposal" 2 "diagnostics" 3
    "model" 4
    "runtime" 5
    "analysis" 6

@@ -10,6 +10,7 @@
   (`mh-step`, a replay from the target's anchor) so the check itself is
   known to hold where it must."
   (:require [clojure.test :refer [deftest is]]
+            [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.runtime.gfi :as gfi]
@@ -252,7 +253,7 @@
   (let [root (ctx/create-execution-context)
         xs [-2.3 -1.8 -2.6 1.9 2.4 -1.1 2.2 -2.0]
         rw (fn [a] {:select (fn [_ _] {:targets #{a} :log-selection (fn [_] 0.0)})
-                    :propose (itrace/random-walk-proposal 0.3)})]
+                    :propose (proposal/random-walk 0.3)})]
     (try
       (binding [rtc/*execution-context* root]
         (let [t0 (:trace (await* (gfi/generate (mixture xs) {})))]

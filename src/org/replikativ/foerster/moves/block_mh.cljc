@@ -17,7 +17,8 @@
   acceptance rate toward 0.234), then one single-site random-walk move of a
   latent that is not a block site, if there is one. A trace without block
   sites makes the same moves as before."
-  (:require [org.replikativ.foerster.moves.transition-context :as tc]
+  (:require [org.replikativ.foerster.proposal :as proposal]
+            [org.replikativ.foerster.moves.transition-context :as tc]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.random :as random]
@@ -176,7 +177,7 @@
   `:step-size` for the single-site moves. Scales are fixed: an adapted
   subchain would break the move's reversibility."
   [{:keys [coarse scales steps step-size] :or {step-size 0.1}}]
-  (let [propose (itrace/random-walk-proposal step-size)
+  (let [propose (proposal/random-walk step-size)
         ;; the order of the moves is fixed, never read off the state: a
         ;; block an earlier move brings into the program is moved in its turn
         order (vec (keys coarse))]
@@ -262,7 +263,7 @@
   move; default the block's dimension)."
   [{:keys [step-size burn steps] :or {burn 0}}]
   (let [adaptation (atom {})
-        propose (itrace/random-walk-proposal step-size)]
+        propose (proposal/random-walk step-size)]
     (fn [trace {:keys [iteration adaptation-iteration] :as chain-opts}]
       (fn [resolve reject]
         (let [local-iteration (or adaptation-iteration iteration)

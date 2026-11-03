@@ -373,7 +373,7 @@
                               (itrace/policy {:keep? true
                                               :draw (fn [sp old-entry]
                                                       (when (contains? targets (:savepoint/address sp))
-                                                        (itrace/prior-proposal sp old-entry)))})
+                                                        (itrace/prior-draw sp old-entry)))})
                               {:anchor? itrace/anchor?})
             (fn [t'] {:trace t' :weight (itrace/mh-log-ratio trace t' (constantly 0.0))})))))
 

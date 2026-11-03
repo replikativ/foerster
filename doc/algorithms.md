@@ -92,9 +92,10 @@ so are `:world-opts`, `:authority` and `:grant` under `:world-policy :fresh`
 (`::infer/fork-only-options`): an option that would be ignored is a mistake.
 `importance-sampling` takes no `:resample-threshold`, BBVI no `:policy` or
 `:resample-threshold` (it decides both), and the Markov-chain kernels only
-`:executor`, `:seed`, `:world-policy` and `:world-opts`. A site kernel
-(`kernel-infer` with a `PInferenceKernel`) decides the sites itself and
-refuses `:policy`.
+`:executor`, `:seed`, `:world-policy` and `:world-opts`.
+
+A particle method draws latent sites from the prior unless given a
+`:proposal` ([proposals](#proposals)).
 
 A program can also name a proposal at a site:
 `(sample (dist/normal 0 1) :id :mu :proposal guide)` draws a fresh value
@@ -327,7 +328,7 @@ restores diversity without changing the target or the weights:
 (infer/smc-infer (model) 1000
   {:anchors #{:mu}                          ; where moves may start
    :rejuvenate {:moves 2                    ; per particle, per resampling
-                :propose (trace/random-walk-proposal 0.2)}})
+                :propose (proposal/random-walk 0.2)}})
 ```
 
 A move replays the program from an **anchor** — a kept fork of the world at a
@@ -505,6 +506,35 @@ caller's `:policy` (proposals, other constraints) carries into every inner
 SMC. Correlated PMMH, which needs SMC driven by explicit noise, is not
 provided.
 
+
+## Proposals
+
+A **proposal** (`org.replikativ.foerster.proposal`) says where a latent
+site's value comes from when it is not drawn from the site's own law. One
+protocol serves every place a value is proposed: the particle methods'
+`:proposal`, MH moves' and resample-move's `:propose`, and a policy's
+`:draw`.
+
+| Proposal | Draws |
+|---|---|
+| `proposal/prior` | from the site's own law (the default) |
+| `(proposal/distribution q)` | from the distribution `q`, whatever the old value (an independence proposal) |
+| `(proposal/random-walk s)` | a Gaussian step of `s` from the old value (symmetric), the prior where there is none |
+| `(proposal/only sites p)` | `p` at the given addresses (a set or a predicate), the site's law elsewhere |
+| `(proposal/from-fn propose log-q)` | your own: `(propose site)` → `{:value v :log-q lq}` or `{:value v :symmetric? true}` |
+
+```clojure
+;; importance sampling whose :mu is drawn near the data
+(infer/importance-sampling (model) 1000
+  {:proposal (proposal/only #{:mu} (proposal/distribution (dist/normal 7.0 1.0)))})
+```
+
+The weights correct for the proposal (log p − log q), so the target is
+unchanged, and an MH move scores its reverse with the proposal's own
+`log-q`: asymmetric proposals are exact. The built-in proposals are right by
+construction, and SMC's evidence stays `:unbiased`; a `from-fn` proposal is
+your obligation, and the evidence is `:unverified` (`foerster.contract`).
+
 ## Kernels
 
 `(kernel-infer model kernel n opts)` runs a kernel from
@@ -512,8 +542,6 @@ provided.
 
 | Kernel | Runs |
 |---|---|
-| `(k/prior-kernel)` | SMC from the prior (`:barrier-policy :none`: importance sampling) |
-| a custom `PInferenceKernel` | SMC whose latent sites take the kernel's `step` value ([extending](extending.md)) |
 | `(k/single-site-mh-kernel iterations opts)` | `n` independent Markov chains of single-site MH, proposals from the prior |
 | `(k/random-walk-mh-kernel iterations {:step-size 0.1})` | random-walk MH on continuous sites |
 | `(k/block-gibbs-kernel iterations selector block-kernels classifier opts)` | block Gibbs: `classifier` `(fn [address entry])` assigns sites to block ids, `selector` (`k/round-robin-selector`, `k/random-selector`) picks a block per iteration, `block-kernels` `{block-id kernel}` moves it (`k/prior-block-kernel`, `k/random-walk-block-kernel` on continuous sites, or a custom kernel marked `k/PSymmetricBlockKernel`); a move that changes the block's membership is rejected |

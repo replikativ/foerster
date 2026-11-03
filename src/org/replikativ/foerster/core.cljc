@@ -5,9 +5,10 @@
   Every method runs a probabilistic program as a savepoint handler: SMC
   (`foerster.inference.smc`) for the particle methods — smc-infer,
   importance-sampling, pimh-infer, pgibbs-infer, pgas-infer, ipmcmc-infer
-  (`foerster.inference.pmcmc`), bbvi-infer (`foerster.inference.bbvi`) and
-  kernel-infer with a PInferenceKernel — and replay plus accept over traces
-  (`foerster.runtime.trace`) for the Markov-chain kernels.
+  (`foerster.inference.pmcmc`) and bbvi-infer (`foerster.inference.bbvi`),
+  whose latent sites a `:proposal` may decide (`foerster.proposal`) — and
+  replay plus accept over traces (`foerster.runtime.trace`) for the Markov
+  kernels of kernel-infer.
 
   Pure inference (`:world-policy :fresh`, the default) runs in fresh worlds;
   `:world-policy :fork` in canonical forks of the caller's world
@@ -33,7 +34,6 @@
             [org.replikativ.foerster.inference.posterior :as posterior]
             [org.replikativ.foerster.inference.parallel-tempering :as parallel-tempering]
             [org.replikativ.foerster.inference.tempering :as tempering]
-            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.runtime.canonical :as canonical :refer [frozen-source with-frozen-caller]]
             #?(:clj [org.replikativ.foerster.analysis :as analysis])
             #?(:clj [org.replikativ.foerster.inference.compiled :as compiled])
@@ -70,86 +70,40 @@
  'org.replikativ.foerster.core/deterministic effects/deterministic-handler effects/deterministic-adapter)
 
 ;; =============================================================================
-;; Kernels: Markov chains and site proposal policies
+;; Markov chains
 ;; =============================================================================
 
-(defn- kernel-policy
-  "An `foerster.runtime.trace` policy that asks `kernel` (a PInferenceKernel) for
-  every latent site's value; the value's `:log-weight-delta` (default 0) is
-  what it adds to the particle's weight."
-  [kernel]
-  (itrace/policy
-   {:draw (fn [sp _old-entry]
-            (let [world (:savepoint/world sp)
-                  {:keys [dist options]} (:savepoint/payload sp)
-                  {:keys [value log-weight-delta]}
-                  (k/step kernel world
-                          {:source dist :options options :address (:savepoint/address sp)}
-                          (itrace/world-legacy-trace world))]
-              {:value value
-               :log-proposal (- (dist/logpdf dist value) (or log-weight-delta 0.0))}))}))
-
 (defn kernel-infer
-  "Run inference with a kernel.
+  "Run `num-chains` independent Markov chains of `kernel` (a Markov kernel,
+  `foerster.moves.kernel`: `single-site-mh-kernel`, `random-walk-mh-kernel`,
+  `block-gibbs-kernel`, `hmc-kernel`, `nuts-kernel`, their `cycle` and
+  `mixture`, …) on `model-task`. A site proposal is not a kernel: it goes to
+  the particle methods as `:proposal` (`foerster.proposal`).
 
-  Markov-chain kernels (`single-site-mh-kernel`, `random-walk-mh-kernel`,
-  `block-gibbs-kernel`, `hmc-kernel`) run `num-particles` independent chains.
-  Any other PInferenceKernel runs savepoint SMC whose latent sites take the
-  value the kernel's `step` gives (the prior kernel: a draw from the prior).
+  Options:
+    :seed          the run's seed: the same seed, the same draws, whatever
+                   the executor; without it the process generator
+                   (`random/set-seed!`) seeds the run
+    :executor      the executor the chains run on
+    :world-policy  :fresh (default), or :fork: each chain runs in a fork of
+                   one frozen fork of the caller's world made when inference
+                   starts, reusing work incrementally only for runs that
+                   wrote no world state (`foerster.runtime.trace/reexecute`)
+    :world-opts    :systems/:rights/:snapshots forwarded to those forks
 
-  Args:
-  - model-task: Spin (from model function) - Probabilistic program to infer
-  - kernel: a kernel (e.g., prior-kernel, single-site-mh-kernel)
-  - num-particles: Number of particles (chains)
-  - opts: Optional map with:
-    - :barrier-policy - :every-observe (default, SMC) | :none (importance
-      sampling)
-    - :resample-threshold - ESS threshold (default 0.5)
-    - :executor - Shared executor for all particles
-    - :seed - the run's seed: the same seed, the same draws, whatever the
-      executor; without it the process generator (`random/set-seed!`) seeds
-      the run
-    - :world-policy - :fresh (default) for pure inference, or :fork to
-      execute each particle (each chain) in a frozen canonical Yggdrasil
-      world that is discarded after the final values are captured; chains
-      fork one frozen fork of the caller made when inference starts and
-      reuse nothing incrementally (`foerster.runtime.trace/reexecute`)
-    - :world-opts - Optional :systems/:rights/:snapshots policy forwarded to
-      canonical forks; lifecycle fields are owned by inference
-    - :authority, :grant - budgets (doc/worlds.md); particle kernels only
-
-  Returns: Spin<EmpiricalMeasure>
-
-  Examples:
-    ;; Importance sampling with prior kernel
-    (spin
-      (let [model (coin-flip-model)
-            measure (await (kernel-infer model (prior-kernel) 100
-                                         {:barrier-policy :none}))]
-        (query measure identity)))"
-  [model-task kernel num-particles & [opts]]
-  (when (k/markov-kernel? kernel)
-    (refuse-authority! opts "A Markov chain"))
-  (check-options! opts (if (k/markov-kernel? kernel)
-                         #{:executor :world-policy :world-opts :seed}
-                         (conj particle-options :barrier-policy)))
-  (when (and (:policy opts) (not (k/markov-kernel? kernel)) (not= :prior (k/kernel-id kernel)))
-    (throw (ex-info "A site kernel decides the sites itself: :policy does not apply"
-                    {:type ::unknown-options :unknown [:policy]})))
-  (let [smc-opts (cond-> (dissoc opts :barrier-policy)
-                   (= :none (:barrier-policy opts)) (assoc :resample-threshold 0.0))]
-    (cond
-      (k/markov-kernel? kernel)
-      ;; Markov-chain kernels are replay plus accept over traces; each of the
-      ;; `num-particles` is an independent chain. Under :fork every chain
-      ;; forks the inference's one frozen fork of the caller's world.
-      (with-frozen-caller opts #(transition/infer model-task kernel num-particles %))
-
-      (= :prior (k/kernel-id kernel))
-      (particles model-task num-particles smc-opts)
-
-      :else
-      (particles model-task num-particles (assoc smc-opts :policy (kernel-policy kernel))))))
+  Returns: Spin<EmpiricalMeasure>, the chains' draws (`:samples :all`) or
+  last states (`:samples :final`), as the kernel's output options say."
+  [model-task kernel num-chains & [opts]]
+  (when-not (k/markov-kernel? kernel)
+    (throw (ex-info (str "kernel-infer runs Markov kernels; a site proposal goes to smc-infer or "
+                         "importance-sampling as :proposal")
+                    {:type ::not-a-markov-kernel :kernel kernel})))
+  (refuse-authority! opts "A Markov chain")
+  (check-options! opts #{:executor :world-policy :world-opts :seed})
+  ;; Markov-chain kernels are replay plus accept over traces; each chain is
+  ;; independent. Under :fork every chain forks the inference's one frozen
+  ;; fork of the caller's world.
+  (with-frozen-caller opts #(transition/infer model-task kernel num-chains %)))
 
 ;; =============================================================================
 ;; Particle methods (worlds and options: `foerster.inference.worlds`)
@@ -170,8 +124,10 @@
     :authority, :grant   a world.scope/PResourceAuthority and the budget the
                          inference draws from the caller's wallet (:fork)
     :executor            the executor the worlds run on (default: spindel's)
+    :proposal            a `foerster.proposal` the latent sites are drawn
+                         from (default the prior); the weights correct for it
     :policy              a `foerster.runtime.trace/policy` deciding the sites
-                         (constraints, interventions, proposals)
+                         (constraints, interventions)
     :anchors, :rejuvenate  resample-move: after each resampling, MH moves
                          from anchored sites (`foerster.inference.smc/smc`; :fresh only)
 
@@ -296,7 +252,7 @@
      :parallel-tempering #{:chains}
      :pimh sweeps :pgibbs sweeps :pgas sweeps :ipmcmc sweeps :bbvi sweeps
      :mh chains :rmh (conj chains :step-size) :nuts (conj chains :step-size)
-     :kernel #{:kernel :chains :particles}
+     :kernel #{:kernel :chains}
      :pmmh #{:particles :iterations :burn}}))
 
 (defn- pmmh
@@ -379,8 +335,8 @@
                                         static, else refused with the
                                         reasons; its traces hold the latent
                                         values only
-    :kernel                             :kernel (a `foerster.moves.kernel` kernel)
-                                        and :chains or :particles
+    :kernel                             :kernel (a `foerster.moves.kernel` Markov
+                                        kernel) and :chains
     :pmmh                               :particles per SMC, :iterations,
                                         :params (and `smc2/pmmh` options)
   The other options go to the method (see its function). Returns a spin
@@ -417,7 +373,7 @@
               (kernel-infer model (k/nuts-kernel iterations (cond-> (merge chain-output (select-keys rest-opts nuts-opts))
                                                               step-size (assoc :step-size step-size)))
                             (or chains 4) (apply dissoc rest-opts nuts-opts)))
-      :kernel (kernel-infer model kernel (or chains particles 4) rest-opts)
+      :kernel (kernel-infer model kernel (or chains 4) rest-opts)
       :pmmh (pmmh model particles iterations (cond-> rest-opts burn (assoc :burn burn))))))
 
 ;; =============================================================================

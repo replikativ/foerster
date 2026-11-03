@@ -1,7 +1,7 @@
 (ns org.replikativ.foerster.consistency-test
   "Options are checked where they are given, and results' contracts are
-  read where they matter: site options, a site kernel's sites, PMMH's
-  options and its filter's evidence, nested inference."
+  read where they matter: site options, proposals, PMMH's options and its
+  filter's evidence, nested inference."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.contract :as contract]
@@ -9,7 +9,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :as effects :refer [observe sample]]
             [org.replikativ.foerster.inference.smc2 :as smc2]
-            [org.replikativ.foerster.moves.kernel :as k]
+            [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
@@ -51,12 +51,23 @@
     (is (= :unverified (status (let [p (itrace/policy {:constraints {:mu 0.3}})] (fn [sp old] (p sp old)))))
         "a policy function whose options are unknown")))
 
-(deftest a-site-kernel-does-not-take-a-policy
-  (let [fixed (reify k/PInferenceKernel
-                (kernel-id [_] :fixed)
-                (step [_ _ checkpoint _] {:value (dist/draw (:source checkpoint))}))]
-    (is (= [::infer/unknown-options]
-           (error-types #(b/run-infer 5 (fn [] (infer/kernel-infer (line) fixed 4 {:policy (itrace/policy {})}))))))))
+(deftest proposals-go-where-sites-are-proposed
+  (let [q (proposal/distribution (dist/normal 0.5 1.0))
+        status #(contract/normalizer-status (b/run-infer 5 (fn [] (infer/smc-infer (line) 10 %))))]
+    (testing "a built-in proposal keeps the evidence unbiased; a function proposal is the caller's"
+      (is (= :unbiased (status {:proposal q})))
+      (is (= :unbiased (status {:proposal q :policy (itrace/policy {:constraints {:y 0.8}})})))
+      (is (= :unverified (status {:proposal (proposal/from-fn (fn [{d :dist}]
+                                                                (let [v (dist/draw d)] {:value v :log-q (dist/logpdf d v)})))}))))
+    (testing "one proposer per run"
+      (is (some #{::itrace/invalid-proposal}
+                (error-types #(b/run-infer 5 (fn [] (infer/smc-infer (line) 4 {:proposal q
+                                                                               :policy (itrace/policy {:draw (fn [_ _] nil)})})))))))
+    (testing "a proposal is not a Markov kernel"
+      (is (= [::infer/not-a-markov-kernel] (error-types #(b/run-infer 5 (fn [] (infer/kernel-infer (line) q 4))))))
+      (is (= [::infer/unknown-options] (error-types #(b/run-infer 5 (fn [] (infer/infer (line) {:method :mh :iterations 5
+                                                                                                :proposal q})))))
+          "chains take their proposals in their kernels"))))
 
 (deftest pmmh-checks-its-options-and-its-filter
   (let [run #(b/run-infer 3 (fn [] (infer/infer (line) (merge {:method :pmmh :params #{:mu} :particles 8 :iterations 4} %))))]

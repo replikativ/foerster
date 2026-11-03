@@ -2,6 +2,7 @@
   "Canonical Yggdrasil worlds for effectful inference particles."
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.dist :as dist]
+            [org.replikativ.foerster.proposal :as proposal]
             [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.engine.context :as context]
@@ -10,7 +11,6 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.core :as inference]
-            [org.replikativ.foerster.moves.kernel :as kernel]
             [org.replikativ.foerster.measure :as measure]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.atom :as sa]
@@ -362,24 +362,21 @@
       (finally
         (context/stop-context! root)))))
 
-(deftest a-kernel-decides-the-latent-sites
+(deftest a-proposal-decides-the-latent-sites
   (let [root (context/create-execution-context)
-        fixed (reify kernel/PInferenceKernel
-                (kernel-id [_] :fixed)
-                (step [_ _ checkpoint _]
-                  {:action :assign
-                   :value (or (get-in checkpoint [:options :observe]) 42.0)
-                   :log-weight-delta -1.0}))]
+        ;; the value 42 with a density one nat above the site's prior: the
+        ;; weight is log p(42) − log q(42) = −1, plus the observation
+        fixed (proposal/from-fn (fn [{d :dist}] {:value 42.0 :log-q (+ 1.0 (dist/logpdf d 42.0))}))]
     (try
       (binding [ec/*execution-context* root]
         (doseq [policy [:fresh :fork]]
-          (let [posterior @(spin (await (inference/kernel-infer (latent-model) fixed 3
-                                                                {:world-policy policy
-                                                                 :barrier-policy :none})))]
+          (let [posterior @(spin (await (inference/importance-sampling (latent-model) 3
+                                                                       {:world-policy policy
+                                                                        :proposal fixed})))]
             (is (= [42.0 42.0 42.0] (mapv measure/get-value (measure/get-contexts posterior))))
             (is (every? #(< (Math/abs (- % (+ -1.0 (dist/logpdf (dist/normal 42.0 1.0) 0.5)))) 1e-9)
                         (mapv second (measure/get-particles posterior)))
-                "the delta and the observation make the weight"))))
+                "the proposal's correction and the observation make the weight"))))
       (finally
         (context/stop-context! root)))))
 
