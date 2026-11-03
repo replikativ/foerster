@@ -29,6 +29,8 @@
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.contract :as contract]
             [org.replikativ.foerster.proposal :as proposal]
+            [org.replikativ.foerster.moves.kernel :as k]
+            [org.replikativ.foerster.moves.transition :as transition]
             [org.replikativ.foerster.inference.particle-mcmc :as pmcmc]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.dist :as dist]
@@ -231,6 +233,43 @@
                                      (dist/logpdf proposal v)
                                      (dist/draw-logpdf dist v))}))))))))
 
+(defn- rejuvenation-move
+  "The j-th move resample-move makes on a trace, `(move t opts j)`:
+  `mh-step` with `rejuvenate`'s `:propose`, or one iteration of its
+  `:kernel` (a Markov kernel, `foerster.moves.kernel`) compiled for this
+  particle, its iterations numbered apart by the kernel's stride."
+  [rejuvenate]
+  (if-let [kernel (:kernel rejuvenate)]
+    (let [{:keys [step iteration-stride]} (transition/options kernel)]
+      (fn [t opts j] (step t (assoc opts :iteration (* j iteration-stride)))))
+    (fn [t opts j] (itrace/mh-step t (assoc opts :iteration j)))))
+
+(defn- check-rejuvenation-kernel!
+  "Refuse a `:rejuvenate` `:kernel` that is not a fixed Markov kernel able
+  to share anchors with the particle's population, or that comes with a
+  `:propose` of its own."
+  [{:keys [kernel propose]} retained]
+  (when kernel
+    (when retained
+      ;; the retained particle's state before a move is drawn backwards
+      ;; through the move, which needs a reversible move; a cycle's reverse
+      ;; is the cycle run backwards
+      (throw (ex-info ":rejuvenate's :kernel is not supported with :retained (particle Gibbs): use :propose"
+                      {:type ::invalid-rejuvenation})))
+    (when-not (k/markov-kernel? kernel)
+      (throw (ex-info ":rejuvenate's :kernel is a Markov kernel (foerster.moves.kernel)"
+                      {:type ::invalid-rejuvenation :kernel kernel})))
+    (when propose
+      (throw (ex-info ":rejuvenate takes a :kernel or a :propose, not both: the kernel proposes"
+                      {:type ::invalid-rejuvenation})))
+    (let [prepared (transition/prepare kernel)]
+      (when (transition/adaptation? prepared)
+        (throw (ex-info "A rejuvenation kernel has fixed tuning: run warm-up (:burn) as a separate chain"
+                        {:type ::invalid-rejuvenation})))
+      (when-not (contains? (:retention (:capabilities prepared)) :shared-anchors?)
+        (throw (ex-info "A rejuvenation kernel must share anchors with its population (a custom kernel declares :retains?)"
+                        {:type ::invalid-rejuvenation}))))))
+
 (defn- move-options
   "The options of a rejuvenation move of `t`, a trace standing at its k-th
   barrier: one latent site of the window selected uniformly, `rejuvenate`'s
@@ -270,6 +309,7 @@
   enumeration of one sweep: 2·10⁻⁴ to 3·10⁻³ in total variation)."
   [model retained policy rejuvenate anchor? lag seed executor]
   (let [moves (:moves rejuvenate 1)
+        move (rejuvenation-move rejuvenate)
         particle-policy (or policy (itrace/policy))
         ;; one run of `path` (to barrier k, or whole) in a session of its
         ;; own — a session runs one computation — closed as soon as `use`
@@ -307,9 +347,7 @@
                           (letfn [(step [j t]
                                     (if (= j moves)
                                       (ok (merge path (itrace/choices t)))
-                                      ((itrace/mh-step t (assoc (move-options t k lag rejuvenate
-                                                                              particle-policy anchor?)
-                                                                :iteration j))
+                                      ((move t (move-options t k lag rejuvenate particle-policy anchor?) j)
                                        (fn [{t' :trace}] (step (inc j) t'))
                                        fail)))]
                             (if (:trace/pending t0)
@@ -357,12 +395,15 @@
   exactly. :unverified when a correction
   rests on the caller (a policy's proposals or other options, a policy
   function not made by `foerster.runtime.trace/policy`, SMCP3's kernels, a
-  rejuvenation `:propose`), for conditional SMC (`:retained`), and for the
+  rejuvenation `:propose`, a rejuvenation `:kernel` with a user-written
+  part), for conditional SMC (`:retained`), and for the
   variants not argued here (`:enumerate`, `:batch`, forked populations)."
   [{:keys [policy retained ancestor-sampling? enumerate smcp3 batch adopt rejuvenate]}]
   (if (or (and policy (not (fixing-policy? policy)))
           retained ancestor-sampling? enumerate smcp3 batch adopt
-          (and (:propose rejuvenate) (not (verified-proposal? (:propose rejuvenate)))))
+          (and (:propose rejuvenate) (not (verified-proposal? (:propose rejuvenate))))
+          (and (:kernel rejuvenate)
+               (not (:verified? (:capabilities (transition/prepare (:kernel rejuvenate)))))))
     :unverified
     :unbiased))
 
@@ -430,6 +471,7 @@
   (when (and rejuvenate (not anchors))
     (throw (ex-info ":rejuvenate needs :anchors to replay from"
                     {:type ::rejuvenate-without-anchors})))
+  (check-rejuvenation-kernel! rejuvenate retained)
   (when-let [other (and enumerate (some #(when (get opts %) %) [:retained :anchors :rejuvenate :smcp3 :copy? :batch]))]
     (throw (ex-info (str ":enumerate is not supported with " other)
                     {:type ::enumerate-with-unsupported :option other})))
@@ -975,6 +1017,7 @@
                       opts (assoc (move-options t0 k lag rejuvenate (policy-of slot) anchor?)
                                   :shared-anchors? true)
                       steps (:moves rejuvenate 1)
+                      move (rejuvenation-move rejuvenate)
                       finish (fn [t]
                                (if (= (:fork-id (:trace/world t)) (:fork-id world0))
                                  (done {:sp sp :value value})
@@ -992,7 +1035,7 @@
                   (letfn [(step [j t]
                             (if (= j steps)
                               (finish t)
-                              ((itrace/mh-step t (assoc opts :iteration j))
+                              ((move t opts j)
                                (fn [{t' :trace accepted? :accepted?}]
                                  (swap! state update :rejuvenation
                                         #(-> % (update :moves inc)
@@ -1131,9 +1174,11 @@
   predicate of the savepoint — and `:rejuvenate {:moves m :propose p}` makes
   every particle take m Metropolis-Hastings moves after each resampling,
   each replaying from an anchor up to the particle's current barrier (`p` a
-  proposal as for `foerster.runtime.trace/mh-step`, default the prior). The moves
-  leave the target up to that barrier invariant, so the weights and the
-  evidence estimate are unchanged. Not in copied worlds. With `:retained`
+  `foerster.proposal`, default the prior). `:rejuvenate {:moves m :kernel
+  k}` makes m iterations of a Markov kernel instead (`foerster.moves.kernel`:
+  any fixed kernel, `cycle` and `mixture` included; not with `:retained`).
+  The moves leave the target up to that barrier invariant, so the weights
+  and the evidence estimate are unchanged. Not in copied worlds. With `:retained`
   the retained particle moves too, exactly: its trajectory is the state
   after each barrier's move, and its state before is drawn backwards
   through the move (`retained-stages`); not with `:ancestor-sampling?`.

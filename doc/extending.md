@@ -135,8 +135,32 @@ construction, which decides whether SMC's evidence is `:unbiased`.
 A proposal is not a Markov kernel. Markov-chain descriptions implement
 `PMarkovKernel` (`transition-id`) and are compiled by
 `foerster.moves.transition`. They are combined with `k/cycle` and `k/mixture`
-([algorithms](algorithms.md#kernels)); a move of your own over traces is an
-`mh-chain` `:step`.
+([algorithms](algorithms.md#kernels)).
+
+## A kernel
+
+`k/kernel` makes a Markov kernel of your own from a step over traces. It
+composes with the built-in kernels, runs as chains (`kernel-infer`), and
+rejuvenates SMC (`:rejuvenate {:kernel k}`):
+
+```clojure
+(def mine
+  (k/kernel 1000
+            (fn [t context]                     ; context: target, replay frontier,
+              (trace/mh-step t (assoc context   ; ownership, :iteration
+                                      :select my-select
+                                      :propose (proposal/random-walk 0.3))))
+            {:retains? true :samples :all :burn 100}))
+
+(infer/kernel-infer (model) (k/cycle 500 [mine (k/single-site-mh-kernel 1)]) 4)
+```
+
+Passing `context` on to `mh-step` keeps the target, the replay frontier
+(SMC's moves stop at the particle's barrier) and the ownership options;
+declare `:retains? true` when it does, and `:tempering? true` when the step
+targets a temperature below one. Leaving the target invariant is your
+obligation: a result whose moves include your kernel says so
+(`:unverified` evidence).
 
 ## Learned twists and proposals
 

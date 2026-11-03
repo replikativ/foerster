@@ -331,6 +331,14 @@ restores diversity without changing the target or the weights:
                 :propose (proposal/random-walk 0.2)}})
 ```
 
+Any fixed Markov kernel can be the move instead (`:rejuvenate {:moves m
+:kernel k}`): a `cycle` of MH and random-walk moves, HMC on a block, a
+kernel of your own. Kernels that tune themselves (`:burn` > 0) are refused
+(warm-up is a separate chain), and so is `:kernel` with `:retained`
+(particle Gibbs draws its retained state backwards through the move, which
+needs a reversible move; use `:propose`). The evidence stays `:unbiased`
+with built-in kernels and is `:unverified` with a kernel of your own.
+
 A move replays the program from an **anchor** — a kept fork of the world at a
 latent site — up to the observation the particle is parked at, and accepts on
 the MH ratio of the two partial traces. Which sites keep anchors is the
@@ -552,6 +560,7 @@ your obligation, and the evidence is `:unverified` (`foerster.contract`).
 | `(k/proposal-mh-kernel iterations proposal {:args […]})` | MH with a proposal program (`gfi/mh-proposal`), scored forward and backward; chains only |
 | `(k/cycle iterations [k₁ k₂ …])` | each iteration runs k₁'s moves, then k₂'s, … — the composition K₂∘K₁ |
 | `(k/mixture iterations [[w₁ k₁] [w₂ k₂] …])` | each iteration runs one kᵢ, picked with probability ∝ wᵢ |
+| `(k/kernel iterations step opts)` | a kernel of your own: `step` is `(fn [trace context])`, typically `trace/mh-step` with your own `:select` and `:propose` ([extending](extending.md#a-kernel)) |
 
 Kernels that leave the posterior invariant form a monoid under composition,
 and their mixtures with state-independent weights are invariant too: `cycle`
