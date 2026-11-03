@@ -84,3 +84,12 @@
 (deftest nested-inference-keeps-the-inner-contract
   (let [d (b/run-infer 4 #(infer/conditional (coin) {:method :enumerate}))]
     (is (= :exact (get-in (meta d) [:inference/nesting :contract :normalizer :status])))))
+
+(deftest pmmh-takes-a-proposal-of-theta
+  (let [run #(b/run-infer 6 (fn [] (infer/infer (line) {:method :pmmh :params #{:mu} :particles 20 :iterations 300
+                                                        :burn 50 :propose %})))
+        mu-mean (fn [r] (b/w-mean identity (b/weighted-values r)))]
+    ;; mu ~ N(0, 1), 0.8 ~ N(mu, 0.5): mu | y ~ N(0.64, 0.2)
+    (is (< (Math/abs (- (mu-mean (run (proposal/random-walk 0.4))) 0.64)) 0.2))
+    (is (some #{::smc2/asymmetric-theta-proposal}
+              (error-types #(run (proposal/from-fn (fn [{old :old}] {:value (update old :mu + 0.1) :log-q 0.0}))))))))

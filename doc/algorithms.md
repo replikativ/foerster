@@ -404,6 +404,13 @@ the posterior's spread and heavy-tailed for large ones; an L close to the
 reversal of K under the target keeps them flat. Fresh worlds, not with
 `:retained`.
 
+The `{:forward :backward}` map is a **pair** (`foerster.moves.pair`), the one
+shape for moves with auxiliary randomness: SMCP3 takes it, a population
+transport takes it (`program/transport-kernel source destination pair`),
+and an involutive MH move becomes one with `pair/from-involution`, so the
+same move serves as an MCMC move (`k/involutive-kernel`) and as an SMCP3
+step (a reversible jump, which names `:removed` sites, stays an MCMC move).
+
 ## Steering a process: scored steps
 
 A program whose proposals come from an outside process — a language model's
@@ -509,7 +516,11 @@ difference of their SMC log-evidences.
 program. A proposal that leaves the support — a distribution refusing its
 parameters — has density zero and is rejected; one outside the prior's
 support is rejected too, after its SMC ran. The default random walk moves
-continuous parameters; give discrete ones a `:propose` of their own. The
+continuous parameters; give discrete ones a `:propose` of their own: a
+`foerster.proposal` asked about θ (a map {address value}) as the old value
+of its site — `(proposal/random-walk s)` steps every parameter — or a
+function (fn [θ]) -> {:theta θ' :log-ratio …}. An asymmetric proposal needs
+its `log-q`, the density of the reverse move. The
 caller's `:policy` (proposals, other constraints) carries into every inner
 SMC. Correlated PMMH, which needs SMC driven by explicit noise, is not
 provided.

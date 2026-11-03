@@ -31,6 +31,7 @@
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.contract :as contract]
+            [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.protocols :as rtp]))
@@ -126,6 +127,25 @@
   (let [trace (m/get-trace (ffirst (m/get-particles measure)))]
     (reduce + 0.0 (map #(or (:log-prob (get trace %)) 0.0) params))))
 
+(defn- theta-proposal
+  "`propose` as PMMH's and SMC²'s θ proposal, (fn [θ]) -> {:theta θ'
+  :log-ratio log q(θ|θ') − log q(θ'|θ)}: such a function itself, or a
+  `foerster.proposal` asked about θ as the old value of a site `::theta`."
+  [propose]
+  (if-not (proposal/proposal? propose)
+    propose
+    (fn [theta]
+      (let [site {:address ::theta :old theta}
+            {theta' :value :keys [symmetric? log-q]} (proposal/propose propose site)]
+        {:theta theta'
+         :log-ratio (if symmetric?
+                      0.0
+                      (let [back (proposal/log-q propose (assoc site :old theta') theta)]
+                        (when-not (number? back)
+                          (throw (ex-info "An asymmetric θ proposal needs log-q, the density of the reverse move"
+                                          {:type ::asymmetric-theta-proposal})))
+                        (- back log-q)))}))))
+
 (defn- random-walk
   "A symmetric Gaussian random walk on every parameter, with `scales`
   {address sd}. Draws from the current generator."
@@ -157,9 +177,12 @@
   over the program's other sites. Options:
 
     :params   the parameter addresses (required)
-    :propose  (fn [θ]) -> {:theta θ' :log-ratio log q(θ|θ') − log q(θ'|θ)},
-              drawing from the current generator (default: a Gaussian
-              random walk of `:scale`, default 0.1, on every parameter)
+    :propose  a `foerster.proposal` of θ (a map {address value}, the old
+              value of the site it is asked about; `proposal/random-walk`
+              steps every parameter), or (fn [θ]) -> {:theta θ' :log-ratio
+              log q(θ|θ') − log q(θ'|θ)}, drawing from the current generator
+              (default: a Gaussian random walk of `:scale`, default 0.1, on
+              every parameter)
     :burn     iterations left out of the result (default 0)
     :allow-unverified-evidence?  accept filters whose evidence is not
               `:exact` or `:unbiased` (`foerster.contract`): a `:policy`
@@ -201,7 +224,7 @@
                                                    {:type ::unverified-evidence
                                                     :status (contract/normalizer-status measure)}))))
                                  rej)))
-          propose (or propose (random-walk (zipmap params (repeat scale))))
+          propose (theta-proposal (or propose (random-walk (zipmap params (repeat scale)))))
           ;; every run its own seed: a fixed one would make the chain target
           ;; the posterior of one noise draw
           run (fn [theta key]
@@ -222,8 +245,12 @@
                                           :acceptance (/ (double accepted) (max 1 iterations))
                                           ;; after burn-in, as the measure
                                           :thetas (mapv (comp :theta meta first) out)))
-                              (let [{theta' :theta lr :log-ratio}
-                                    (random/with-stream* seed [::propose i] #(propose theta))]
+                              ;; a failing proposal is the chain's error: thrown inside
+                              ;; a filter's callback it would be lost
+                              (if-let [[theta' lr] (try (let [{theta' :theta lr :log-ratio}
+                                                              (random/with-stream* seed [::propose i] #(propose theta))]
+                                                          [theta' lr])
+                                                        (catch #?(:clj Throwable :cljs :default) e (rej e) nil))]
                                 ((run theta' i)
                                  (fn [measure']
                                    (let [log-z' (if measure' (m/log-marginal measure') ##-Inf)
@@ -238,7 +265,8 @@
                                      (step (inc i) theta log-z sample
                                            (if accept? (inc accepted) accepted)
                                            (if (>= i burn) (conj out [kept 0.0]) out))))
-                                 rej))))]
+                                 rej)
+                                nil)))]
                     (step 0 theta0 (m/log-marginal measure0) (pick measure0 -1) 0 [])))
                 rej)))
        resolve reject))))

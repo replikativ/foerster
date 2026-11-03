@@ -10,6 +10,10 @@
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.inference.smc :as smc]
+            [org.replikativ.foerster.core :as infer]
+            [org.replikativ.foerster.moves.kernel :as k]
+            [org.replikativ.foerster.moves.pair :as pair]
+            [org.replikativ.foerster.moves.transport :as transport]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
@@ -148,3 +152,44 @@
                 :backward (fn [_ _] 0.0)}]
     (is (thrown-with-msg? Exception #"observed or constrained"
                           (b/run-infer 35 #(smc/smc (static-model) 10 {:anchors :all :smcp3 kernel}))))))
+
+;; --- one shape for moves with auxiliary randomness ---------------------------
+
+(def ^:private random-walk-involution
+  ;; the same move as `random-walk-kernel`: u ~ N(0, .05), (μ, u) -> (μ + u, −u)
+  {:propose (fn [_] (let [u (dist/draw step)] {:aux u :log-q (dist/logpdf step u)}))
+   :log-q (fn [_ u] (dist/logpdf step u))
+   :involution (fn [{mu :mu} u] {:choices {:mu (+ mu u)} :aux (- u) :log-jacobian 0.0})})
+
+(deftest an-involutive-move-is-an-smcp3-step-and-an-mcmc-move
+  (let [as-map (b/run-infer 31 #(smc/smc (static-model) 400 {:anchors #{:mu} :smcp3 random-walk-kernel}))
+        as-pair (b/run-infer 31 #(smc/smc (static-model) 400 {:anchors #{:mu}
+                                                              :smcp3 (pair/from-involution random-walk-involution)}))]
+    (is (= (mapv second (m/get-particles as-map)) (mapv second (m/get-particles as-pair)))
+        "the pair draws as the map kernel does: the same weights")
+    (is (= (mapv (comp m/get-value first) (m/get-particles as-map))
+           (mapv (comp m/get-value first) (m/get-particles as-pair)))))
+  (let [chains (b/run-infer 32 #(infer/kernel-infer (static-model)
+                                                    (k/involutive-kernel 3000 (assoc random-walk-involution
+                                                                                     :propose (fn [_] (let [u (dist/draw (dist/normal 0.0 0.3))]
+                                                                                                        {:aux u :log-q (dist/logpdf (dist/normal 0.0 0.3) u)}))
+                                                                                     :log-q (fn [_ u] (dist/logpdf (dist/normal 0.0 0.3) u)))
+                                                                         {:samples :all :burn 300})
+                                                    2))
+        [mu _] (b/w-mean-sd identity (b/weighted-values chains))]
+    (is (< (Math/abs (- mu (first truth))) 0.06) (str mu " vs " truth))))
+
+(deftest pairs-are-checked-where-they-are-taken
+  (let [refusal (fn [opts] (try (b/run-infer 35 #(smc/smc (static-model) 10 opts)) nil
+                                (catch Throwable e (some #(:type (ex-data %)) (take-while some? (iterate ex-cause e))))))]
+    (is (= ::pair/invalid-pair (refusal {:anchors #{:mu} :smcp3 {:forward (:forward random-walk-kernel)}}))))
+  (is (= (transport/kernel {:id :a} {:id :b} (:forward random-walk-kernel) (:backward random-walk-kernel))
+         (transport/kernel {:id :a} {:id :b} (pair/pair (:forward random-walk-kernel) (:backward random-walk-kernel))))
+      "a transport kernel takes a pair")
+  (is (= ::pair/removed-sites
+         (try ((:forward (pair/from-involution (assoc random-walk-involution
+                                                      :involution (fn [_ u] {:choices {} :aux u :log-jacobian 0.0
+                                                                             :removed #{:mu}}))))
+               {:mu 0.0} nil)
+              nil
+              (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))))

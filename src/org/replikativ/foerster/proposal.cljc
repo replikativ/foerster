@@ -71,22 +71,35 @@
   [q]
   (->Distribution q))
 
+(defn- step-map
+  "Every value of the map `old` stepped by N(0, `step-size`²), in the map's
+  order."
+  [old step-size]
+  (into {} (map (fn [[a v]] [a (+ v (* step-size (dist/draw (dist/normal 0.0 1.0))))])) old))
+
 (defrecord RandomWalk [step-size]
   PProposal
   (propose [_ {d :dist old :old :as site}]
-    (if (and (number? old) (dist/continuous? d))
+    (cond
+      (and (number? old) (dist/continuous? d))
       {:value (+ old (* step-size (dist/draw (dist/normal 0.0 1.0)))) :symmetric? true}
-      (propose prior site)))
+      ;; a parameter map with no law of its own (PMMH's θ)
+      (and (nil? d) (map? old) (every? number? (vals old)))
+      {:value (step-map old step-size) :symmetric? true}
+      :else (propose prior site)))
   (log-q [_ {d :dist old :old :as site} v]
-    (if (and (number? old) (dist/continuous? d))
-      (dist/logpdf (dist/normal old step-size) v)
-      (log-q prior site v)))
+    (cond
+      (and (number? old) (dist/continuous? d)) (dist/logpdf (dist/normal old step-size) v)
+      (and (nil? d) (map? old) (every? number? (vals old)))
+      (reduce + (map (fn [[a x]] (dist/logpdf (dist/normal (get old a) step-size) x)) v))
+      :else (log-q prior site v)))
   (verified? [_] true))
 
 (defn random-walk
   "A symmetric Gaussian step of `step-size` around a real-valued site's old
-  value. A site that has no old value, or whose law is not continuous (a
-  boolean, a count, a vector), gets the prior."
+  value, or around every parameter of a map of them (PMMH's θ). A site that
+  has no old value, or whose law is not continuous (a boolean, a count, a
+  vector), gets the prior."
   [step-size]
   (->RandomWalk step-size))
 

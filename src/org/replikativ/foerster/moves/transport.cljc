@@ -5,6 +5,7 @@
   volume-preserving map): a forgotten one would silently bias the weights."
   (:require [is.simm.partial-cps.async :as pcps]
             [org.replikativ.foerster.runtime.trace :as it]
+            [org.replikativ.foerster.moves.pair :as pair]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.trace :as trace])
   #?(:cljs (:require-macros [is.simm.partial-cps.async :as pcps])))
@@ -12,14 +13,19 @@
 (defrecord Kernel [source destination forward backward])
 
 (defn kernel
-  "Bind forward/backward proposal laws to two targets. Value forward returns
+  "Bind forward/backward proposal laws to two targets: a pair
+  (`foerster.moves.pair`), or its two kernels. Value forward returns
   {:value y :log-q ... :reverse u :log-jacobian ...}; trace forward receives
-  [choices trace] and returns :updates instead of :value. Backward scores u at
-  y (or its choice map). Forward and reverse support must match."
-  [source destination forward backward]
-  (when-not (and (ifn? forward) (ifn? backward))
-    (throw (ex-info "Transport needs scored forward/backward proposals" {:type ::unscored-proposal})))
-  (->Kernel (:id source) (:id destination) forward backward))
+  [choices trace] and returns :updates instead of :value, as a pair's
+  does. Backward scores u at y (or its choice map). Forward and reverse
+  support must match."
+  ([source destination move]
+   (pair/check! move "A transport kernel")
+   (kernel source destination (:forward move) (:backward move)))
+  ([source destination forward backward]
+   (when-not (and (ifn? forward) (ifn? backward))
+     (throw (ex-info "Transport needs scored forward/backward proposals" {:type ::unscored-proposal})))
+   (->Kernel (:id source) (:id destination) forward backward)))
 
 (defn require-jacobian!
   "Refuse a move `proposed` (a forward kernel's or an involution's result)
