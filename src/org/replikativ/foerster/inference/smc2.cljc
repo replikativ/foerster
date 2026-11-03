@@ -30,6 +30,7 @@
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.runtime.trace :as itrace]
+            [org.replikativ.foerster.contract :as contract]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.protocols :as rtp]))
@@ -160,6 +161,11 @@
               drawing from the current generator (default: a Gaussian
               random walk of `:scale`, default 0.1, on every parameter)
     :burn     iterations left out of the result (default 0)
+    :allow-unverified-evidence?  accept filters whose evidence is not
+              `:exact` or `:unbiased` (`foerster.contract`): a `:policy`
+              that proposes, SMCP3, a rejuvenation `:propose`. PMMH targets
+              the posterior only with unbiased estimates, so by default a
+              filter whose contract does not say so is refused.
     :filter   (fn [model n smc-opts]) -> the CPS operation of one
               iteration's SMC (default `foerster.inference.smc/smc`); with
               `:canonical-source` (a frozen fork of the caller's world,
@@ -182,13 +188,25 @@
   (fn [resolve reject]
     (let [seed (or (:seed opts) (random/fresh-seed))
           run-filter (or run-filter smc/smc)
-          smc-opts (dissoc opts :filter :canonical-source :world-opts)
+          smc-opts (dissoc opts :filter :canonical-source :world-opts :allow-unverified-evidence?)
+          checked (fn [operation]
+                    (fn [res rej]
+                      (operation (fn [measure]
+                                   (if (or (nil? measure) (:allow-unverified-evidence? opts)
+                                           (contract/unbiased-evidence? measure))
+                                     (res measure)
+                                     (rej (ex-info (str "PMMH needs an unbiased evidence estimate; this filter's is "
+                                                        (contract/normalizer-status measure)
+                                                        " (pass :allow-unverified-evidence? true to accept it)")
+                                                   {:type ::unverified-evidence
+                                                    :status (contract/normalizer-status measure)}))))
+                                 rej)))
           propose (or propose (random-walk (zipmap params (repeat scale))))
           ;; every run its own seed: a fixed one would make the chain target
           ;; the posterior of one noise draw
           run (fn [theta key]
-                (or-impossible (run-filter model n (assoc (conditioned theta smc-opts)
-                                                          :seed (sp/derive-seed seed ::inner key)))))
+                (checked (or-impossible (run-filter model n (assoc (conditioned theta smc-opts)
+                                                                   :seed (sp/derive-seed seed ::inner key))))))
           pick (fn [measure k]
                  (let [ps (m/get-particles measure)
                        i (random/with-stream* seed [::pick k]

@@ -35,6 +35,15 @@ whose guide decides the latent sites):
 | `:noise` `{address u}` | counterfactual noise for mechanisms |
 | `:strict?` `true` with `:noise` | refuse a counterfactual site without compatible factual noise |
 | `:init?` | start sites at their `:init` option (a chain's first state) |
+| `:out-of-support :keep` | with `:keep?`, keep a value outside its site's new support, scored −∞ (Gen's `update`) |
+| `:simulate-observed?` | observed sites draw a fresh value instead of scoring the data (predictive runs) |
+| `:temperature` β | observations and factors count β·log p (the tempered target p(x)·L(x)^β) |
+| `:else` | the policy for every other site (default: its payload) |
+
+A policy that only fixes sites (`:constraints`) or intervenes on them keeps
+SMC's evidence `:unbiased` (`foerster.contract`): PMMH relies on this for
+its θ. A policy with any other option is the caller's responsibility, and
+the evidence is `:unverified`.
 
 ```clojure
 ;; a proposal that knows where the data is
@@ -72,7 +81,7 @@ and release owned sessions before returning.
 | `:propose` `(fn [savepoint old-entry])` | the proposal at a target (default: the prior; `trace/random-walk-proposal` for a random walk) — the reverse move is scored under the prior, so a custom proposal must be the prior or symmetric |
 | `:step` | for `mh-chain`: a step function replacing `mh-step` (e.g. `hmc/within-gibbs`) |
 | `:on-step` | for `mh-chain`: `(fn [{:keys [trace accepted?]}])` called after every step |
-| `:first-iteration` | for `mh-chain`: the number of its first move (default 0); a move's randomness is keyed by its number, so a chain continued by another `mh-chain` call starts where the first stopped |
+| `:first-iteration` | for `mh-chain`: the number of its first move; a move's randomness is keyed by its number. Without it the numbers continue from a counter the trace's world keeps, so calling `mh-chain` again on the same trace draws afresh |
 
 **A proposal program** — `(gfi/mh-proposal trace proposal & args)` is
 Gen's `metropolis_hastings(trace, proposal, args)`: `proposal` is

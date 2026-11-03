@@ -44,6 +44,9 @@ Options of `sample` and `observe`:
 | `:proposal q` | `sample` only: under inference a fresh value is drawn from the distribution `q` instead of `d`, and the weight takes log d(v) − log q(v) |
 | `:stream true` | the site's value arrives from outside, pushed by `smc/stream` |
 
+Any other option is refused (`::effects/invalid-site-options`): a misspelt
+one would otherwise be ignored silently.
+
 A `:proposal` is a guide the program names: a distribution it computes, from
 its data for instance, which is how an amortized guide plugs in. The target
 stays the program's posterior; a good guide only raises the effective sample

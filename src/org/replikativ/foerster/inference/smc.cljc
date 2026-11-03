@@ -327,18 +327,30 @@
   (and (= itrace/choose-site (:savepoint/site sp))
        (:stream (:options (:savepoint/payload sp)))))
 
+(defn- fixing-policy?
+  "Whether `policy` only fixes or intervenes on sites: made by
+  `foerster.runtime.trace/policy` with no options but `:constraints` and
+  `:interventions`."
+  [policy]
+  (when-let [options (itrace/policy-options policy)]
+    (every? #{:constraints :interventions} (keep (fn [[k v]] (when (some? v) k)) options))))
+
 (defn evidence-status
   "The normalizer status (`foerster.contract`) of savepoint SMC run with
   `opts`. :unbiased for SMC whose proposals are the prior: every resampling
   scheme here gives particle i N·wᵢ offspring in expectation, resampling may
   be decided adaptively from the current weights (an αSMC, Whiteley, Lee &
   Heine 2016), and resample-move's MH moves leave each barrier's target
-  invariant. :unverified when a correction rests on the caller (a
-  `:policy`'s proposals or constraints, SMCP3's kernels, a rejuvenation
-  `:propose`), for conditional SMC (`:retained`), and for the variants not
-  argued here (`:enumerate`, `:batch`, forked populations)."
+  invariant. A `:policy` that only fixes sites (`:constraints`, as PMMH's
+  θ) or intervenes on them keeps that: the estimate is of the evidence of
+  the constrained or intervened program. :unverified when a correction
+  rests on the caller (a policy's proposals or other options, a policy
+  function not made by `foerster.runtime.trace/policy`, SMCP3's kernels, a
+  rejuvenation `:propose`), for conditional SMC (`:retained`), and for the
+  variants not argued here (`:enumerate`, `:batch`, forked populations)."
   [{:keys [policy retained ancestor-sampling? enumerate smcp3 batch adopt rejuvenate]}]
-  (if (or policy retained ancestor-sampling? enumerate smcp3 batch adopt (:propose rejuvenate))
+  (if (or (and policy (not (fixing-policy? policy)))
+          retained ancestor-sampling? enumerate smcp3 batch adopt (:propose rejuvenate))
     :unverified
     :unbiased))
 

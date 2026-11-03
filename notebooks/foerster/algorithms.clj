@@ -304,11 +304,11 @@
 ;; - **BBVI** (`bbvi-infer`) when you need a fitted approximation q — for
 ;;   example to reuse as a proposal — rather than samples.
 ;;
-;; The particle methods — importance sampling, SMC, particle MCMC, BBVI and
-;; kernels on SMC — also take `:world-policy :fork`, to run in canonical
-;; forks of the world they are called from: [Models in
-;; Worlds](foerster.worlds.html). Markov chains (MH, random-walk MH, block
-;; Gibbs, HMC) run in fresh worlds only.
+;; Every method but SMC² also takes `:world-policy :fork`, to run in
+;; canonical forks of the world it is called from: [Models in
+;; Worlds](foerster.worlds.html). Methods that run several times (Markov
+;; chains, tempering, PMMH, inference programs) fork one frozen fork of the
+;; caller's world.
 
 ;; Every method foerster implements — also tempered SMC, parallel tempering,
 ;; NUTS, delayed acceptance, Pathfinder, PMMH, SCMC and the particle cascade
