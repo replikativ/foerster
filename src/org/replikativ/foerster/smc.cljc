@@ -26,6 +26,7 @@
             [org.replikativ.foerster.trace :as itrace]
             [org.replikativ.foerster.derive :as derive]
             [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.particle-mcmc :as pmcmc]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.dist :as dist]
@@ -42,7 +43,7 @@
 (defn- slot-of [world] (rtp/get-state world [:inference :slot]))
 (defn- weight-of [world] (or (rtp/get-state world [:inference :log-weight]) 0.0))
 
-(defn- sample-of
+(defn sample-of
   "The measure's particle for a world that returned `result`. A particle of a
   canonical world names it (`:world-id`), for its descriptor."
   [world result]
@@ -359,6 +360,13 @@
     ;; move before the sweep: it needs the values of stream sites not yet seen
     (throw (ex-info ":rejuvenate with :retained needs the whole trajectory: not with smc/stream"
                     {:type ::rejuvenate-retained-stream})))
+  (when (and ancestor-sampling? policy
+             (not (contains? (meta policy) :org.replikativ.foerster.trace/options)))
+    ;; ancestor sampling re-scores futures under the policy's options: an
+    ;; opaque policy would silently score them without its temperature and
+    ;; interventions
+    (throw (ex-info ":ancestor-sampling? re-scores under the particles' policy: pass one made by foerster.trace/policy"
+                    {:type ::opaque-policy})))
   (when (and rejuvenate retained ancestor-sampling?)
     ;; PGAS redraws the retained particle's past from the particles' pre-move
     ;; states; its exact construction with moves is not implemented
@@ -573,11 +581,11 @@
 
             (resample-batch! [k index entries]
               (let [log-ws (mapv #(weight-of (:savepoint/world (:sp %))) entries)
-                    weights (m/normalize-log-weights log-ws)
+                    ;; a batch folds nothing into a normalizer: its children
+                    ;; carry the batch's mean weight on
+                    {weights :selection ess :ess mean :log-mean} (weights/barrier log-ws 0.0)
                     size (count entries)
-                    ess (m/compute-ess weights)
-                    resample? (< ess (* threshold size))
-                    mean (m/log-mean-exp log-ws)]
+                    resample? (< ess (* threshold size))]
                 (swap! state update :history conj {:stage k :batch index :size size
                                                    :ess ess :resampled? resample?})
                 (if-not resample?
@@ -729,12 +737,17 @@
               ;; each parked particle's future replayed on the retained values
               ;; in a fork under a handler table of its own; its final weight
               ;; (from 0) is log p(retained latents, observations | its past)
+              ;; under the target every particle is weighted by: the caller's
+              ;; policy (its temperature, interventions, constraints) with the
+              ;; retained values as constraints
               (fn [resolve reject]
                 (let [k (count entries)
                       scores (object-array k)
                       remaining (atom k)
                       failed? (atom false)
-                      scoring (itrace/policy {:constraints retained})
+                      scoring (itrace/policy
+                               (update (dissoc (itrace/policy-options policy) :draw)
+                                       :constraints merge retained))
                       done! (fn [i score]
                               (aset scores i score)
                               (when (zero? (swap! remaining dec))
@@ -757,23 +770,23 @@
                        (fn [e] (when (compare-and-set! failed? false true) (reject e)))))))))
 
             (resample-with! [k retained-ancestor]
-              (let [{:keys [parked streaming done]} @state
+              (let [{:keys [parked streaming done log-z]} @state
                     slots (vec (range n))
                     world-of (fn [slot] (:savepoint/world (or (:sp (get parked slot))
                                                               (get streaming slot))))
                     log-ws (mapv #(if-let [d (get done %)] (:log-weight d) (weight-of (world-of %)))
                                  slots)
-                    weights (m/normalize-log-weights log-ws)
-                    ess (m/compute-ess weights)
+                    ;; the barrier's ledger (`weights/barrier`); resampling a
+                    ;; population that is all impossible (as conditional SMC
+                    ;; always resamples) leaves it impossible
+                    {weights :selection :keys [ess log-mean log-mass] reset-weight :reset}
+                    (weights/barrier log-ws log-z)
                     resample? (or (some? retained)
-                                  (< ess (* threshold n)))
-                    ;; resampling a population that is all impossible (as
-                    ;; conditional SMC always resamples) leaves it impossible
-                    reset-weight (if (= ##-Inf (apply max log-ws)) ##-Inf 0.0)]
+                                  (< ess (* threshold n)))]
                 (swap! state update :history conj
                        {:ess ess :resampled? resample?
                         ;; the barrier's factor of the evidence estimate
-                        :log-mean-weight (when resample? (m/log-mean-exp log-ws))})
+                        :log-mean-weight (when resample? log-mean)})
                 (if-not resample?
                   (do (when lag (gc! parked streaming))
                       (swap! state assoc :parked {} :in-barrier? false)
@@ -789,7 +802,9 @@
                         live? #(or (contains? parked %) (contains? streaming %))
                         forked-slots (filterv #(live? (nth ancestors %)) slots)
                         source (fn [a] (or (:sp (get parked a)) (get streaming a)))]
-                    (swap! state update :log-z + (m/log-mean-exp log-ws))
+                    ;; the children restart at equal weight: the population's
+                    ;; mass becomes the normalizer
+                    (swap! state assoc :log-z log-mass)
                     (when genealogy?
                       (swap! state update :history
                              (fn [h] (update h (dec (count h)) assoc :ancestors ancestors))))
@@ -1041,7 +1056,8 @@
 
 (defn smc
   "Run `model` (a spin) with `n` particles. Options: `:resample-threshold`
-  (ESS fraction, default 0.5), `:policy` (an `foerster.trace/policy`,
+  (ESS fraction, default 0.5; the ESS never exceeds N, so ##Inf resamples
+  at every barrier, as conditional SMC does), `:policy` (an `foerster.trace/policy`,
   default the prior with no options), `:executor` for the root world,
   `:root` a world to run in instead of a fresh one, `:copy? true` to make
   particles by copying worlds (`effects.savepoint/copy`: a world holding a

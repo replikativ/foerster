@@ -24,6 +24,7 @@
   means depend on arrival order, so runs on a multi-threaded executor are not
   reproducible from their seed."
   (:require [org.replikativ.foerster.measure :as m]
+            [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.smc :as smc]
             [org.replikativ.foerster.trace :as itrace]
@@ -36,11 +37,6 @@
 (defn- weight-of [world] (or (rtp/get-state world [:inference :log-weight]) 0.0))
 (defn- multiplicity [world] (or (rtp/get-state world [:inference :multiplicity]) 1.0))
 (defn- stage-of [world] (or (rtp/get-state world [:inference :barriers]) 0))
-
-(defn- log-sum-exp [a b]
-  (cond (= ##-Inf a) b
-        (= ##-Inf b) a
-        :else (let [top (max a b)] (+ top (Math/log (+ (Math/exp (- a top)) (Math/exp (- b top))))))))
 
 (defn- forks
   "Fork `sp` `k` times; resolves the children."
@@ -152,7 +148,7 @@
                         ;; the decision reads and counts the stage's children
                         ;; in one step, so concurrent arrivals see each other's
                         decide (fn [[lt c children]]
-                                 (let [lt' (log-sum-exp (or lt ##-Inf) (+ w (Math/log mult)))
+                                 (let [lt' (weights/log-sum-exp [(or lt ##-Inf) (+ w (Math/log mult))])
                                        arrived (or c 0.0)
                                        children (or children 0.0)
                                        log-mean (- lt' (Math/log (+ arrived mult)))

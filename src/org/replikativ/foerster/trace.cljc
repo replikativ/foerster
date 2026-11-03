@@ -405,6 +405,47 @@
              :else (fallback sp old-entry))))
        {::options opts}))))
 
+(defn site-law
+  "How `policy` (made by `policy`) decides the latent sample site `sp`, for a
+  driver that sums over a site's values instead of drawing one
+  (`foerster.enumerate`): `{:fixed? true}` when the policy sets the value
+  without drawing it — a `{:do v}` or `{:policy f}` intervention (the
+  policy's own or the world's, `intervene!`) selects the site, or a
+  constraint names its address — else `{:dist d}`, the law the value is
+  drawn from: the site's own, or the one a `{:dist d}` or `{:shift δ}`
+  intervention puts in its place. Deciding the site under the policy with
+  `{address v}` added to its constraints then scores v under that law. The
+  precedence is the policy's (`decide-choose`). A mechanism replacement with
+  `:coupling :fresh` draws whatever the constraints say, and a
+  counterfactual policy (`:noise`) predicts rather than scores: neither has
+  a law to sum over, so both are refused."
+  [policy sp]
+  (let [opts (if (contains? (meta policy) ::options)
+               (policy-options policy)
+               (throw (ex-info "A site's law needs a policy made by foerster.trace/policy"
+                               {:type ::opaque-policy})))
+        prepared (assoc opts ::intervention-pairs (vec (intervention-pairs (:interventions opts))))
+        {:keys [dist]} (:savepoint/payload sp)
+        address (:savepoint/address sp)
+        {:keys [shift coupling] :as intervention} (intervention-for prepared sp)]
+    (cond
+      (or (contains? intervention :do) (:policy intervention)) {:fixed? true}
+
+      (= :fresh coupling)
+      (throw (ex-info "A mechanism replacement with :coupling :fresh has no law to sum over"
+                      {:type ::unsummable-site :address address}))
+
+      (some? (:noise opts))
+      (throw (ex-info "A counterfactual policy (:noise) predicts its sites; it has no law to sum over"
+                      {:type ::unsummable-site :address address}))
+
+      ;; under a mechanism replacement too: the new law scores the constraint
+      (contains? (:constraints opts) address) {:fixed? true}
+
+      intervention {:dist (or (:dist intervention) (shifted dist shift))}
+
+      :else {:dist dist})))
+
 ;; =============================================================================
 ;; Scored traces
 ;; =============================================================================

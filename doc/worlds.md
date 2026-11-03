@@ -15,13 +15,23 @@ walks through it with runnable examples.
 | `:fresh` (default) | fresh, empty worlds — for pure models |
 | `:fork` | canonical forks of the caller's world |
 
-`:fork` is supported by the particle methods: `smc-infer`,
-`importance-sampling`, `pimh-infer`, `pgibbs-infer`, `pgas-infer`,
-`ipmcmc-infer`, `bbvi-infer`, and `kernel-infer` with the prior kernel or a
-custom `PInferenceKernel`. Markov-chain kernels (`single-site-mh-kernel`,
-`random-walk-mh-kernel`, `block-gibbs-kernel`, `hmc-kernel`, `nuts-kernel`,
-`delayed-acceptance-kernel`), tempered SMC and parallel tempering run in
-fresh worlds only and refuse `:fork`.
+Coverage, exactly:
+
+| Entry point | `:fork` |
+|---|---|
+| `smc-infer`, `importance-sampling` (`:smc`, `:importance`) | yes; under `:fork` SMC refuses `:batch`, `:anchors`, `:rejuvenate` and `:smcp3` (resample-move and SMCP3 replay from anchors, which copied worlds do not keep yet) |
+| `pimh-infer`, `pgibbs-infer`, `pgas-infer`, `ipmcmc-infer` | yes: every sweep (every node's) in canonical worlds of its own |
+| `bbvi-infer` | yes: every iteration's importance sweep |
+| `kernel-infer` with the prior kernel or another non-Markov `PInferenceKernel` (particle kernels) | yes |
+| `:enumerate` (`infer/infer`) | yes: the model runs in a copy of the root, and every branch is a copy of its world |
+| `kernel-infer` with a Markov-chain kernel (`single-site-mh-kernel`, `random-walk-mh-kernel`, `block-gibbs-kernel`, `hmc-kernel`, `nuts-kernel`, `delayed-acceptance-kernel`), `:mh`, `:rmh`, `:nuts` | refused |
+| `tempered-infer`, `parallel-tempering-infer` | refused |
+| `:pmmh`, `smc2/smc2` | refused |
+| `program/run`, `program/trace-target` | refused |
+| `cascade/cascade`, `smc/stream` | no `:world-policy` option: always fresh worlds |
+
+Every entry point above that takes no `:world-policy :fork` refuses it, so
+it is never silently ignored.
 
 ```clojure
 (sp/with-context world
@@ -65,6 +75,10 @@ caller's world
   unwinds (its `finally` blocks run) in its own world.
 - **A method of several sweeps** (particle MCMC, IPMCMC, BBVI) runs each
   sweep in canonical worlds of its own.
+- **Enumeration** runs the same way without resampling: the model runs in a
+  copy of the root, and at each latent site its world is copied once per
+  value of the site's support; every branch sees the caller's state and its
+  own writes only, and splits its world's budget with its siblings.
 - **However inference ends** — a result, a failure of the model, or the
   cancellation of the inference spin — every world is discarded before the
   outcome is delivered. The measure holds `Sample`s: each particle's value,

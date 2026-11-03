@@ -272,12 +272,15 @@
                     particles)))))
 
 (defn- in-canonical-worlds
-  "Savepoint SMC (`smc/smc`) of `model-task` with `n` particles in canonical
-  worlds of the caller's (see above). `:world-opts` are the forks' options
-  (`:systems`, `:rights`, `:snapshots`); `:executor` the worlds' executor;
-  `:authority` a `world.scope/PResourceAuthority` and `:grant` what the
-  inference may spend of the caller's wallet."
-  [model-task n opts]
+  "A savepoint driver's run of `model-task` in canonical worlds of the
+  caller's (see above): `(run model root scope)` is a CPS operation resolving
+  the measure of `model` run in `root` by a session joining `scope` —
+  savepoint SMC (`smc/smc`) or enumeration (`enumerate/enumerate`).
+  `:world-opts` are the forks' options (`:systems`, `:rights`,
+  `:snapshots`); `:executor` the worlds' executor; `:authority` a
+  `world.scope/PResourceAuthority` and `:grant` what the inference may spend
+  of the caller's wallet."
+  [model-task opts run]
   (spin-core/with-causal-descendant-egress
     (spin
      (let [caller rtc/*execution-context*
@@ -296,17 +299,13 @@
                                                                resolve reject)))))
          (rtp/swap-state! @root [:inference :canonical?] (constantly true))
          (vreset! measure
-                  (await (smc/smc (binding [rtc/*execution-context* @root]
-                                  ;; every particle runs the whole model: a
-                                  ;; canonical model's effects may be random
-                                  ;; without a sample site
-                                    (spin (sp/savepoint smc/start-site nil)
-                                          (await model-task)))
-                                  n
-                                  (-> opts
-                                      (dissoc :world-policy :world-opts :executor :authority :grant)
-                                      (assoc :root @root :scope scope
-                                             :copy? #?(:clj true :cljs false))))))
+                  (await (run (binding [rtc/*execution-context* @root]
+                                ;; every particle runs the whole model: a
+                                ;; canonical model's effects may be random
+                                ;; without a sample site
+                                (spin (sp/savepoint smc/start-site nil)
+                                      (await model-task)))
+                              @root scope)))
          (catch #?(:clj Throwable :cljs :default) e
            (throw (if (= spin-core/spin-cancelled (:type (ex-data e)))
                     e
@@ -318,13 +317,42 @@
            (await-finalization (close-canonical! scope lease @root))))
        (with-world-descriptors @measure (world-scope/descriptors scope))))))
 
+(defn- canonical-options
+  "A savepoint driver's options in the canonical worlds `root` of `scope`:
+  particles (and enumeration's branches) are copies of worlds on the JVM, so
+  a world holding a system that may not be copied is refused and each copy
+  takes an even share of its world's budget; forks in ClojureScript."
+  [opts root scope]
+  (-> opts
+      (dissoc :world-policy :world-opts :executor :authority :grant)
+      (assoc :root root :scope scope :copy? #?(:clj true :cljs false))))
+
 (defn- particles
   "Savepoint SMC of `model-task` with `n` particles in the worlds `opts`'
   `:world-policy` names."
   [model-task n opts]
   (case (world-policy opts)
     :fresh (on-savepoints (smc/smc model-task n opts))
-    :fork (in-canonical-worlds model-task n opts)))
+    :fork (in-canonical-worlds model-task opts
+                               (fn [model root scope]
+                                 (smc/smc model n (canonical-options opts root scope))))))
+
+(def ^:private enumeration-options
+  #{:max-branches :policy :executor :seed :world-policy :world-opts :authority :grant})
+
+(defn- enumeration
+  "Exact enumeration (`foerster.enumerate`) of `model-task` in the worlds
+  `opts`' `:world-policy` names: under `:fork` the branches start from a
+  canonical fork of the caller's world, as SMC's particles do, see each
+  their own copy of its registered state, and are discarded before the
+  measure is delivered; its outcomes carry their worlds' descriptors."
+  [model-task opts]
+  (check-options! opts enumeration-options)
+  (case (world-policy opts)
+    :fresh (on-savepoints (enumerate/enumerate model-task (dissoc opts :world-policy)))
+    :fork (in-canonical-worlds model-task opts
+                               (fn [model root scope]
+                                 (enumerate/enumerate model (canonical-options opts root scope))))))
 
 (defn smc-infer
   "Sequential Monte Carlo: `num-particles` particles run `model-task` (a
@@ -649,20 +677,36 @@
        :num-csmc-nodes - Number of CSMC nodes (default num-nodes/2)
        :executor - Shared executor
        :all-particles? - Return all particles or one per node (default true)
+       and the other particle methods' options except :resample-threshold
+
+   Every node, conditional or not, resamples at every barrier by multinomial
+   draws: iPMCMC's extended target needs each conditional node to be the
+   conditional of the very SMC the free nodes run, since the Gibbs draw of
+   the conditional nodes compares their evidence estimates (Rainforth et al.
+   2016, §3; Anglican's ipmcmc.clj runs both node types alike). An
+   ESS-adaptive free node would not be, so `:resample-threshold` is refused.
 
    Returns: Spin<EmpiricalMeasure>
 
    Reference:
      Rainforth et al., 'Interacting Particle Markov Chain Monte Carlo', ICML 2016"
   [model-task num-particles num-iterations & [opts]]
-  (check-options! opts (into particle-options #{:num-nodes :num-csmc-nodes :all-particles?}))
+  (when (contains? opts :resample-threshold)
+    (throw (ex-info (str "IPMCMC resamples every node at every barrier (the conditional nodes "
+                         "must be conditionals of the free nodes' SMC): :resample-threshold does not apply")
+                    {:type ::unknown-options :unknown [:resample-threshold]})))
+  (check-options! opts (into (disj particle-options :resample-threshold)
+                             #{:num-nodes :num-csmc-nodes :all-particles?}))
   (spin
    (let [num-nodes (or (:num-nodes opts) 8)
          num-csmc-nodes (or (:num-csmc-nodes opts) (quot num-nodes 2))
          num-smc-nodes (- num-nodes num-csmc-nodes)
          all-particles? (get opts :all-particles? true)
          seed (or (:seed opts) (random/fresh-seed))
-         sweep-opts #(assoc opts :seed (sp/derive-seed seed ::sweep %))]
+         ;; every node resamples at every barrier (ESS ≤ N < ∞·N),
+         ;; multinomially, as conditional SMC does (`smc/smc` :retained)
+         node-opts (assoc opts :resample-threshold ##Inf :resampling :multinomial)
+         sweep-opts #(assoc node-opts :seed (sp/derive-seed seed ::sweep %))]
      (assert (> num-csmc-nodes 0) ":num-csmc-nodes must be > 0")
      (assert (< num-csmc-nodes num-nodes) ":num-csmc-nodes must be < :num-nodes")
      (loop [iteration 0
@@ -907,7 +951,8 @@
 
   Methods and their sizes:
     :enumerate                          (exact; finite supports only,
-                                        :max-branches)
+                                        :max-branches; :policy, :seed,
+                                        :world-policy as for :smc)
     :importance :smc :tempered          :particles
     :parallel-tempering                 :chains (temperatures, default 10),
                                         :rounds; one block site
@@ -942,7 +987,7 @@
   (let [rest-opts (dissoc opts :method :particles :iterations :chains :burn :step-size :kernel)
         chain-output {:samples :all :burn (or burn 0)}]
     (case method
-      :enumerate (on-savepoints (enumerate/enumerate model rest-opts))
+      :enumerate (enumeration model rest-opts)
       :importance (importance-sampling model particles rest-opts)
       :smc (smc-infer model particles rest-opts)
       :tempered (tempered-infer model particles rest-opts)

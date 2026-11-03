@@ -106,13 +106,9 @@
     (throw (ex-info "Every particle has probability zero: the measure is impossible"
                     {:type ::impossible}))))
 
-(defn compute-ess
-  "Compute effective sample size from normalized weights.
-
-  ESS = 1 / sum(w_i^2) for normalized weights"
-  [weights]
-  (let [sum-squares (reduce + (map #(* % %) weights))]
-    (/ 1.0 sum-squares)))
+(def compute-ess
+  "Effective sample size 1/Σw² of normalized weights (`weights/ess`)."
+  weights/ess)
 
 (defn weighted-quantiles
   "A function of p in [0, 1]: the p-quantile of `values` weighted by the

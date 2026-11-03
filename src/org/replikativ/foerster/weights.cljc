@@ -1,7 +1,16 @@
 (ns org.replikativ.foerster.weights
   "Shared population mass accounting. Normalized selection weights and total
   mass are separate; neither asserts posterior accuracy or unbiased evidence.
-  A zero-mass population has no posterior and cannot be drawn or resampled.")
+  A zero-mass population has no posterior and cannot be drawn or resampled.
+
+  Two drivers keep the ledger: the population-path interpreter
+  (`population/path`: tempered SMC, θ-vector populations, population
+  programs) holds a mass state (`from-log`, `reweight`, `selected`,
+  `resampled`); the savepoint particle drivers (`foerster.smc`: SMC,
+  importance sampling, streaming, batched and conditional SMC, PGAS, and
+  through them PIMH, particle Gibbs and IPMCMC), whose raw weights live in
+  their particles' worlds, account each barrier with `barrier`. Both fold
+  the same log mass: the normalizer before plus the log mean weight.")
 
 (defn log-sum-exp [xs]
   (when-not (seq xs)
@@ -39,6 +48,35 @@
              ws (mapv #(Math/exp (- % top)) xs)
              total (reduce + ws)]
          (mapv #(/ % total) ws))))))
+
+(defn ess
+  "The effective sample size 1/Σw² of normalized selection weights `ws`."
+  [ws]
+  (/ 1.0 (reduce + (map #(* % %) ws))))
+
+(defn barrier
+  "The accounting of a savepoint particle population at a barrier: `xs` its
+  raw log weights since its last resampling, `log-normalizer` the log mass
+  folded in before them. Returns
+
+    :selection  normalized selection weights (`normalize`; uniform among the
+                impossible or the infinite, so that a degenerate population
+                can still be resampled)
+    :ess        `ess` of the selection
+    :log-mean   the barrier's factor of the evidence, log mean exp of `xs`
+    :log-mass   the population's log mass, `log-normalizer` + `:log-mean`
+                (`from-log`'s), which a resampling folds into the
+                normalizer as its children restart at equal weight
+    :reset      the log weight the children restart from: 0, or −∞ when the
+                whole population is impossible (it stays impossible)"
+  [xs log-normalizer]
+  (let [selection (normalize xs {:zero :uniform :infinite :uniform})
+        log-mean (log-mean-exp xs)]
+    {:selection selection
+     :ess (ess selection)
+     :log-mean log-mean
+     :log-mass (+ log-normalizer log-mean)
+     :reset (if (= ##-Inf (reduce max xs)) ##-Inf 0.0)}))
 
 (defn from-log
   "Canonical accounting from raw log weights and an accumulated log normalizer.

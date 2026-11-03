@@ -41,3 +41,16 @@
   (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error) (w/reweight (w/uniform 2) [1.0])))
   (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error) (w/from-log [##NaN 0.0])))
   (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error) (w/from-log [##Inf 0.0]))))
+
+(deftest a-savepoint-barrier-folds-the-mass-the-population-path-keeps
+  (let [xs [(Math/log 2) (Math/log 4) ##-Inf]
+        {:keys [selection ess log-mean log-mass reset]} (w/barrier xs (Math/log 5))]
+    (is (every? true? (map near? selection [(/ 1.0 3) (/ 2.0 3) 0.0])))
+    (is (near? ess 1.8))
+    (is (near? (Math/exp log-mean) 2.0))
+    (is (= log-mass (:log-mass (w/from-log xs (Math/log 5)))) "the population path's log mass")
+    (is (= 0.0 reset)))
+  (let [{:keys [selection ess log-mass reset]} (w/barrier [##-Inf ##-Inf] 0.0)]
+    (is (= [0.5 0.5] selection) "an impossible population can still be resampled")
+    (is (near? ess 2.0))
+    (is (= ##-Inf log-mass reset) "and stays impossible")))

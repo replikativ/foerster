@@ -87,7 +87,9 @@
     (is (= ::smc/opaque-policy (refusal {:anchors :all :rejuvenate {} :policy (fn [_ _] nil)})))
     (is (= ::smc/invalid-anchors (refusal {:anchors 3})))
     (is (= ::smc/rejuvenate-with-ancestor-sampling
-           (refusal {:anchors :all :rejuvenate {} :retained {:mu 0.0} :ancestor-sampling? true})))))
+           (refusal {:anchors :all :rejuvenate {} :retained {:mu 0.0} :ancestor-sampling? true})))
+    (is (= ::smc/opaque-policy (refusal {:retained {:mu 0.0} :ancestor-sampling? true :policy (fn [_ _] nil)}))
+        "ancestor sampling re-scores under the policy's options")))
 
 (deftest a-move-may-change-how-many-observations-there-are
   ;; b = true adds an observation: a move flipping b at the second barrier
