@@ -107,3 +107,40 @@
     (is (= [:ok nil] @joined))
     (is (= [:ok nil] @(start! (:close-operation step))))
     (is (= 1 @closed))))
+
+#?(:clj
+   (do
+     (defn- retention-fixture []
+       (let [payload (byte-array (* 1024 1024))]
+         [(cursor/guard
+           {:push (fn [_]
+                    (let [size (alength payload)]
+                      (fn [resolve _] (resolve {:size size :close (fn [])}))))
+            :fork (fn []
+                    (let [size (alength payload)]
+                      (fn [resolve _] (resolve {:size size :close (fn [])}))))
+            :close (fn [])})
+          (java.lang.ref.WeakReference. payload)]))
+
+     (defn- collected? [^java.lang.ref.WeakReference ref]
+       (loop [remaining 60]
+         (cond
+           (nil? (.get ref)) true
+           (zero? remaining) false
+           :else (do (System/gc) (Thread/sleep 25) (recur (dec remaining))))))
+
+     (deftest closed-cursor-releases-private-step-captures
+       (let [[step payload] (retention-fixture)]
+         (value-of (start! (:close-operation step)))
+         (is (collected? payload) "a retained closed wrapper does not retain raw operations")
+         (is (= ::cursor/stale-step
+                (:type (ex-data (second @(start! ((:push step) :late)))))))))
+
+     (deftest consumed-cursor-releases-private-step-captures
+       (let [[step payload] (retention-fixture)
+             next-step (value-of (start! ((:push step) :next)))]
+         (is (= (* 1024 1024) (:size next-step)))
+         (is (collected? payload) "a stale wrapper does not retain its consumed raw step")
+         (is (= ::cursor/stale-step
+                (:type (ex-data (second @(start! ((:push step) :late)))))))
+         (value-of (start! (:close-operation next-step)))))))
