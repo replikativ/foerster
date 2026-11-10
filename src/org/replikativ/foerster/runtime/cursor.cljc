@@ -43,29 +43,29 @@
                        (assoc s :phase phase))))
             (perform [generation mode start]
               (pcps/async
-               (claim! generation mode)
-               (try
-                 (let [raw (pcps/await (start))
-                       [before _] (swap-vals! lease
-                                              (fn [s]
-                                                (if (= mode (:phase s))
-                                                  (cond-> (assoc s :phase :idle)
-                                                    (= mode :pushing) (assoc :generation (inc generation) :step raw)) s)))]
-                   (if (= mode (:phase before))
-                     (if (= mode :pushing) (wrap-step raw (inc generation)) (guard raw))
-                     (do
-                       (when (= mode :forking)
-                         (if-let [close (:close-operation raw)] (pcps/await close) ((:close raw))))
-                       (throw (ex-info "Inference cursor closed during operation" {:type ::closed})))))
-                 (catch #?(:clj Throwable :cljs :default) e
-                   (swap! lease #(if (= mode (:phase %))
-                                   (assoc % :phase (if (= mode :forking) :idle :failed)) %))
-                   (throw e)))))
+               (let [claimed (claim! generation mode)]
+                 (try
+                   (let [raw (pcps/await (start (:step claimed)))
+                         [before _] (swap-vals! lease
+                                                (fn [s]
+                                                  (if (= mode (:phase s))
+                                                    (cond-> (assoc s :phase :idle)
+                                                      (= mode :pushing) (assoc :generation (inc generation) :step raw)) s)))]
+                     (if (= mode (:phase before))
+                       (if (= mode :pushing) (wrap-step raw (inc generation)) (guard raw))
+                       (do
+                         (when (= mode :forking)
+                           (if-let [close (:close-operation raw)] (pcps/await close) ((:close raw))))
+                         (throw (ex-info "Inference cursor closed during operation" {:type ::closed})))))
+                   (catch #?(:clj Throwable :cljs :default) e
+                     (swap! lease #(if (= mode (:phase %))
+                                     (assoc % :phase (if (= mode :forking) :idle :failed)) %))
+                     (throw e))))))
             (wrap-step [step generation]
               (cond-> (assoc step :close (fn [] (close-operation (fn [_]) (fn [_])))
                              :close-operation close-operation)
-                (:push step) (assoc :push (fn [y] (perform generation :pushing #((:push step) y))))
-                (:fork step) (assoc :fork (fn [] (perform generation :forking #((:fork step)))))))]
+                (:push step) (assoc :push (fn [y] (perform generation :pushing (fn [raw] ((:push raw) y)))))
+                (:fork step) (assoc :fork (fn [] (perform generation :forking (fn [raw] ((:fork raw))))))))]
       (wrap-step initial 0))))
 
 (defn operation [start]
