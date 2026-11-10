@@ -11,6 +11,7 @@
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
@@ -91,3 +92,35 @@
               (run-spin custom-inference #(deliver p %) (fn []))
               (check (deref p 30000 ::timeout)))
        :cljs (async done (run-spin custom-inference check done)))))
+
+(deftest legacy-trace-views-equal-the-converted-trace
+  ;; a stream's step measure carries views; they must behave as the eager map
+  (let [d (dist/normal 0.0 1.0)
+        t {:trace/entries {[:x 0] {:site :inference/choose :value 0.3
+                                   :note {:dist d :log-prob -1.0}}
+                           [:y 0] {:site :inference/choose :value 1.0
+                                   :note {:dist d :log-prob -1.4 :observed? true}}
+                           :w {:site :inference/factor :value nil :note {:log-prob -2.0}}
+                           :z {:site :inference/deterministic :value 7}}
+           :trace/order [[:x 0] [:y 0] :w :z]}
+        eager (itrace/legacy-trace t)
+        view (itrace/legacy-trace-view t)]
+    (is (= 3 (count eager)))
+    (is (= {:value 0.3 :distribution d :log-prob -1.0 :observed? false} (get view [:x 0])))
+    (is (= {:value 7 :deterministic? true} (view :z)))
+    (is (nil? (get view :w)) "a factor has no legacy entry")
+    (is (= ::none (get view :w ::none)))
+    (is (and (contains? view [:y 0]) (not (contains? view :w))))
+    (is (= [[:y 0] (get eager [:y 0])] (vec (find view [:y 0]))))
+    (is (map? view))
+    (is (= eager view))
+    (is (= view eager))
+    (is (= (hash eager) (hash view)))
+    (is (= 3 (count view)))
+    (is (= (set (keys eager)) (set (keys view))))
+    (is (= eager (into {} view)))
+    (is (= eager (reduce-kv assoc {} view)))
+    (is (= (assoc eager :a 1) (assoc view :a 1)))
+    (is (= (dissoc eager :z) (dissoc view :z)))
+    (is (= {:k 1} (meta (with-meta view {:k 1}))))
+    (is (= (pr-str eager) (pr-str view)))))
