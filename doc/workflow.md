@@ -316,12 +316,19 @@ clojure -M:test:posteriordb control         # negative control: eight schools wi
                                             # a dropped log-Jacobian, which must fail
 ```
 
-A parameter passes when its posterior mean is within 0.2 reference standard
-deviations and its standard deviation within 20%. Tempered SMC and parallel
-tempering start from the block's Laplace approximation with its covariance
-inflated four times. The results go to `experiments/results/posteriordb/`
-and print next to the previous run's, with wall times and, for NUTS, bulk
-ESS per second. The data and reference draws come from posteriordb at a
+A result counts only when it is confident: every parameter's effective
+sample size is at least 400 (Vehtari et al. 2021). A method whose run falls
+short runs again with twice the draws, up to six runs; a result still short
+fails as LOW-ESS. A parameter passes when its posterior mean is within 0.2
+reference standard deviations and within 4 Monte Carlo standard errors (the
+run's and the reference's), and its standard deviation within 20%. NUTS and
+parallel tempering report bulk ESS and MCSE from their chains; tempered SMC
+runs 16 times with different seeds, and its standard error is the spread of
+those runs' means. Tempered SMC and parallel tempering start from the
+block's Laplace approximation with its covariance inflated four times. The
+results go to `experiments/results/posteriordb/` and print next to the
+previous run's, with the runs each method needed, wall times, ESS and ESS
+per second. The data and reference draws come from posteriordb at a
 pinned commit, cached in `~/.cache/foerster/posteriordb`.
 
 ## Further reading
