@@ -18,7 +18,10 @@
         ;; 0.1.191 uses native iteration macros and explicit callback scopes,
         ;; with Partial-CPS 0.1.72 diagnosing unsupported visible suspension.
         ;; Frozen await prefixes retain delivery evidence for resample-move.
-        org.replikativ/spindel {:mvn/version "0.1.191"}
+        ;; 0.1.202: a released world gives back its state once quiescent,
+        ;; so a long stream (smc/stream with :retain) runs in bounded memory.
+        ;; (0.1.201 retired a world mid-drain: do not use it.)
+        org.replikativ/spindel {:mvn/version "0.1.202"}
         org.replikativ/logging {:mvn/version "0.1.3"}}
 
  :aliases
