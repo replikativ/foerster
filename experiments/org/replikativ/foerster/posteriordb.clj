@@ -16,12 +16,25 @@
   proper to start from.
 
   For every posterior and method: per parameter, the error of the posterior
-  mean in reference standard deviations and the ratio of the standard
-  deviations, against the reference draws (10 chains × 1000); the wall time;
-  for NUTS the smallest bulk ESS and R-hat. A parameter fails when the mean
-  is off by more than `mean-tolerance` reference sds or the sd ratio leaves
-  1 ± `sd-tolerance`. Results go to experiments/results/posteriordb/ as EDN,
-  printed next to the previous run's. Exits 1 if anything fails.
+  mean in reference standard deviations and in Monte Carlo standard errors,
+  and the ratio of the standard deviations, against the reference draws (10
+  chains × 1000); the wall time; the smallest ESS (bulk ESS and R-hat for
+  Markov chains, for SMC, which has none, the ESS its spread over `replicates` independent
+  runs implies).
+
+  A result is confident when every parameter's ESS is at least `min-ess`
+  (400: Vehtari, Gelman, Simpson, Carpenter & Bürkner 2021). A method whose
+  run falls short is run again, longer (`grow`), up to `max-runs` times; a
+  result that stays short fails as LOW-ESS. A parameter passes when its mean
+  is within `mean-tolerance` reference sds and `z-tolerance` Monte Carlo
+  standard errors (the run's and the reference's), and its sd ratio within
+  1 ± `sd-tolerance`. At ESS 400 the Monte Carlo error of a mean is at most
+  0.05 sd, so noise alone does not break the 0.2-sd tolerance, and a mean off
+  by 4 standard errors is a bias, not a draw. SMC's own weight-based ESS
+  overstates what resampled particles hold, so its standard error comes from
+  `replicates` independent runs instead. Results go to
+  experiments/results/posteriordb/ as EDN, printed next to the previous
+  run's. Exits 1 if anything fails.
 
   `clojure -M:test:posteriordb control` runs the negative control instead
   (`control!`): a posterior with a known bug, which every method must fail."
@@ -42,6 +55,9 @@
 (def commit "91027f9cdd13b7e76283fec3f2898f59d4b83ec4")
 (def mean-tolerance 0.2)
 (def sd-tolerance 0.2)
+(def z-tolerance 4.0)
+(def min-ess 400)
+(def ^:private max-runs 6)
 (def ^:private reference-inflation 4.0)
 
 ;; --- posteriordb files ------------------------------------------------------
@@ -83,24 +99,32 @@
   [posterior]
   (slurp (fetch-file (str "models/stan/" (get (posterior-info posterior) "model_name") ".stan"))))
 
-(defn reference-draws
-  "{param [draw …]}: the reference chains of `posterior`, pooled in one order
-  for every parameter (draws at one index are one joint draw)."
+(defn reference-chains
+  "{param [[draw …] …]}: the reference chains of `posterior`, by chain."
   [posterior]
   (let [chains (fetch (str "reference_posteriors/draws/draws/" posterior ".json.zip"))]
     (into (sorted-map)
           (for [param (keys (first chains))]
-            [param (mapv double (mapcat #(get % param) chains))]))))
+            [param (mapv (fn [c] (mapv double (get c param))) chains)]))))
+
+(defn reference-draws
+  "{param [draw …]}: the reference chains of `posterior`, pooled in one order
+  for every parameter (draws at one index are one joint draw)."
+  [posterior]
+  (update-vals (reference-chains posterior) #(vec (apply concat %))))
 
 (defn reference-stats
-  "{param {:mean :sd}} of the pooled reference draws."
+  "{param {:mean :sd :mcse}} of the pooled reference draws; the Monte Carlo
+  standard error of the mean from the reference chains."
   [posterior]
   (into (sorted-map)
-        (for [[param xs] (reference-draws posterior)
-              :let [n (count xs)
+        (for [[param cs] (reference-chains posterior)
+              :let [xs (vec (apply concat cs))
+                    n (count xs)
                     mu (/ (reduce + xs) n)]]
           [param {:mean mu
-                  :sd (Math/sqrt (/ (reduce + (map #(let [e (- % mu)] (* e e)) xs)) (dec n)))}])))
+                  :sd (Math/sqrt (/ (reduce + (map #(let [e (- % mu)] (* e e)) xs)) (dec n)))
+                  :mcse (d/mcse cs)}])))
 
 ;; --- densities --------------------------------------------------------------
 
@@ -348,46 +372,135 @@
 
 (def ^:private method-options
   {:nuts {:method :nuts :iterations 2000 :chains 4 :burn 1000}
-   :tempered {:method :tempered :particles 1000}
+   :tempered {:method :tempered :particles 2000}
    :parallel-tempering {:method :parallel-tempering :chains 10 :rounds 11}})
 
-(defn- run-method [posterior {:keys [block inputs mode]} method]
-  (let [{:keys [params]} (models posterior)
-        model (fn [] (spin (params (sample (block/block-dist block inputs) :id :theta :init mode) inputs)))
-        t0 (System/nanoTime)
-        measure (run-infer 1 #(infer/infer (model) (method-options method)))]
-    {:measure measure :seconds (/ (- (System/nanoTime) t0) 1e9)}))
+(def ^:private grow
+  "How a method runs longer when its ESS falls short of `min-ess`: twice the
+  draws."
+  {:nuts #(update % :iterations * 2)
+   :tempered #(update % :particles * 2)
+   :parallel-tempering #(update % :rounds inc)})
 
-(defn- compare-to [reference measure]
+(defn- run-method
+  ([posterior setup method] (run-method posterior setup method (method-options method)))
+  ([posterior {:keys [block inputs mode]} _method options]
+   (let [{:keys [params]} (models posterior)
+         model (fn [] (spin (params (sample (block/block-dist block inputs) :id :theta :init mode) inputs)))
+         t0 (System/nanoTime)
+         measure (run-infer 1 #(infer/infer (model) options))]
+     {:measure measure :seconds (/ (- (System/nanoTime) t0) 1e9)})))
+
+(defn- chain-estimates
+  "{param {:mean :sd :ess :mcse :rhat}} of a Markov-chain measure."
+  [reference measure]
+  (into {} (for [param (keys reference)
+                 :let [s (d/summary measure #(get % param))]]
+             [param {:mean (:mean s) :sd (:sd s) :ess (:ess-bulk s) :mcse (:mcse s) :rhat (:rhat s)}])))
+
+(def ^:private replicates
+  "Independent runs of a method without a Markov ESS (SMC): its Monte Carlo
+  error is the spread of their means."
+  16)
+
+(defn- replicate-summary
+  "{param {:mean :sd}} of one replicate's measure, so the measure need not be
+  kept."
+  [reference measure]
+  (into {} (for [param (keys reference)]
+             [param (select-keys (d/summary measure #(get % param)) [:mean :sd])])))
+
+(defn- replicate-estimates
+  "{param {:mean :sd :ess :mcse}} of `summaries` of independent runs: the
+  mean of their means, its standard error from their spread, and the ESS
+  that standard error implies."
+  [reference summaries]
+  (let [r (count summaries)]
+    (into {} (for [param (keys reference)
+                   :let [ss (mapv #(get % param) summaries)
+                         means (mapv :mean ss)
+                         mean (/ (reduce + means) r)
+                         var-means (/ (reduce + (map #(let [e (- % mean)] (* e e)) means)) (dec r))
+                         sd (Math/sqrt (/ (reduce + (map #(* (:sd %) (:sd %)) ss)) r))
+                         mcse (Math/sqrt (/ var-means r))]]
+               [param {:mean mean :sd sd :mcse mcse
+                       :ess (if (pos? mcse) (/ (* sd sd) (* mcse mcse)) ##Inf)}]))))
+
+(defn- compare-to [reference estimates]
   (into (sorted-map)
-        (for [[param {ref-mean :mean ref-sd :sd}] reference
-              :let [s (d/summary measure #(get % param))
-                    z (/ (- (:mean s) ref-mean) ref-sd)
+        (for [[param {ref-mean :mean ref-sd :sd ref-mcse :mcse}] reference
+              :let [{:keys [ess mcse] :as s} (get estimates param)
+                    err (- (:mean s) ref-mean)
+                    z (/ err ref-sd)
+                    z-mc (/ err (Math/sqrt (+ (* mcse mcse) (* ref-mcse ref-mcse))))
                     ratio (/ (:sd s) ref-sd)]]
           [param (cond-> {:mean (:mean s) :sd (:sd s) :ref-mean ref-mean :ref-sd ref-sd
-                          :z z :sd-ratio ratio
-                          :pass? (and (< (Math/abs z) mean-tolerance) (< (Math/abs (- ratio 1.0)) sd-tolerance))}
-                   (:ess-bulk s) (assoc :ess-bulk (:ess-bulk s) :rhat (:rhat s)))])))
+                          :z z :z-mcse z-mc :sd-ratio ratio :ess ess :mcse mcse
+                          :confident? (>= ess min-ess)
+                          :pass? (and (>= ess min-ess)
+                                      (< (Math/abs z) mean-tolerance)
+                                      (< (Math/abs z-mc) z-tolerance)
+                                      (< (Math/abs (- ratio 1.0)) sd-tolerance))}
+                   (:rhat s) (assoc :rhat (:rhat s)))])))
+
+(defn- run-once
+  "One run of `method` with `options`: its estimates and seconds. SMC runs
+  `replicates` times, seeded apart."
+  [posterior setup reference method options]
+  (if (= :tempered method)
+    (let [results (mapv (fn [i]
+                          (let [{:keys [measure seconds]}
+                                (run-method posterior setup method (assoc options :seed (inc i)))]
+                            {:seconds seconds :summary (replicate-summary reference measure)}))
+                        (range replicates))]
+      {:estimates (replicate-estimates reference (mapv :summary results))
+       :seconds (reduce + (map :seconds results))})
+    (let [{:keys [measure seconds]} (run-method posterior setup method options)]
+      {:estimates (chain-estimates reference measure) :seconds seconds})))
+
+(defn- run-confidently
+  "Run `method` until every parameter's ESS reaches `min-ess`, growing the
+  run (`grow`) up to `max-runs` runs. It stops growing when an ESS is not a
+  number (a stuck chain: more draws do not help), and keeps the last
+  completed run when a longer one fails (it timed out). The last run's
+  comparison, options, run count and total seconds."
+  [posterior setup reference method]
+  (loop [options (method-options method) runs 1 total 0.0 previous nil]
+    (let [attempt (try (run-once posterior setup reference method options)
+                       (catch Exception e (if previous {::failed (ex-message e)} (throw e))))]
+      (if (::failed attempt)
+        (assoc previous :stopped (::failed attempt))
+        (let [ps (compare-to reference (:estimates attempt))
+              total (+ total (:seconds attempt))
+              result {:params ps :seconds (:seconds attempt) :total-seconds total :options options :runs runs}]
+          (if (or (every? :confident? (vals ps))
+                  (= runs max-runs)
+                  (some #(Double/isNaN (double (:ess %))) (vals ps)))
+            result
+            (recur ((grow method) options) (inc runs) total result)))))))
 
 (defn- run-posterior [posterior log-density]
   (let [reference (reference-stats posterior)
         s (setup posterior log-density)]
     (vec (for [method (keys method-options)
-               :let [{:keys [measure seconds error]}
-                     (try (run-method posterior s method)
+               :let [{ps :params :keys [seconds total-seconds options runs stopped error]}
+                     (try (run-confidently posterior s reference method)
                           (catch Exception e {:error (ex-message e)}))]]
            (if error
              {:posterior posterior :method method :error error :pass? false}
-             (let [ps (compare-to reference measure)
-                   ess (keep :ess-bulk (vals ps))]
+             (let [ess (map :ess (vals ps))
+                   rhats (keep :rhat (vals ps))]
                (cond-> {:posterior posterior :method method :seconds seconds
+                        :total-seconds total-seconds :options options :runs runs :stopped stopped
                         :max-z (reduce max (map (comp #(Math/abs %) :z) (vals ps)))
+                        :max-z-mcse (reduce max (map (comp #(Math/abs %) :z-mcse) (vals ps)))
                         :max-sd-error (reduce max (map (comp #(Math/abs (- % 1.0)) :sd-ratio) (vals ps)))
+                        :min-ess (reduce min ess)
+                        :ess-per-second (/ (reduce min ess) seconds)
+                        :confident? (every? :confident? (vals ps))
                         :pass? (every? :pass? (vals ps))
                         :params ps}
-                 (seq ess) (assoc :min-ess-bulk (reduce min ess)
-                                  :ess-per-second (/ (reduce min ess) seconds)
-                                  :max-rhat (reduce max (keep :rhat (vals ps)))))))))))
+                 (seq rhats) (assoc :max-rhat (reduce max rhats)))))))))
 
 ;; --- results ----------------------------------------------------------------
 
@@ -402,14 +515,16 @@
         fmt (fn [x spec] (if (number? x) (format spec (double x)) "—"))]
     (when previous (println "previous run:" (:file previous)))
     (pp/print-table
-     [:posterior :method :pass :seconds :before-s :max-z :max-sd-err :min-ess :ess/s]
-     (for [{:keys [posterior method pass? seconds max-z max-sd-error min-ess-bulk ess-per-second error]} rows
+     [:posterior :method :pass :runs :seconds :before-s :max-z :max-z-mcse :max-sd-err :min-ess :ess/s]
+     (for [{:keys [posterior method pass? confident? runs seconds max-z max-z-mcse max-sd-error min-ess
+                   ess-per-second error]} rows
            :let [b (before [posterior method])]]
        {:posterior posterior :method (name method)
-        :pass (cond error (str "ERROR " error) pass? "ok" :else "FAIL")
+        :pass (cond error (str "ERROR " error) pass? "ok" (not confident?) "LOW-ESS" :else "FAIL")
+        :runs (or runs "—")
         :seconds (fmt seconds "%.1f") :before-s (fmt (:seconds b) "%.1f")
-        :max-z (fmt max-z "%.3f") :max-sd-err (fmt max-sd-error "%.3f")
-        :min-ess (fmt min-ess-bulk "%.0f") :ess/s (fmt ess-per-second "%.0f")}))))
+        :max-z (fmt max-z "%.3f") :max-z-mcse (fmt max-z-mcse "%.2f") :max-sd-err (fmt max-sd-error "%.3f")
+        :min-ess (fmt min-ess "%.0f") :ess/s (fmt ess-per-second "%.0f")}))))
 
 (defn- git-sha
   "HEAD's short sha, marked -dirty when the working tree has changes."
@@ -434,7 +549,8 @@
                                              (range))))]
     (io/make-parents out)
     (spit out (with-out-str (pp/pprint {:commit (git-sha) :posteriordb commit :date stamp
-                                        :tolerances {:mean mean-tolerance :sd sd-tolerance}
+                                        :tolerances {:mean mean-tolerance :sd sd-tolerance
+                                                     :z-mcse z-tolerance :min-ess min-ess}
                                         :results rows})))
     (report rows previous)
     (println "results:" (str out))
@@ -449,7 +565,9 @@
         own (:log-density (models p))
         rows (run-posterior p (fn [^doubles th inputs] (- (double (own th inputs)) (aget th 9))))]
     (report rows nil)
-    ;; detected by the comparison, not by a run that failed for another reason
+    ;; detected by the comparison, not by a run that failed for another
+    ;; reason; a run too short to be confident (LOW-ESS) is not passed
+    ;; either, which is what the control asks
     (every? #(and (not (:error %)) (not (:pass? %))) rows)))
 
 (defn -main [& posteriors]
