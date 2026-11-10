@@ -1117,18 +1117,25 @@
                     reject)))]
          (step trace 0 0 0))))))
 
+(defn- legacy-entry
+  "A trace entry in the legacy shape, or nil for a site that has none (a
+  factor)."
+  [{:keys [site value note]}]
+  (condp = site
+    choose-site {:value value
+                 :distribution (:dist note)
+                 :log-prob (:log-prob note)
+                 :observed? (boolean (:observed? note))}
+    deterministic-site {:value value :deterministic? true}
+    nil))
+
 (defn- legacy-entries
   "A transducer from addresses of `trace` to [address legacy-entry] pairs."
   [trace]
-  (keep (fn [address]
-          (let [{:keys [site value note]} (get-in trace [:trace/entries address])]
-            (condp = site
-              choose-site [address {:value value
-                                    :distribution (:dist note)
-                                    :log-prob (:log-prob note)
-                                    :observed? (boolean (:observed? note))}]
-              deterministic-site [address {:value value :deterministic? true}]
-              nil)))))
+  (let [entries (:trace/entries trace)]
+    (keep (fn [address]
+            (when-let [e (legacy-entry (get entries address))]
+              [address e])))))
 
 (defn legacy-trace
   "`trace` in the legacy shape of a particle's trace (`[:inference :trace]`):
@@ -1157,3 +1164,109 @@
     (rtp/swap-state! world [:inference ::legacy-cache]
                      (constantly {:n (count order) :last-address (peek order) :legacy legacy}))
     legacy))
+
+;; A read-only map equal to `(legacy-trace trace)` that converts on demand: a
+;; lookup by address converts that entry alone, and anything that walks the
+;; map (count, seq, reduce, equality, assoc) converts the whole trace once.
+#?(:clj
+   (deftype LegacyTraceView [entries trace realized _meta]
+     clojure.lang.IPersistentMap
+     (assoc [_ k v] (assoc @realized k v))
+     (assocEx [_ k v] (.assocEx ^clojure.lang.IPersistentMap @realized k v))
+     (without [_ k] (dissoc @realized k))
+     (containsKey [_ k] (some? (legacy-entry (get entries k))))
+     (entryAt [_ k] (when-let [e (legacy-entry (get entries k))]
+                      (clojure.lang.MapEntry/create k e)))
+     (count [_] (count @realized))
+     (cons [_ o] (conj @realized o))
+     (empty [_] {})
+     (equiv [_ o] (.equiv ^clojure.lang.IPersistentCollection @realized o))
+     (seq [_] (seq @realized))
+     (iterator [_] (.iterator ^Iterable @realized))
+
+     clojure.lang.ILookup
+     (valAt [_ k] (legacy-entry (get entries k)))
+     (valAt [_ k not-found] (if-let [e (legacy-entry (get entries k))] e not-found))
+
+     clojure.lang.IFn
+     (invoke [this k] (.valAt this k))
+     (invoke [this k not-found] (.valAt this k not-found))
+     (applyTo [this args] (clojure.lang.AFn/applyToHelper this args))
+
+     clojure.lang.IKVReduce
+     (kvreduce [_ f init] (reduce-kv f init @realized))
+     clojure.lang.IHashEq
+     (hasheq [_] (hash @realized))
+     clojure.lang.MapEquivalence
+     clojure.lang.Counted
+     clojure.lang.IObj
+     (meta [_] _meta)
+     (withMeta [_ m] (LegacyTraceView. entries trace realized m))
+
+     java.util.Map
+     (size [_] (count @realized))
+     (isEmpty [_] (empty? @realized))
+     (containsValue [_ v] (.containsValue ^java.util.Map @realized v))
+     (get [this k] (.valAt this k))
+     (put [_ _ _] (throw (UnsupportedOperationException.)))
+     (remove [_ _] (throw (UnsupportedOperationException.)))
+     (putAll [_ _] (throw (UnsupportedOperationException.)))
+     (clear [_] (throw (UnsupportedOperationException.)))
+     (keySet [_] (.keySet ^java.util.Map @realized))
+     (values [_] (.values ^java.util.Map @realized))
+     (entrySet [_] (.entrySet ^java.util.Map @realized))
+
+     Object
+     (hashCode [_] (.hashCode ^Object @realized))
+     (equals [_ o] (.equals ^Object @realized o))
+     (toString [_] (str @realized)))
+
+   :cljs
+   (deftype LegacyTraceView [entries trace realized _meta]
+     ILookup
+     (-lookup [_ k] (legacy-entry (get entries k)))
+     (-lookup [_ k not-found] (if-let [e (legacy-entry (get entries k))] e not-found))
+     IAssociative
+     (-contains-key? [_ k] (some? (legacy-entry (get entries k))))
+     (-assoc [_ k v] (assoc @realized k v))
+     IFind
+     (-find [_ k] (when-let [e (legacy-entry (get entries k))] (MapEntry. k e nil)))
+     IMap
+     (-dissoc [_ k] (dissoc @realized k))
+     ICounted
+     (-count [_] (count @realized))
+     ISeqable
+     (-seq [_] (seq @realized))
+     ICollection
+     (-conj [_ o] (conj @realized o))
+     IEmptyableCollection
+     (-empty [_] {})
+     IEquiv
+     (-equiv [_ o] (= @realized o))
+     IHash
+     (-hash [_] (hash @realized))
+     IKVReduce
+     (-kv-reduce [_ f init] (reduce-kv f init @realized))
+     IIterable
+     (-iterator [_] (-iterator @realized))
+     IFn
+     (-invoke [this k] (-lookup this k))
+     (-invoke [this k not-found] (-lookup this k not-found))
+     IMeta
+     (-meta [_] _meta)
+     IWithMeta
+     (-with-meta [_ m] (LegacyTraceView. entries trace realized m))
+     IPrintWithWriter
+     (-pr-writer [_ w opts] (-pr-writer @realized w opts))))
+
+#?(:clj
+   (defmethod print-method LegacyTraceView [^LegacyTraceView v ^java.io.Writer w]
+     (print-method @(.-realized v) w)))
+
+(defn legacy-trace-view
+  "A map equal to `(legacy-trace trace)` that is converted on demand: a lookup
+  by address costs that entry alone, so reading a particle's latest sites
+  does not convert its whole history. Anything that walks it converts the
+  whole trace once."
+  [trace]
+  (LegacyTraceView. (:trace/entries trace) trace (delay (legacy-trace trace)) nil))

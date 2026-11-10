@@ -697,6 +697,14 @@ value and runs on ([streaming notebook](https://replikativ.github.io/foerster/fo
 `((:fork step))` resolves an independent copy of the population — every
 waiting particle's world forked — to be pushed and closed on its own.
 
+A stream that runs for long keeps its traces bounded with `:retain`:
+`:filtering` keeps each particle's last stream step (the state the latest
+observation saw, the observation, and what was drawn since) and the measure
+is the filtering posterior; `{:last k}` keeps the last k steps, a fixed-lag
+smoother. Windowing changes no draw: the filtering marginals are those of
+`:retain :all`. It does not combine with `:anchors`, `:rejuvenate`,
+`:smcp3` or `:retained`.
+
 ## Programmable inference and counterfactuals
 
 - `org.replikativ.foerster.runtime.gfi`: `simulate`, `generate`, `assess`, `update`,

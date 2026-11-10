@@ -50,10 +50,16 @@
 
 (defn sample-of
   "The measure's particle for a world that returned `result`. A particle of a
-  canonical world names it (`:world-id`), for its descriptor."
-  [world result]
-  (cond-> (m/sample-particle result (itrace/legacy-trace (rtp/get-state world [:savepoint/trace])))
-    (rtp/get-state world [:inference :canonical?]) (assoc :world-id (:fork-id world))))
+  canonical world names it (`:world-id`), for its descriptor. A particle
+  still waiting at a barrier (`waiting?`) carries a view of its trace that
+  converts on demand: a stream's step measure is built at every push, and
+  converting each particle's whole history there made a push cost grow with
+  the stream's length."
+  ([world result] (sample-of world result false))
+  ([world result waiting?]
+   (let [t (rtp/get-state world [:savepoint/trace])]
+     (cond-> (m/sample-particle result (if waiting? (itrace/legacy-trace-view t) (itrace/legacy-trace t)))
+       (rtp/get-state world [:inference :canonical?]) (assoc :world-id (:fork-id world))))))
 
 (defn- decide!
   "Decide `sp` under `policy` and record it in its world's trace, with
@@ -410,6 +416,42 @@
 
 (declare run-particles*)
 
+(defn- stream-entry? [entry] (boolean (:stream (:options (:payload entry)))))
+
+(defn- retained-steps
+  "The stream steps `:retain` keeps of each particle's trace: nil for all of
+  them, k for the last k."
+  [retain]
+  (cond
+    (or (nil? retain) (= :all retain)) nil
+    (= :filtering retain) 1
+    (and (map? retain) (pos-int? (:last retain))) (:last retain)
+    :else (throw (ex-info ":retain is :all, :filtering or {:last k}, k > 0"
+                          {:type ::invalid-retain :retain retain}))))
+
+(defn- windowed
+  "`trace` without the sites before its last `k` stream steps. A step ends at
+  a stream site, so what is kept starts right after the (k+1)-th most recent
+  one: with k = 1, the step whose observation was just scored (the latent
+  state it observed, the observation, what followed) and the sites the
+  particle drew since, up to the stream site it waits at. A call drops the
+  step that just aged out, so it costs the window, not the history."
+  [k trace]
+  (let [order (:trace/order trace)
+        entries (:trace/entries trace)
+        cut (loop [i (dec (count order)) seen 0]
+              (cond
+                (neg? i) 0
+                (stream-entry? (get entries (nth order i)))
+                (if (= (inc k) (inc seen)) (inc i) (recur (dec i) (inc seen)))
+                :else (recur (dec i) seen)))]
+    (if (zero? cut)
+      trace
+      ;; a fresh vector, not a subvec: a subvec would hold the history
+      (assoc trace
+             :trace/order (into [] (drop cut) order)
+             :trace/entries (persistent! (reduce dissoc! (transient entries) (subvec order 0 cut)))))))
+
 (defn- run-particles
   "`run-particles*` with the `:proposal` option made the policy's `:draw`
   (`foerster.runtime.trace/with-proposal`)."
@@ -427,7 +469,7 @@
   with the value, which turns them into an ordinary barrier. When all have
   returned, `on-done` gets the final measure; `on-error` any failure."
   [model n {:keys [resample-threshold policy executor retained ancestor-sampling? root copy? enumerate
-                   anchors rejuvenate resampling genealogy? smcp3 adopt batch] :as opts}
+                   anchors rejuvenate resampling genealogy? smcp3 adopt batch retain] :as opts}
    {:keys [on-idle on-done on-error]}]
   (when-not (pos-int? n)
     (throw (ex-info "SMC needs at least one particle" {:type ::invalid-particles :particles n})))
@@ -477,8 +519,14 @@
   (when-let [other (and enumerate (some #(when (get opts %) %) [:retained :anchors :rejuvenate :smcp3 :copy? :batch]))]
     (throw (ex-info (str ":enumerate is not supported with " other)
                     {:type ::enumerate-with-unsupported :option other})))
+  (when-let [other (and (retained-steps retain)
+                        (some #(when (get opts %) %) [:retained :anchors :rejuvenate :smcp3]))]
+    ;; they replay or condition on the whole trajectory
+    (throw (ex-info (str ":retain is not supported with " other)
+                    {:type ::retain-with-unsupported :option other})))
   (let [threshold (or resample-threshold 0.5)
         evidence-contract (contract/weighted-population {:normalizer (evidence-status opts)})
+        window (retained-steps retain)
         anchor? (anchor-predicate anchors)
         lag (:lag anchors)
         ;; {anchor-id anchor}: every anchor that may still be pending
@@ -511,7 +559,7 @@
                                                  :fork-opts {:systems :none}
                                                  :retain-released? false}
                                                 (dissoc opts :resample-threshold :policy :executor :retained :enumerate
-                                                        :resampling :genealogy? :smcp3 :batch
+                                                        :resampling :genealogy? :smcp3 :batch :retain
                                                         :ancestor-sampling? :root :copy? :anchors :rejuvenate :adopt
                                                         :inference-scope ::retained-paths)))
         session (or (:session adopt)
@@ -568,7 +616,7 @@
                                             [(:sample d) (:log-weight d)]
                                             (let [w (:savepoint/world (or (:sp (get parked slot))
                                                                           (get streaming slot)))]
-                                              [(sample-of w nil) (weight-of w)])))
+                                              [(sample-of w nil true) (weight-of w)])))
                                         (range n)))
                                  :log-normalizer log-z
                                  :inference-contract evidence-contract)
@@ -592,8 +640,17 @@
                       ;; it a value: a particle whose `arrived!` runs late
                       ;; must not declare it idle a second time
                       (seq streaming) (do (swap! state assoc :idle? true)
-                                          (idle! (measure after)))
+                                          (when window (forget! streaming))
+                                          (idle! (measure (if window @state after))))
                       :else (finish! on-done (measure after)))))))
+
+            (forget! [streaming]
+              ;; `:retain`: each waiting particle keeps the sites of its last
+              ;; `window` steps, and the measure the last `window` barriers
+              (doseq [sp (vals streaming)]
+                (rtp/swap-state! (:savepoint/world sp) [:savepoint/trace] #(windowed window %)))
+              (swap! state update :history
+                     (fn [h] (if (> (count h) window) (into [] (drop (- (count h) window)) h) h))))
 
             (run-site! [sp]
               (try
@@ -1286,7 +1343,19 @@
      :close    (fn []) giving the worlds back}
 
   Each push costs the particles' work up to their next stream site; nothing
-  already seen is re-run. `opts` as for `smc`."
+  already seen is re-run. `opts` as for `smc`, and
+
+    :retain  :all (default): the measure is over the whole trajectories.
+             {:last k}: each particle keeps the sites of its last k stream
+             steps — a step ends at a stream site, so with k = 1 the step
+             just observed (the state it observed, the observation, what
+             followed) and what the particle drew since — and the measure's
+             :history its last k barriers. The measure is then over those
+             sites, its marginals the filtering (k = 1) or fixed-lag
+             smoothing marginals, and a site older than the window reads
+             nil. :filtering is {:last 1}. No draw changes. Not with
+             :anchors, :rejuvenate, :smcp3 or :retained, which read the
+             whole trajectory."
   [model n & [opts]]
   (cursor/operation (stream-steps (fn [callbacks] (run-particles model n opts callbacks)))))
 
