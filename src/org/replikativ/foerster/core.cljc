@@ -5,7 +5,7 @@
   Every method runs a probabilistic program as a savepoint handler: SMC
   (`foerster.inference.smc`) for the particle methods — smc-infer,
   importance-sampling, pimh-infer, pgibbs-infer, pgas-infer, ipmcmc-infer
-  (`foerster.inference.pmcmc`) and bbvi-infer (`foerster.inference.bbvi`),
+  (`foerster.inference.pmcmc`) and bbvi-infer-op (`foerster.inference.bbvi`),
   whose latent sites a `:proposal` may decide (`foerster.proposal`) — and
   replay plus accept over traces (`foerster.runtime.trace`) for the Markov
   kernels of kernel-infer.
@@ -186,23 +186,23 @@
   ;; savepoint SMC that never resamples: ESS never falls below 0
   (particles model-task num-samples (assoc opts :resample-threshold 0.0)))
 
-(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} pimh-infer
+(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} pimh-infer-op
   "Particle independent Metropolis-Hastings. See `org.replikativ.foerster.inference.pmcmc/pimh-infer`."
   pmcmc/pimh-infer)
 
-(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} pgibbs-infer
+(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} pgibbs-infer-op
   "Particle Gibbs (conditional SMC). See `org.replikativ.foerster.inference.pmcmc/pgibbs-infer`."
   pmcmc/pgibbs-infer)
 
-(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} pgas-infer
+(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} pgas-infer-op
   "Particle Gibbs with ancestor sampling. See `org.replikativ.foerster.inference.pmcmc/pgas-infer`."
   pmcmc/pgas-infer)
 
-(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} ipmcmc-infer
+(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} ipmcmc-infer-op
   "Interacting particle MCMC. See `org.replikativ.foerster.inference.pmcmc/ipmcmc-infer`."
   pmcmc/ipmcmc-infer)
 
-(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} bbvi-infer
+(def ^{:arglists '([model-task num-particles num-iterations & [opts]])} bbvi-infer-op
   "Black-box variational inference. See `org.replikativ.foerster.inference.bbvi/bbvi-infer`."
   bbvi/bbvi-infer)
 
@@ -353,11 +353,11 @@
       :smc (smc-infer-op model particles rest-opts)
       :tempered (tempered-infer-op model particles rest-opts)
       :parallel-tempering (parallel-tempering-infer-op model (or chains 10) rest-opts)
-      :pimh (pimh-infer model particles iterations rest-opts)
-      :pgibbs (pgibbs-infer model particles iterations rest-opts)
-      :pgas (pgas-infer model particles iterations rest-opts)
-      :ipmcmc (ipmcmc-infer model particles iterations rest-opts)
-      :bbvi (bbvi-infer model particles iterations rest-opts)
+      :pimh (pimh-infer-op model particles iterations rest-opts)
+      :pgibbs (pgibbs-infer-op model particles iterations rest-opts)
+      :pgas (pgas-infer-op model particles iterations rest-opts)
+      :ipmcmc (ipmcmc-infer-op model particles iterations rest-opts)
+      :bbvi (bbvi-infer-op model particles iterations rest-opts)
       :mh (kernel-infer-op model (k/single-site-mh-kernel iterations chain-output) (or chains 4) rest-opts)
       :rmh (if (:compiled? rest-opts)
              (compiled-rmh model iterations burn step-size chains (dissoc rest-opts :compiled?))
@@ -422,3 +422,8 @@
   inference method `(:method opts)`; see `infer-op`."
   [model opts]
   (async/as-task (infer-op model opts)))
+(defn pimh-infer "`pimh-infer-op` as a task." [& args] (async/as-task (apply pimh-infer-op args)))
+(defn pgibbs-infer "`pgibbs-infer-op` as a task." [& args] (async/as-task (apply pgibbs-infer-op args)))
+(defn pgas-infer "`pgas-infer-op` as a task." [& args] (async/as-task (apply pgas-infer-op args)))
+(defn ipmcmc-infer "`ipmcmc-infer-op` as a task." [& args] (async/as-task (apply ipmcmc-infer-op args)))
+(defn bbvi-infer "`bbvi-infer-op` as a task." [& args] (async/as-task (apply bbvi-infer-op args)))
