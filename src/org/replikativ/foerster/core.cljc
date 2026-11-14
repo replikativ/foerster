@@ -5,7 +5,7 @@
   Every method runs a probabilistic program as a savepoint handler: SMC
   (`foerster.inference.smc`) for the particle methods — smc-infer,
   importance-sampling, pimh-infer, pgibbs-infer, pgas-infer, ipmcmc-infer
-  (`foerster.inference.pmcmc`) and bbvi-infer-op (`foerster.inference.bbvi`),
+  (`foerster.inference.pmcmc`) and bbvi-infer (`foerster.inference.bbvi`),
   whose latent sites a `:proposal` may decide (`foerster.proposal`) — and
   replay plus accept over traces (`foerster.runtime.trace`) for the Markov
   kernels of kernel-infer.
