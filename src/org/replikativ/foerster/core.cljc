@@ -41,7 +41,7 @@
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :as effects]
-            [org.replikativ.spindel.engine.effects :as eff]))
+))
 
 ;; =============================================================================
 ;; Modelling primitives
@@ -60,14 +60,7 @@
 (def deterministic "See `org.replikativ.foerster.effects/deterministic`." effects/deterministic)
 (def intervene! "See `org.replikativ.foerster.effects/intervene!`." effects/intervene!)
 
-(eff/register-effect-by-symbol!
- 'org.replikativ.foerster.core/sample effects/choose-handler effects/sample-adapter)
-(eff/register-effect-by-symbol!
- 'org.replikativ.foerster.core/observe effects/choose-handler effects/observe-adapter)
-(eff/register-effect-by-symbol!
- 'org.replikativ.foerster.core/factor effects/factor-handler effects/factor-adapter)
-(eff/register-effect-by-symbol!
- 'org.replikativ.foerster.core/deterministic effects/deterministic-handler effects/deterministic-adapter)
+(effects/register-probabilistic-effects! "org.replikativ.foerster.core")
 
 ;; =============================================================================
 ;; Markov chains

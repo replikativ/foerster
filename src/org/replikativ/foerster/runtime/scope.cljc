@@ -3,9 +3,8 @@
   before execution starts; close joins acquisitions and attempts every release."
   (:refer-clojure :exclude [await])
   (:require [is.simm.partial-cps.async :as pcps]
-            [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.effects.await :refer [await await-finalization]])
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]])
   #?(:cljs (:require-macros [is.simm.partial-cps.async :as pcps])))
 
 (defn create []
@@ -81,23 +80,21 @@
           (and (= :closing (:phase after)) (zero? (:acquiring after))) (ready!))))))
 
 (defn run
-  "Return a Spin executing (body scope), which returns a Spin or CPS operation.
-  Cancellation, failure and success all finalize owned resources before exit."
+  "A task executing (body scope), which returns a v2 handle or a CPS
+  operation. Failure and success finalize owned resources before the task
+  ends. On cancellation the release is started but not awaited: engine v2
+  has no finalizer join yet (spec T23-T26)."
   [body]
-  (spin-core/with-causal-descendant-egress
-    (spin
-     (let [scope (create)
-           failed (volatile! nil)]
-       (try
-         (await (body scope))
-         (catch #?(:clj Throwable :cljs :default) e
-           (vreset! failed e)
-           (throw e))
-         (finally
-           (try
-             (await-finalization (close! scope))
-             (catch #?(:clj Throwable :cljs :default) cleanup
-               (if-let [original @failed]
-                 (throw (ex-info "Inference failed and cleanup also failed"
-                                 {:type ::cleanup-failed :cleanup cleanup} original))
-                 (throw cleanup))))))))))
+  (task
+   (let [scope (create)
+         outcome (try [:ok (await-op (body scope))]
+                      (catch #?(:clj Throwable :cljs :default) e [:err e]))
+         cleanup (try (await-op (close! scope)) nil
+                      (catch #?(:clj Throwable :cljs :default) e e))]
+     (cond
+       (and (= :err (first outcome)) cleanup)
+       (throw (ex-info "Inference failed and cleanup also failed"
+                       {:type ::cleanup-failed :cleanup cleanup} (second outcome)))
+       (= :err (first outcome)) (throw (second outcome))
+       cleanup (throw cleanup)
+       :else (second outcome)))))

@@ -193,19 +193,26 @@
       (do (v2/update-in-world! w [:inference :log-weight] (fn [lw] (+ (or lw 0.0) log-weight)))
           [:value nil]))))
 
+(def handlers
+  "The v2 effect handlers `(fn [args ctx] op)` of the probabilistic effects,
+  by name; a namespace that re-exports an effect registers its own symbol
+  with the same handler (`foerster.core`)."
+  {'choose (fn [[source & opts] ctx] (choose-op source (site-options! opts) ctx))
+   'sample (fn [[source & opts] ctx] (choose-op source (site-options! opts) ctx))
+   'observe (fn [[source value & opts] ctx]
+              (choose-op source (assoc (site-options! opts) :observe value) ctx))
+   'factor (fn [[log-weight & opts] ctx]
+             (factor-op log-weight (boolean (:barrier (apply hash-map opts))) ctx))
+   'deterministic (fn [[value & opts] ctx] (deterministic-op value (apply hash-map opts) ctx))})
+
 (defn register-probabilistic-effects!
-  "Registers choose, sample, observe, factor and deterministic as v2 effects
-  of task bodies (`v2/register-effect!`). Bodies compiled before this do not
-  see them."
-  []
-  (v2/register-effect! `choose (fn [[source & opts] ctx] (choose-op source (site-options! opts) ctx)))
-  (v2/register-effect! `sample (fn [[source & opts] ctx] (choose-op source (site-options! opts) ctx)))
-  (v2/register-effect! `observe (fn [[source value & opts] ctx]
-                                  (choose-op source (assoc (site-options! opts) :observe value) ctx)))
-  (v2/register-effect! `factor (fn [[log-weight & opts] ctx]
-                                 (factor-op log-weight (boolean (:barrier (apply hash-map opts))) ctx)))
-  (v2/register-effect! `deterministic (fn [[value & opts] ctx]
-                                        (deterministic-op value (apply hash-map opts) ctx))))
+  "Registers choose, sample, observe, factor and deterministic in namespace
+  `ns-name` (default this one) as v2 effects of task bodies
+  (`v2/register-effect!`). Bodies compiled before this do not see them."
+  ([] (register-probabilistic-effects! "org.replikativ.foerster.effects"))
+  ([ns-name]
+   (doseq [[n h] handlers]
+     (v2/register-effect! (symbol ns-name (name n)) h))))
 
 ;; Auto-register on namespace load
 (register-probabilistic-effects!)
