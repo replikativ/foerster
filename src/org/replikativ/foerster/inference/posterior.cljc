@@ -3,13 +3,14 @@
   (`query`), draws passed to a function (`predict`), and posterior
   predictive replays of a model (`predictive`)."
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.foerster.core :as-alias core]
+  (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.core :as-alias core]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             ))
 
 (defn query
@@ -55,7 +56,7 @@
   Returns a spin resolving a vector of {:value v :observations {address x}}:
   the program's value and what each observed site drew."
   [model measure n & [{:keys [interventions]}]]
-  (task
+  (pcps/async
    (loop [[[particle _] & more] (m/sample-measure measure n) out []]
      (if-not particle
        out
@@ -65,9 +66,9 @@
              latents (into {} (keep (fn [[address {:keys [value observed? deterministic?]}]]
                                       (when-not (or observed? deterministic?) [address value])))
                            (m/get-trace particle))
-             t (await-op (gfi/run-policy model (itrace/policy {:constraints latents
+             t (pcps/await (async/op-of (gfi/run-policy model (itrace/policy {:constraints latents
                                                             :interventions interventions
-                                                            :simulate-observed? true})))
+                                                            :simulate-observed? true}))))
              drawn (into {} (mapcat (fn [[address {:keys [value note]}]]
                                       (cond
                                         (:simulated? note) [[address value]]
@@ -77,5 +78,5 @@
                                           (map (fn [[k v]] [[address k] v])
                                                (simulate (double-array value) (:inputs (:dist note))))))))
                          (:trace/entries t))]
-         (await-op (gfi/close! t))
+         (pcps/await (async/op-of (gfi/close! t)))
          (recur more (conj out {:value (:trace/result t) :observations drawn})))))))

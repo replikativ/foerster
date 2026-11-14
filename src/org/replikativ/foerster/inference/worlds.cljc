@@ -8,16 +8,17 @@
   Errors and option keys keep `foerster.core`'s keywords: they are what the
   public entry points raise and take."
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.foerster.core :as-alias core]
+  (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.core :as-alias core]
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.inference.enumerate :as enumerate]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.runtime.canonical :refer [frozen-source]]
             [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]])
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])
   #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :refer [task]]
-                            [org.replikativ.foerster.runtime.async :refer [await-op]])))
+                            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])))
 
 (defn world-policy
   "The `:world-policy` of `opts`, :fresh by default; refuses any other."
@@ -86,9 +87,9 @@
   "A spin resolving the savepoint CPS `operation`, a failure reported as
   `::core/inference-failed` with the model's error as its cause."
   [operation]
-  (task
+  (pcps/async
    (try
-     (await-op operation)
+     (pcps/await (async/op-of operation))
      (catch #?(:clj Throwable :cljs :default) e
        (throw (ex-info "Inference failed during particle execution"
                        {:type ::core/inference-failed} e))))))
@@ -124,14 +125,14 @@
                     {:type ::core/unsupported-authority})))
   (let [root (v2/fork! (or (frozen-source opts) (v2/current-world)))]
     (itrace/mark-canonical! root)
-    (task
+    (pcps/async
      (try
-       (await-op (run (fn []
+       (pcps/await (async/op-of (run (fn []
                         ;; every particle runs the whole model: a canonical
                         ;; model's effects may be random without a sample site
                         (task (sp/savepoint smc/start-site nil)
                               (v2/await (model))))
-                      root nil))
+                      root nil)))
        (catch #?(:clj Throwable :cljs :default) e
          (throw (if (v2/cancelled? e)
                   e

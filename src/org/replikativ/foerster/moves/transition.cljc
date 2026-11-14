@@ -2,7 +2,8 @@
   "Compilation and execution of Markov kernels. Site proposal policies and
   weighted population operations do not pass through this interpreter."
   (:refer-clojure :exclude [await])
-  (:require [is.simm.partial-cps.async :as pcps]
+  (:require [org.replikativ.foerster.runtime.execution :as execution]
+            [is.simm.partial-cps.async :as pcps]
             [org.replikativ.foerster.moves.transition-context :as tc]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as m]
@@ -17,7 +18,7 @@
             [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.spindel.v2.trace :as trace]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]])
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])
   #?(:cljs (:require-macros [is.simm.partial-cps.async :as pcps])))
 
 (defn- block-gibbs-options
@@ -319,7 +320,7 @@
   from when no later one precedes its sites."
   [model-task kernel executor seed source _world-opts]
   (do
-    (task
+    (pcps/async
      (let [;; per chain: a block Gibbs description closes over its own state
            {:keys [iterations warming-up?] :as step-opts} (options kernel)
            step-opts (dissoc step-opts :warming-up?)
@@ -337,8 +338,8 @@
                                      (v2/await (model-task))))
                         model-task)]
        (try
-         (let [initial (await-op (trace/run session model-task (itrace/policy {:init? true})
-                                         {:anchor? (if source itrace/canonical-anchor? itrace/anchor?)}))
+         (let [initial (pcps/await (async/op-of (trace/run session model-task (itrace/policy {:init? true})
+                                         {:anchor? (if source itrace/canonical-anchor? itrace/anchor?)})))
                _ (when (contains? initial :trace/error)
                    (throw (ex-info "Inference failed during model execution"
                                    {:type :org.replikativ.foerster.core/inference-failed}
@@ -360,7 +361,7 @@
                ;; random initialization); population moves never do
                initial (if (some #(let [b (block-kernel %)] (and (= :nuts (k/transition-id b)) (:jitter b true)))
                                  (leaves kernel))
-                         (await-op (nuts/jitter initial))
+                         (pcps/await (async/op-of (nuts/jitter initial)))
                          initial)
                samples (volatile! [])
                step-opts (cond-> step-opts
@@ -376,7 +377,7 @@
                                                    sampler-stats (assoc :sampler-stats sampler-stats))
                                                  0.0]))))))
                {final :trace moves :moves accepted :accepted}
-               (await-op (itrace/mh-chain initial iterations step-opts))
+               (pcps/await (async/op-of (itrace/mh-chain initial iterations step-opts)))
                _ (when (warming-up?)
                    (throw (ex-info (str "A kernel's warm-up (:burn of a NUTS or adaptive random-walk kernel) "
                                         "did not finish within the chain: the chain must run past it. In a cycle "
@@ -414,7 +415,7 @@
                     {:type :org.replikativ.foerster.core/invalid-world-policy
                      :world-policy :fork})))
   (do
-    (task
+    (pcps/async
      (let [own-executor (when-not (:executor opts)
                           #?(:clj (java.util.concurrent.Executors/newFixedThreadPool 2) :cljs nil))
            executor (or (:executor opts) own-executor)]
@@ -428,7 +429,8 @@
                                                      (:org.replikativ.foerster.core/source opts)
                                                      (:world-opts opts))
                                  seeds)
-               chains (v2/await-all chain-tasks)]
+               chains (pcps/await (execution/parallel nil (count chain-tasks)
+                                                      (fn [i res rej] ((nth chain-tasks i) res rej))))]
            ;; the draws in chain order, each chain's count kept: the
            ;; convergence diagnostics need them by chain (`foerster.diagnostics`)
            (cond-> (assoc (m/markov-measure (into [] cat chains))

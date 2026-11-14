@@ -19,7 +19,8 @@
   `posterior` projects a measure to values, weights and its chain
   structure. Seeds are per run (`:seed`); the process generator is not
   exposed."
-  (:require [org.replikativ.foerster.block :as block]
+  (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.core :as core]
             [org.replikativ.foerster.diagnostics :as diag]
             [org.replikativ.foerster.dist :as dist]
@@ -29,7 +30,7 @@
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.v2.savepoint :as savepoint]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             [clojure.string :as str]
             [clojure.walk :as walk]))
 
@@ -213,7 +214,7 @@
 (defn- run [model opts host next-seed]
   (let [native (try (core/infer model (checked opts host next-seed))
                     (catch Exception e (throw (sanitized e))))]
-    (task (try (posterior (await-op native))
+    (pcps/async (try (posterior (pcps/await (async/op-of native)))
                (catch Exception e (throw (sanitized e)))))))
 
 (defrecord Job [task terminal done])

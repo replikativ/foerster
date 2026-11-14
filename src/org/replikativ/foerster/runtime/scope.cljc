@@ -4,7 +4,7 @@
   (:refer-clojure :exclude [await])
   (:require [is.simm.partial-cps.async :as pcps]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]])
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])
   #?(:cljs (:require-macros [is.simm.partial-cps.async :as pcps])))
 
 (defn create []
@@ -85,11 +85,11 @@
   ends. On cancellation the release is started but not awaited: engine v2
   has no finalizer join yet (spec T23-T26)."
   [body]
-  (task
+  (pcps/async
    (let [scope (create)
-         outcome (try [:ok (await-op (body scope))]
+         outcome (try [:ok (pcps/await (async/op-of (body scope)))]
                       (catch #?(:clj Throwable :cljs :default) e [:err e]))
-         cleanup (try (await-op (close! scope)) nil
+         cleanup (try (pcps/await (async/op-of (close! scope))) nil
                       (catch #?(:clj Throwable :cljs :default) e e))]
      (cond
        (and (= :err (first outcome)) cleanup)

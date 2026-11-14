@@ -5,7 +5,9 @@
   run on savepoint SMC (`foerster.inference.smc`); in canonical worlds, and
   iPMCMC always, they run over SMC sweeps (`foerster.inference.particle-mcmc`)."
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.foerster.core :as-alias core]
+  (:require [org.replikativ.foerster.runtime.execution :as execution]
+            [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.core :as-alias core]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
@@ -16,7 +18,7 @@
             [org.replikativ.foerster.runtime.canonical :refer [share balance-op frozen-source with-frozen-caller]]
             [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             [replikativ.logging :as log]))
 
 (defn- particle-sweep [model n opts]
@@ -163,7 +165,7 @@
                                                    (assoc opts :seed (sp/derive-seed (:seed opts) ::core/node i))))
                                       retained-traces))]
     ;; Use parallel combinator to run all sweeps concurrently
-    (let [hs (vec sweep-spins)] (task (v2/await-all hs)))))
+    (let [hs (vec sweep-spins)] (execution/parallel nil (count hs) (fn [i res rej] ((async/op-of (nth hs i)) res rej))))))
 
 (declare ipmcmc)
 
@@ -220,7 +222,7 @@
 
 (defn- ipmcmc
   [model-task num-particles num-iterations opts]
-  (task
+  (pcps/async
    (let [num-nodes (or (:num-nodes opts) 8)
          num-csmc-nodes (or (:num-csmc-nodes opts) (quot num-nodes 2))
          num-smc-nodes (- num-nodes num-csmc-nodes)
@@ -233,8 +235,8 @@
          ;; caller's world with an authority, each takes an even share of
          ;; what is left, decided before any of them starts
          node-grant (fn [opts]
-                      (task (when (and (frozen-source opts) (:authority opts))
-                              (share (await-op (balance-op (:authority opts) (frozen-source opts))) num-nodes))))
+                      (pcps/async (when (and (frozen-source opts) (:authority opts))
+                              (share (pcps/await (async/op-of (balance-op (:authority opts) (frozen-source opts)))) num-nodes))))
          sweep-opts (fn [iteration grant]
                       (cond-> (assoc node-opts :seed (sp/derive-seed seed ::core/sweep iteration))
                         grant (assoc ::core/grant grant)))]
@@ -242,9 +244,9 @@
      (assert (< num-csmc-nodes num-nodes) ":num-csmc-nodes must be < :num-nodes")
      (loop [iteration 0
             ;; iteration 0 runs plain SMC on every node
-            measures (await-op (run-parallel-sweeps model-task num-particles
+            measures (pcps/await (async/op-of (run-parallel-sweeps model-task num-particles
                                                  (vec (repeat num-nodes nil))
-                                                 (sweep-opts :initial (await-op (node-grant opts)))))
+                                                 (sweep-opts :initial (pcps/await (async/op-of (node-grant opts)))))))
             all-samples []]
        (if (>= iteration num-iterations)
          (m/markov-measure all-samples)
@@ -279,8 +281,8 @@
                      [csmc-indices zeta-sums samples retained-traces])))]
            (log/trace :ichains/gibbs-update {:iteration iteration :csmc-indices csmc-indices})
            (recur (inc iteration)
-                  (await-op (run-parallel-sweeps model-task num-particles retained-traces
-                                              (sweep-opts iteration (await-op (node-grant opts)))))
+                  (pcps/await (async/op-of (run-parallel-sweeps model-task num-particles retained-traces
+                                              (sweep-opts iteration (pcps/await (async/op-of (node-grant opts)))))))
                   (into all-samples samples))))))))
 
 (defn pgas-infer

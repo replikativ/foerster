@@ -26,7 +26,8 @@
   the conditions: a fork that stops early scores fewer observations, and the
   draw of z is still a proposal the weight accounts for. They make the
   marginal exact."
-  (:require [org.replikativ.foerster.dist :as dist]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as itrace]
@@ -166,7 +167,7 @@
                    sp/error-site (fn [{error :savepoint/payload}] (fail! error))
                    sp/abandoned-site (fn [_] nil)})]
       (dotimes [i k]
-        ((sp/fork s {:handlers (table i)})
+        ((async/now sp/fork s {:handlers (table i)})
          (fn [child]
            (try
              (v2/update-in-world! (:savepoint/world child) [:inference :log-weight] (constantly 0.0))

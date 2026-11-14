@@ -17,7 +17,8 @@
 
   A latent site with infinite or continuous support is refused
   (`::infinite-support`); `:max-branches` (default 100000) bounds the work."
-  (:require [org.replikativ.foerster.dist :as dist]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.contract :as contract]
             [org.replikativ.foerster.random :as random]
@@ -37,7 +38,7 @@
             remaining (atom k)
             failed? (atom false)]
         (dotimes [i k]
-          ((sp/fork s)
+          ((async/now sp/fork s)
            (fn [child]
              (aset out i child)
              (when (zero? (swap! remaining dec)) (resolve (vec out))))
@@ -50,7 +51,7 @@
   canonical worlds."
   [s k copy?]
   (if copy?
-    (sp/copy s k {:split? true})
+    (async/now sp/copy s k)
     (fn [resolve reject]
       ((forks s (dec k)) #(resolve (into [s] %)) reject))))
 

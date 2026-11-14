@@ -15,7 +15,8 @@
 
   Worlds are forks of savepoints, so particles are frozen, coherent worlds
   (see docs/forking.md) and inherit whatever world state the program holds."
-  (:require [org.replikativ.foerster.runtime.scope :as scope]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [org.replikativ.foerster.runtime.scope :as scope]
             [org.replikativ.foerster.runtime.cursor :as cursor]
             [org.replikativ.foerster.moves.transport :as transport]
             [org.replikativ.spindel.v2.savepoint :as sp]
@@ -58,7 +59,7 @@
   ([world result waiting?]
    (let [t (v2/get-in-world world [:savepoint/trace])]
      (cond-> (m/sample-particle result (if waiting? (itrace/legacy-trace-view t) (itrace/legacy-trace t)))
-       (v2/get-in-world world [:inference :canonical?]) (assoc :world-id (:fork-id world))))))
+       (v2/get-in-world world [:inference :canonical?]) (assoc :world-id world)))))
 
 (defn- decide!
   "Decide `sp` under `policy` and record it in its world's trace, with
@@ -176,7 +177,7 @@
       (if (zero? n)
         (resolve [])
         (dotimes [i n]
-          ((sp/fork (nth sps i))
+          ((async/now sp/fork (nth sps i))
            (fn [child]
              (aset children i child)
              (when (zero? (swap! remaining dec))
@@ -190,11 +191,11 @@
   [sps]
   (fn [resolve reject]
     (try
-      (let [by-world (group-by #(:fork-id (:savepoint/world %)) sps)
+      (let [by-world (group-by :savepoint/world sps)
             copies (into {}
                          (map (fn [[id group]]
                                 (let [out (volatile! nil)]
-                                  ((sp/copy (first group) (count group) {:split? true})
+                                  ((async/now sp/copy (first group) (count group))
                                    #(vreset! out [:ok %]) #(vreset! out [:error %]))
                                   (case (first @out)
                                     :ok [id (second @out)]
@@ -204,7 +205,7 @@
                          by-world)
             taken (volatile! {})]
         (resolve (mapv (fn [sp]
-                         (let [id (:fork-id (:savepoint/world sp))
+                         (let [id (:savepoint/world sp)
                                i (get (vswap! taken update id (fnil inc 0)) id)]
                            (nth (get copies id) (dec i))))
                        sps)))
@@ -669,7 +670,7 @@
                      fail!)
 
                     (and anchor? (anchor? sp))
-                    ((sp/fork sp)
+                    ((async/now sp/fork sp)
                      (fn [anchor]
                        (swap! registry assoc (trace/anchor-id anchor) anchor)
                        (decide-site! sp slot anchor))
@@ -903,7 +904,7 @@
                                 (resolve (vec scores))))]
                   (dotimes [i k]
                     (let [{:keys [sp value]} (nth entries i)]
-                      ((sp/fork sp {:handlers
+                      ((async/now sp/fork sp {:handlers
                                     {sp/any-site (fn [s] (sp/resume s (:value (decide! scoring s))))
                                      sp/result-site (fn [{w :savepoint/world}]
                                                       (let [score (weight-of w)]
@@ -1075,7 +1076,7 @@
                       steps (:moves rejuvenate 1)
                       move (rejuvenation-move rejuvenate)
                       finish (fn [t]
-                               (if (= (:fork-id (:trace/world t)) (:fork-id world0))
+                               (if (identical? (:trace/world t) world0)
                                  (done {:sp sp :value value})
                                  (let [w (:trace/world t)]
                                    ;; the moved particle continues in the

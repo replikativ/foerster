@@ -4,7 +4,8 @@
   and invariant value transitions have explicit mathematical obligations; a
   result does not automatically certify an unbiased likelihood estimator."
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.foerster.weights :as w]
+  (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.weights :as w]
             [org.replikativ.foerster.runtime.scope :as scope]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.contract :as contract]
@@ -18,7 +19,7 @@
             [org.replikativ.foerster.runtime.trace :as it]
             [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             ))
 
 (defn- options! [opts allowed]
@@ -63,11 +64,11 @@
   "A spin running the operation `(f x)` for each of `xs`, one after another,
   resolving the vector of their values."
   [xs f]
-  (task
+  (pcps/async
    (loop [remaining (seq xs) out []]
      (if-not remaining
        out
-       (let [value (await-op (f (first remaining)))]
+       (let [value (pcps/await (async/op-of (f (first remaining))))]
          (recur (next remaining) (conj out value)))))))
 
 (defrecord InvariantValueKernel [target-id step])
@@ -228,13 +229,13 @@
      (select-keys opts [:world-policy :world-opts])
      (fn [copts]
        (scope/run (fn [resources]
-                    (task
+                    (pcps/async
                      (let [context {:resources resources :seed (or (:seed opts) (random/fresh-seed))
                                     :owner (random-uuid) :population-counter (atom -1)
                                     :population-ids (atom #{}) :live-populations (atom {}) :retired (atom [])
                                     :canonical-source (canonical/frozen-source copts)
                                     :world-opts (:world-opts opts)}
-                           result (await-op (body context))]
+                           result (pcps/await (async/op-of (body context)))]
                        (when-not (satisfies? m/PMeasure result)
                          (throw (ex-info "Finish the population before returning from inference"
                                          {:type ::unfinished-population})))
@@ -283,7 +284,7 @@
    (options! opts #{:id})
    (when-not (pos-int? n)
      (throw (ex-info "A population needs positive size" {:type ::invalid-particles})))
-   (task
+   (pcps/async
     (let [_ (live! scope)
           population-id (if (some? id) [:named id]
                             [:automatic (swap! (:population-counter scope) inc)])
@@ -294,8 +295,8 @@
                                        {:type ::duplicate-population-id :id population-id})))
                      (conj ids population-id)))
           seed (sp/derive-seed (:seed scope) ::population population-id)
-          draws (await-op (initialize-particles (:representation target) (:resources scope) target n
-                                             (assoc scope :seed seed)))
+          draws (pcps/await (async/op-of (initialize-particles (:representation target) (:resources scope) target n
+                                             (assoc scope :seed seed))))
           _ (population-size! draws n)]
       (remember! scope
                  {:target target :particles (mapv :particle draws) :mass (w/from-log (mapv :log-weight draws))
@@ -329,17 +330,17 @@
   ([scope population] (resample scope population {}))
   ([scope population {:keys [particles method] :or {method :systematic} :as opts}]
    (options! opts #{:particles :method})
-   (task
+   (pcps/async
     (claim! scope population)
     (let [n (or particles (count (:particles population)))
           plan (path/selection-plan population n {:method method :seed (:seed population)
                                                   :key [::resample (:step population)]})
-          copies (await-op (copy-particles (get-in population [:target :representation]) (:resources scope)
+          copies (pcps/await (async/op-of (copy-particles (get-in population [:target :representation]) (:resources scope)
                                         (:target population) (:particles population) (:ancestors plan)
-                                        (assoc scope :seed (:seed population) :step (:step population))))
+                                        (assoc scope :seed (:seed population) :step (:step population)))))
           next (-> (path/selected population plan copies) (assoc :transitions {})
                    (update :step inc) (update :history conj {:operation :resample :ancestors (:ancestors plan)}))]
-      (await-op (reclaim scope population [] next))
+      (pcps/await (async/op-of (reclaim scope population [] next)))
       (publish scope population next)))))
 
 (defn- visit-trace!
@@ -355,7 +356,7 @@
                     (into [] cat (vals @(:live-populations scope))))))
 
 (defn move [scope population kernel]
-  (task
+  (pcps/async
    ;; a kernel the population cannot take is refused before the population
    ;; is claimed, so it stays usable
    (let [traced? (some? (:lease population))
@@ -372,16 +373,16 @@
          _ (claim! scope population)
          _ (w/selection (:mass population))
          current (when traced? (atom (:particles population)))
-         moved (await-op (move-particles (get-in population [:target :representation]) (:resources scope)
+         moved (pcps/await (async/op-of (move-particles (get-in population [:target :representation]) (:resources scope)
                                       (:target population) (:particles population) kernel
                                       (assoc scope :seed (:seed population) :step (:step population)
                                              :prepared prepared
                                              :on-visit (when traced?
-                                                         #(visit-trace! scope population current %1 %2)))))
+                                                         #(visit-trace! scope population current %1 %2))))))
          next (cond-> (-> (path/moved population moved) (update :step inc)
                           (update :history conj {:operation :move}))
                 traced? (assoc-in [:transitions kernel] prepared))]
-     (await-op (reclaim scope population [] next))
+     (pcps/await (async/op-of (reclaim scope population [] next)))
      (publish scope population next))))
 
 (def transport-kernel transport/kernel)
@@ -390,7 +391,7 @@
   "Propose and reweight through scored forward/backward laws. Unlike move,
   this operation can change targets and value dimension; weights are corrected."
   [scope population destination kernel]
-  (task
+  (pcps/async
    (owned! scope population)
    (when-not (and (= (:id (:target population)) (:source kernel))
                   (= (:id destination) (:destination kernel)))
@@ -403,30 +404,30 @@
      (throw (ex-info "Transport requires positive source weights; resample first"
                      {:type ::zero-weight-transport})))
    (claim! scope population)
-   (let [results (await-op (transport-particles (get-in population [:target :representation])
+   (let [results (pcps/await (async/op-of (transport-particles (get-in population [:target :representation])
                                              (:target population) destination (:particles population) kernel
-                                             (assoc scope :seed (:seed population) :step (:step population))))
+                                             (assoc scope :seed (:seed population) :step (:step population)))))
          _ (population-size! results (count (:particles population)))
          next (-> (path/moved population (mapv :particle results))
                   (path/reweight (mapv :log-increment results))
                   (assoc :target destination :transitions {}) (update :step inc)
                   (update :history conj {:operation :transport :target (:id destination)}))]
-     (await-op (reclaim scope population [] next))
+     (pcps/await (async/op-of (reclaim scope population [] next)))
      (publish scope population next))))
 
 (defn fork
   "Copy a live population with independent future random streams. The source
   remains usable. Trace copies share read-only anchors under the owner scope."
   [scope population]
-  (task
+  (pcps/async
    (claim! scope population)
    (let [i (swap! (:forks population) inc)
          id [:fork (:population-id population) i]
          seed (sp/derive-seed (:seed population) ::fork i)
-         copies (await-op (copy-particles (get-in population [:target :representation]) (:resources scope)
+         copies (pcps/await (async/op-of (copy-particles (get-in population [:target :representation]) (:resources scope)
                                        (:target population) (:particles population)
                                        (vec (range (count (:particles population))))
-                                       (assoc scope :seed seed :step (:step population))))
+                                       (assoc scope :seed seed :step (:step population)))))
          child (assoc population :population-id id :seed seed :particles copies
                       :lease (when (:lease population) (atom {:phase :idle :version 0}))
                       :version 0 :forks (atom 0) :transitions {})]

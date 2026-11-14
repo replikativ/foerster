@@ -9,11 +9,12 @@
   released when the inference ends. Resource authority and grants (wallets,
   budget splitting) are not available on engine v2 yet: `:authority` and
   `:grant` are refused."
-  (:require [org.replikativ.foerster.runtime.trace :as itrace]
+  (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]])
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])
   #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :refer [task]]
-                            [org.replikativ.foerster.runtime.async :refer [await-op]])))
+                            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])))
 
 (defn- no-authority! [opts]
   (when (or (:authority opts) (:grant opts))
@@ -58,9 +59,9 @@
     (body opts)
     (let [source (v2/fork! (v2/current-world))]
       (itrace/mark-canonical! source)
-      (task
+      (pcps/async
        (try
-         (await-op (body (assoc opts :org.replikativ.foerster.core/source source)))
+         (pcps/await (async/op-of (body (assoc opts :org.replikativ.foerster.core/source source))))
          (finally (v2/release-world! source)))))))
 
 (defn run-options

@@ -21,7 +21,8 @@
   post-processing is measure-centric (query, predict:
   `foerster.inference.posterior`)."
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.foerster.measure :as m]
+  (:require [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
+            [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.moves.transition :as transition]
@@ -38,7 +39,6 @@
             #?(:clj [org.replikativ.foerster.analysis :as analysis])
             #?(:clj [org.replikativ.foerster.inference.compiled :as compiled])
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :as effects]
 ))
@@ -66,7 +66,7 @@
 ;; Markov chains
 ;; =============================================================================
 
-(defn kernel-infer
+(defn kernel-infer-op
   "Run `num-chains` independent Markov chains of `kernel` (a Markov kernel,
   `foerster.moves.kernel`: `single-site-mh-kernel`, `random-walk-mh-kernel`,
   `block-gibbs-kernel`, `hmc-kernel`, `nuts-kernel`, their `cycle` and
@@ -102,7 +102,7 @@
 ;; Particle methods (worlds and options: `foerster.inference.worlds`)
 ;; =============================================================================
 
-(defn smc-infer
+(defn smc-infer-op
   "Sequential Monte Carlo: `num-particles` particles run `model-task` (a
   spin); at every observation the population is resampled when its
   effective sample size falls below `:resample-threshold`·N. Runs on
@@ -124,15 +124,15 @@
     :anchors, :rejuvenate  resample-move: after each resampling, MH moves
                          from anchored sites (`foerster.inference.smc/smc`; :fresh only)
 
-  Returns a spin resolving the EmpiricalMeasure.
+  Returns a CPS operation resolving the EmpiricalMeasure.
 
-    (sp/with-context world @(smc-infer (model) 1000))   ; at the REPL
-    (task (query (await-op (smc-infer (model) 1000)) identity))"
+    (sp/with-context world @(smc-infer-op (model) 1000))   ; at the REPL
+    (task (query (await-op (smc-infer-op (model) 1000)) identity))"
   [model-task num-particles & [opts]]
   (check-options! opts (conj (into particle-options smc-options) :batch))
   (particles model-task num-particles opts))
 
-(defn tempered-infer
+(defn tempered-infer-op
   "Tempered SMC (`foerster.inference.tempering`): `num-particles` complete runs of
   `model-task`, moved from the prior to the posterior through the targets
   p(x)·L(x)^β with an adaptive schedule of β. Explores posteriors whose
@@ -146,7 +146,7 @@
   particle in a fork of one frozen fork of the caller's world, without
   incremental reuse) and `:world-opts`; no `:authority` yet.
 
-  Returns a spin resolving the EmpiricalMeasure; `:temperatures` holds the
+  Returns a CPS operation resolving the EmpiricalMeasure; `:temperatures` holds the
   schedule."
   [model-task num-particles & [opts]]
   (refuse-authority! opts "Tempered SMC")
@@ -154,7 +154,7 @@
   (with-frozen-caller opts
     #(on-savepoints (tempering/tempered model-task num-particles (canonical/run-options %)))))
 
-(defn parallel-tempering-infer
+(defn parallel-tempering-infer-op
   "Non-reversible parallel tempering (`foerster.inference.parallel-tempering`) of a
   `model-task` that is one block site with a `:sample` and
   `:sample-log-density`: `num-chains` chains on the path from that draw
@@ -166,7 +166,7 @@
   program runs in a fork of the caller's world) and `:world-opts`; no
   `:authority` yet.
 
-  Returns a spin resolving the EmpiricalMeasure of the last round's
+  Returns a CPS operation resolving the EmpiricalMeasure of the last round's
   target-chain states; `m/log-marginal` is the stepping-stone evidence and
   `:temperatures`, `:barrier`, `:local-barrier`, `:round-trips` and
   `:swap-acceptance` diagnose the run."
@@ -177,7 +177,7 @@
     #(on-savepoints (parallel-tempering/parallel-tempering
                      model-task (assoc (canonical/run-options %) :chains num-chains)))))
 
-(defn importance-sampling
+(defn importance-sampling-op
   "Importance sampling: `num-samples` runs of `model-task`, each weighted by
   its observations, never resampled (savepoint SMC with
   `:resample-threshold` 0). Options and result as for `smc-infer`."
@@ -297,7 +297,7 @@
                                       step-size (assoc :step-size step-size)))))
      :cljs (throw (ex-info ":compiled? runs on the JVM" {:type ::compiled-on-cljs}))))
 
-(defn infer
+(defn infer-op
   "Run `model` under the inference method `(:method opts)` — one call shape
   for every method, as Anglican's `doquery`:
 
@@ -349,26 +349,26 @@
         chain-output {:samples :all :burn (or burn 0)}]
     (case method
       :enumerate (enumeration model rest-opts)
-      :importance (importance-sampling model particles rest-opts)
-      :smc (smc-infer model particles rest-opts)
-      :tempered (tempered-infer model particles rest-opts)
-      :parallel-tempering (parallel-tempering-infer model (or chains 10) rest-opts)
+      :importance (importance-sampling-op model particles rest-opts)
+      :smc (smc-infer-op model particles rest-opts)
+      :tempered (tempered-infer-op model particles rest-opts)
+      :parallel-tempering (parallel-tempering-infer-op model (or chains 10) rest-opts)
       :pimh (pimh-infer model particles iterations rest-opts)
       :pgibbs (pgibbs-infer model particles iterations rest-opts)
       :pgas (pgas-infer model particles iterations rest-opts)
       :ipmcmc (ipmcmc-infer model particles iterations rest-opts)
       :bbvi (bbvi-infer model particles iterations rest-opts)
-      :mh (kernel-infer model (k/single-site-mh-kernel iterations chain-output) (or chains 4) rest-opts)
+      :mh (kernel-infer-op model (k/single-site-mh-kernel iterations chain-output) (or chains 4) rest-opts)
       :rmh (if (:compiled? rest-opts)
              (compiled-rmh model iterations burn step-size chains (dissoc rest-opts :compiled?))
-             (kernel-infer model (k/random-walk-mh-kernel iterations (merge chain-output (when step-size {:step-size step-size})))
+             (kernel-infer-op model (k/random-walk-mh-kernel iterations (merge chain-output (when step-size {:step-size step-size})))
                            (or chains 4) rest-opts))
       :nuts (let [nuts-opts [:target-accept :max-depth :metric :inverse-metric :jitter]]
-              (kernel-infer model (k/within-gibbs
+              (kernel-infer-op model (k/within-gibbs
                                    (k/nuts-kernel iterations (cond-> (merge chain-output (select-keys rest-opts nuts-opts))
                                                                step-size (assoc :step-size step-size))))
                             (or chains 4) (apply dissoc rest-opts nuts-opts)))
-      :kernel (kernel-infer model kernel (or chains 4) rest-opts)
+      :kernel (kernel-infer-op model kernel (or chains 4) rest-opts)
       :pmmh (pmmh model particles iterations (cond-> rest-opts burn (assoc :burn burn))))))
 
 ;; =============================================================================
@@ -393,7 +393,7 @@
   returned distribution carries :inference/nesting provenance metadata."
   [model opts]
   (task
-   (let [measure (await-op (infer model opts))
+   (let [measure (await-op (infer-op model opts))
          ps (m/get-particles measure)
          ws (weights/normalize (mapv second ps))
          by-value (reduce (fn [acc [[particle _] w]]
@@ -403,3 +403,22 @@
        {:inference/nesting {:kind :empirical-conditional :method (:method opts)
                             :exact? (= :enumerate (:method opts)) :particles (count ps)
                             :contract (:inference-contract measure)}}))))
+
+;; =============================================================================
+;; Entry points: tasks
+;; =============================================================================
+;; The `-op` functions are the drivers, CPS operations that run as host code;
+;; these return v2 tasks in the current world (a body's, or the bound
+;; `v2/*world*`): `v2/value` one at the REPL, `await` one in a task.
+
+(defn smc-infer "`smc-infer-op` as a task." [& args] (async/as-task (apply smc-infer-op args)))
+(defn tempered-infer "`tempered-infer-op` as a task." [& args] (async/as-task (apply tempered-infer-op args)))
+(defn kernel-infer "`kernel-infer-op` as a task." [& args] (async/as-task (apply kernel-infer-op args)))
+(defn parallel-tempering-infer "`parallel-tempering-infer-op` as a task." [& args]
+  (async/as-task (apply parallel-tempering-infer-op args)))
+(defn importance-sampling "`importance-sampling-op` as a task." [& args] (async/as-task (apply importance-sampling-op args)))
+(defn infer
+  "`infer-op` as a task: run `model` (a function creating a task) under the
+  inference method `(:method opts)`; see `infer-op`."
+  [model opts]
+  (async/as-task (infer-op model opts)))

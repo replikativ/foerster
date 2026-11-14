@@ -4,7 +4,8 @@
   correction or causal interpretation is inferred from its training loss.
   Numeric schemas and result measures are portable. Training backends are optional."
   (:refer-clojure :exclude [await])
-  (:require [clojure.set :as set]
+  (:require [is.simm.partial-cps.async :as pcps]
+            [clojure.set :as set]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.causal.counterfactual :as cf]
             [org.replikativ.foerster.dist :as dist]
@@ -13,9 +14,9 @@
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as trace]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]])
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])
   #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]])))
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])))
 
 (defn- finite? [x] (and (number? x) (< ##-Inf x ##Inf)))
 (defn- fail [message data] (throw (ex-info message (assoc data :type ::invalid-task))))
@@ -228,12 +229,12 @@
   factors require an explicit normalized joint-data provider instead."
   [task n & [{:keys [seed] :or {seed 1}}]]
   (when-not (pos-int? n) (fail "Positive simulator count required" {:count n}))
-  (task
+  (pcps/async
    (loop [i 0 out []]
      (if (= i n) out
-         (let [t (await-op (gfi/run-policy ((:simulator task))
+         (let [t (pcps/await (async/op-of (gfi/run-policy ((:simulator task))
                                         (generative-policy (:simulate-observed? task))
-                                        {:seed (+ seed i)}))
+                                        {:seed (+ seed i)})))
                row (try
                      (when (some #(or (= trace/factor-site (:site %))
                                       (and (get-in % [:note :observed?]) (not (:simulate-observed? task))))
@@ -245,9 +246,9 @@
                        (encode-row task row)
                        row)
                      (catch #?(:clj Throwable :cljs :default) e
-                       (await-op (gfi/close! t))
+                       (pcps/await (async/op-of (gfi/close! t)))
                        (throw e)))]
-           (await-op (gfi/close! t))
+           (pcps/await (async/op-of (gfi/close! t)))
            (recur (inc i) (conj out row)))))))
 
 (defrecord ApproximateMeasure [particles diagnostics]
@@ -290,8 +291,8 @@
   It must return {:scope :posterior :passed? boolean ...}. Passing applies only
   to the checks declared by that validator, not every possible observation."
   [fitted validator]
-  (task
-   (let [report (await-op (validator fitted))]
+  (pcps/async
+   (let [report (pcps/await (async/op-of (validator fitted)))]
      (when-not (and (= :posterior (:scope report)) (boolean? (:passed? report)))
        (fail "Posterior validator must declare its scope and boolean :passed?" {}))
      (artifact (:task fitted) (:backend fitted) (:payload fitted) report))))
@@ -304,19 +305,19 @@
                  :or {simulations 4096 seed 1 validation-simulations 128} :as options}]
   (when-not (fn? (:train backend)) (fail "Backend has no training capability" {}))
   (when-not (nat-int? validation-simulations) (fail "Validation simulation count must be nonnegative" {}))
-  (task
-   (let [rows (or examples (await-op (org.replikativ.foerster.amortized/examples task simulations {:seed seed})))
+  (pcps/async
+   (let [rows (or examples (pcps/await (async/op-of (org.replikativ.foerster.amortized/examples task simulations {:seed seed}))))
          encoded (mapv #(encode-row task %) rows)
          held-out (or validation-examples
                       (when (and (nil? examples) (pos? validation-simulations))
-                        (await-op (org.replikativ.foerster.amortized/examples task validation-simulations
-                                                                           {:seed (+ seed simulations)}))))]
+                        (pcps/await (async/op-of (org.replikativ.foerster.amortized/examples task validation-simulations
+                                                                           {:seed (+ seed simulations)})))))]
      (when-not (seq encoded) (fail "Training examples cannot be empty" {}))
-     (let [payload (await-op ((:train backend) task encoded
+     (let [payload (pcps/await (async/op-of ((:train backend) task encoded
                                             (assoc (dissoc options :examples :simulations :validation-examples :validation-simulations :posterior-validator)
-                                                   :validation-rows (mapv #(encode-row task %) held-out))))
+                                                   :validation-rows (mapv #(encode-row task %) held-out)))))
            fitted (artifact task backend payload)]
-       (if posterior-validator (await-op (validate fitted posterior-validator)) fitted)))))
+       (if posterior-validator (pcps/await (async/op-of (validate fitted posterior-validator))) fitted)))))
 
 (defn resume
   "Continue training a live or thawed artifact. Reuses its simulator count and
@@ -345,8 +346,8 @@
       (fail "Training failed numerically; inspect diagnostics and resume with corrected settings" {}))
     (when-not (and (pos-int? draws) (seq targets) (set/subset? (set targets) (set all-targets)))
       (fail "Request a positive draw count and declared targets" {:draws draws :targets targets}))
-    (task
-     (let [rows (await-op ((:sample backend) payload request {:draws draws :seed seed}))]
+    (pcps/async
+     (let [rows (pcps/await (async/op-of ((:sample backend) payload request {:draws draws :seed seed})))]
        (when-not (= draws (count rows)) (fail "Backend returned the wrong draw count" {:expected draws :actual (count rows)}))
        (->ApproximateMeasure
         (mapv (fn [row]
@@ -368,12 +369,12 @@
   [artifact posterior evidence & [{:keys [seed] :or {seed 1}}]]
   (let [adapter (get-in artifact [:task :abduct]) reconstruct (get-in artifact [:task :reconstruct])]
     (when-not (or adapter reconstruct) (fail "This task has no causal abduction adapter" {}))
-    (task
+    (pcps/async
      (loop [remaining (m/get-particles posterior) i 0 out []]
        (if (seq remaining)
          (let [[particle weight] (first remaining)
                joint (or (::joint-draw particle) (m/get-value particle))
-               a (if reconstruct (await-op (reconstruct joint evidence {:seed (+ seed i)}))
+               a (if reconstruct (pcps/await (async/op-of (reconstruct joint evidence {:seed (+ seed i)})))
                      (random/with-stream* seed [::abduct i] #(adapter joint evidence)))]
            (when-not (and (map? (:noise a)) (contains? a :factual) (sequential? (:unsupported a)))
              (fail "Abduction adapter must return factual values, noise and unsupported sites" {}))
@@ -382,11 +383,11 @@
 (defn worlds
   "A spin replaying declared causal worlds using approximate abductions."
   [artifact posterior evidence specs]
-  (task
+  (pcps/async
    (when-not (get-in artifact [:task :model]) (fail "Task needs a causal replay model" {}))
-   (let [abductions (await-op (abduct artifact posterior evidence))]
-     (await-op (cf/query ((get-in artifact [:task :model]))
-                      {:abductions abductions :worlds specs})))))
+   (let [abductions (pcps/await (async/op-of (abduct artifact posterior evidence)))]
+     (pcps/await (async/op-of (cf/query ((get-in artifact [:task :model]))
+                      {:abductions abductions :worlds specs}))))))
 
 (defn predictive
   "A spin generating forward rollouts from learned posterior draws. model-fn
@@ -395,16 +396,16 @@
   noise is reused. This supports action evaluation, not retrospective worlds."
   [posterior model-fn n & [{:keys [seed] :or {seed 1}}]]
   (when-not (and (fn? model-fn) (pos-int? n)) (fail "Provide a forward model factory and positive rollout count" {}))
-  (task
+  (pcps/async
    (let [particles (random/with-stream* seed ::predictive #(m/sample-measure posterior n))]
      (loop [remaining particles i 0 out []]
        (if (seq remaining)
          (let [[particle _] (first remaining)
-               t (await-op (gfi/run-policy (model-fn (m/get-value particle)) (generative-policy true) {:seed (+ seed i)}))
+               t (pcps/await (async/op-of (gfi/run-policy (model-fn (m/get-value particle)) (generative-policy true) {:seed (+ seed i)})))
                result {:value (:trace/result t)
                        :observations (into {} (for [entry (trace/entries t) :when (get-in entry [:note :simulated?])]
                                                 [(:address entry) (:value entry)]))}]
-           (await-op (gfi/close! t))
+           (pcps/await (async/op-of (gfi/close! t)))
            (recur (rest remaining) (inc i) (conj out result))) out)))))
 
 (defn freeze

@@ -23,7 +23,8 @@
   branching draws come from each particle's world stream, but the running
   means depend on arrival order, so runs on a multi-threaded executor are not
   reproducible from their seed."
-  (:require [org.replikativ.foerster.measure :as m]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.inference.smc :as smc]
@@ -47,7 +48,7 @@
             remaining (atom k)
             failed? (atom false)]
         (dotimes [i k]
-          ((sp/fork sp)
+          ((async/now sp/fork sp)
            (fn [child]
              (aset out i child)
              (when (zero? (swap! remaining dec)) (resolve (vec out))))
