@@ -62,6 +62,43 @@ foerster side, in dependency order:
 - Tests: 72 test namespaces touch spindel; run the full suite plus the benchmark comparison (perf
   #225/#226) at the end.
 
+## Design: S-b session layer and S-c traces on v2
+
+Constraints from v2 that shape it:
+- A savepoint is supported only in a **task** body (not a computation, not a nested slice). A
+  probabilistic program therefore runs as a task; re-execution from a changed site is S5's
+  instantiate route, not T11.
+- A publication keeps its frozen basis after `resume!` (S2) and can be instantiated any number of
+  times (S3/S4). **An anchor is just the publication**: no "fork before resume" world per site, which
+  the old layer needed. A held publication pins only its basis pages.
+- Handlers run as host callbacks after the publishing commit, not inline in the effect.
+
+Addresses: a site's address must survive re-execution with different control flow (otherwise MH
+pairs the wrong choices). Effect indices shift when a branch adds choices; v2's creation keys
+(site × per-run ordinal) do not. Proposal (spindel core, small): `register-effect!`'s `ctx` gains
+`:key`, the same site/ordinal key computations use. Address = explicit `:id`, else `[site ordinal]`.
+
+`org.replikativ.spindel.v2.savepoint` (S-b), the old API on publications:
+
+| Old | v2 session layer |
+|---|---|
+| `open! world opts` | installs handlers + `[:savepoint/seed]` in world state, returns a session (host record: root world, worlds it made) |
+| `start! session task` | runs the task in the root; observes it: result / error / abandoned terminal sites |
+| `sp` map (`:savepoint/world :address :payload :seq :site`) | the same keys over a publication |
+| `resume sp v` | `resume!` (in its own world) or `activate!` (an instance not yet born) |
+| `fork sp` | `instantiate` → an `sp` pending in the new world; seed derived as before |
+| `abandon sp` | `abandon!`; for an unborn instance, `release-world!` (nothing runs, S7) |
+| `copy sp k` | `k` instances, then the source world released without running its finalizers |
+| `pending? sp` | publication state `:pending` (or an unborn instance not yet activated) |
+| `seed`, `derive-seed` | world state + the same content hash |
+| `release-world!`, `close!` | `release-world!` per world; `close!` abandons pending publications and releases the session's worlds |
+| `in-callers-world` | `send-world!` |
+| `publish!` from an effect | the effect handler returns `[:savepoint site payload]` |
+
+`org.replikativ.spindel.v2.trace` (S-c), `spindel.trace` on S-b: entries per address as before;
+`replay` instantiates the anchor publication with the new value; `update` uses `rerun!`;
+`release!` abandons the anchors the other trace does not share.
+
 ## Open
 
 - `world.scope` authority/grant/balance (canonical.cljc, sandbox): which part foerster still needs
