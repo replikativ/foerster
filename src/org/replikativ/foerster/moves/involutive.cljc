@@ -115,7 +115,7 @@
       (let [x (itrace/choices trace)
             world (:trace/world trace)
             ;; every move from this state draws its own auxiliary variable
-            move (v2/update-in-world! world [:inference ::moves] (fnil inc 0))
+            move (get-in (v2/update-in-world! world [:inference ::moves] (fnil inc 0)) [:inference ::moves])
             {u :aux lq-fwd :log-q} (random/in-world-stream world [::aux move] #(propose x))
             {x' :choices u' :aux lj :log-jacobian removed :removed}
             (transport/require-jacobian! (involution x u) "An involution")

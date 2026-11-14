@@ -8,8 +8,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample observe factor]]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
-            [org.replikativ.spindel.engine.core :as engine]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]])
   #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :as v2 :refer [task]])))
 
@@ -31,8 +30,8 @@
    :freeze identity :thaw (fn [_ data] data)})
 
 (defn run-case [factory check done]
-  (binding [engine/*execution-context* (v2/world)]
-    ((factory) (fn [value] (check value) (done))
+  (binding [v2/*world* (v2/world)]
+    ((async/op-of (factory)) (fn [value] (check value) (done))
                (fn [error] (is false (str error)) (done)))))
 
 #?(:clj (defn sync-case [factory check]
@@ -46,8 +45,8 @@
                               [{:type :interval :bounds [-2 3]} 0.25]
                               [{:type :simplex :shape [3]} [0.2 0.3 0.5]]
                               [{:type :finite :values [nil false :other]} false]]]
-    (let [task (a/task simulator {:id :types :schema [(merge {:name :z :role :target} descriptor)]})
-          v (get-in task [:by-name :z]) result (a/decode v (a/encode v value))]
+    (let [atask (a/task simulator {:id :types :schema [(merge {:name :z :role :target} descriptor)]})
+          v (get-in atask [:by-name :z]) result (a/decode v (a/encode v value))]
       (if (= :finite (:type v)) (is (= value result))
           (letfn [(flat [x] (if (sequential? x) (mapcat flat x) [x]))]
             (is (every? #(< (Math/abs %) 1e-10) (map - (flat value) (flat result)))))))))
@@ -59,42 +58,42 @@
                               [{:type :finite :values [false true]} :missing]
                               [{:type :real :shape [2]} [1]]
                               [{:type :real} ##NaN]]]
-    (let [task (a/task simulator {:id :invalid :schema [(merge {:name :z :role :target} descriptor)]})]
-      (is (thrown? #?(:clj Exception :cljs js/Error) (a/encode-row task {:z value}))))))
+    (let [atask (a/task simulator {:id :invalid :schema [(merge {:name :z :role :target} descriptor)]})]
+      (is (thrown? #?(:clj Exception :cljs js/Error) (a/encode-row atask {:z value}))))))
 
 (deftest observation-encoders-are-versioned-features
   (let [schema [{:name :z :role :target :type :real}
                 {:name :text :role :observation :type :embedding :shape [2]
                  :encoder {:id :test/embed :version "a" :encode (fn [s] [(double (count s)) 1.0])}}]
-        task (a/task simulator {:id :text :schema schema})]
-    (is (= [0.0 3.0 1.0] (a/encode-row task {:z 0 :text "abc"})))
-    (is (nil? (get-in (a/description task) [:schema 1 :encoder :encode])))
+        atask (a/task simulator {:id :text :schema schema})]
+    (is (= [0.0 3.0 1.0] (a/encode-row atask {:z 0 :text "abc"})))
+    (is (nil? (get-in (a/description atask) [:schema 1 :encoder :encode])))
     (is (thrown? #?(:clj Exception :cljs js/Error)
                  (a/task simulator {:id :bad :schema (assoc-in schema [1 :role] :target)})))
-    (let [artifact (a/artifact task backend {}) checkpoint (a/freeze artifact)
+    (let [artifact (a/artifact atask backend {}) checkpoint (a/freeze artifact)
           changed (a/task simulator {:id :text :schema (assoc-in schema [1 :encoder :version] "b")})]
       (is (thrown? #?(:clj Exception :cljs js/Error) (a/thaw changed backend checkpoint))))))
 
 (deftest embedding-encoders-can-return-native-numeric-arrays
-  (let [task (a/task simulator
+  (let [atask (a/task simulator
                      {:id :native-array :schema [{:name :z :role :target :type :real}
                                                  {:name :text :role :observation :type :embedding :shape [2]
                                                   :encoder {:id :encoder :version "v1"
                                                             :encode (fn [_] #?(:clj (float-array [3 1])
                                                                                :cljs (js/Float32Array. #js [3 1])))}}]})]
-    (is (= [0.0 3.0 1.0] (a/encode-row task {:z 0 :text "abc"})))))
+    (is (= [0.0 3.0 1.0] (a/encode-row atask {:z 0 :text "abc"})))))
 
 (deftest checkpoints-do-not-contain-runtime-closures
   (let [artifact (a/artifact basic backend {:hidden-function identity})]
     (is (thrown? #?(:clj Exception :cljs js/Error) (a/freeze artifact)))))
 
 (deftest masks-and-projected-marginals-do-not-delete-variables
-  (let [task (a/task simulator (assoc options :schema (conj (:schema options) {:name :input :role :input :type :real})))]
-    (is (= [false true true] (:observed (a/condition task {:x 2 :input 1}))))
-    (is (= [false false true] (:observed (a/condition task {:input 1}))))
-    (is (thrown? #?(:clj Exception :cljs js/Error) (a/condition task {:x 2})))
-    (is (thrown? #?(:clj Exception :cljs js/Error) (a/condition task {:z 1 :input 1})))
-    (is (= {:z 3.0} (a/decode-targets task [3.0 2.0 1.0] [:z])))))
+  (let [atask (a/task simulator (assoc options :schema (conj (:schema options) {:name :input :role :input :type :real})))]
+    (is (= [false true true] (:observed (a/condition atask {:x 2 :input 1}))))
+    (is (= [false false true] (:observed (a/condition atask {:input 1}))))
+    (is (thrown? #?(:clj Exception :cljs js/Error) (a/condition atask {:x 2})))
+    (is (thrown? #?(:clj Exception :cljs js/Error) (a/condition atask {:z 1 :input 1})))
+    (is (= {:z 3.0} (a/decode-targets atask [3.0 2.0 1.0] [:z])))))
 
 (defn check-inference [value]
   (let [[rows posterior restored-posterior] value]
@@ -136,11 +135,11 @@
        :cljs (async done (run-case factory check done)))))
 
 (deftest causal-reconstruction-is-explicit-and-composable
-  (let [task (a/task simulator
+  (let [atask (a/task simulator
                      (assoc options :model simulator
                             :abduct (fn [{:keys [z]} {:keys [x]}]
                                       {:factual {:z z :x x} :noise {:z z :x (- x z)} :unsupported []})))
-        factory #(task (let [artifact (a/artifact task backend {})
+        factory #(task (let [artifact (a/artifact atask backend {})
                              posterior (await-op (a/infer artifact {:x 4.0} {:draws 3}))]
                          (await-op (a/worlds artifact posterior {:x 4.0} [[:changed {:z {:do 0.0}}]]))))
         check (fn [worlds]
@@ -157,8 +156,8 @@
                    (-logpdf [_ _] (swap! density-calls inc) (throw (ex-info "No density" {}))))
         model (fn [] (task {:z (sample implicit :id :z)
                             :x (sample (dist/normal 0 1) :id :x :proposal (dist/normal 1000 0.01))}))
-        task (a/task model options)
-        factory #(a/examples task 8 {:seed 32})
+        atask (a/task model options)
+        factory #(a/examples atask 8 {:seed 32})
         check (fn [rows]
                 (is (zero? @density-calls))
                 (is (every? #(= 2.0 (:z %)) rows))
@@ -185,8 +184,8 @@
                        {:log-density (fn [_ _] 0.0) :value+grad (fn [_ _] [0.0 [0.0]])
                         :sample (fn [_] [0.0])})
         model (fn [] (task {:z (sample (block/block-dist b {}) :id :z) :x 0.0}))
-        task (a/task model (assoc-in options [:schema 0 :shape] [1]))
-        factory #(task (try (await-op (a/examples task 1)) false
+        atask (a/task model (assoc-in options [:schema 0 :shape] [1]))
+        factory #(task (try (await-op (a/examples atask 1)) false
                             (catch #?(:clj Throwable :cljs :default) _ true)))
         check (fn [rejected?] (is rejected?))]
     #?(:clj (sync-case factory check)

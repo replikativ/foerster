@@ -121,7 +121,7 @@
 
 (deftest options-are-checked
   (let [root (v2/world)
-        model (binding [v2/*world* root] (static-model))
+        model static-model
         refusal (fn [opts] (try ((smc/smc model 10 opts) (fn [_]) (fn [_])) nil
                                 (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))]
     (is (= ::smc/smcp3-without-anchors (refusal {:smcp3 random-walk-kernel})))

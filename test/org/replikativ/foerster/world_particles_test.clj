@@ -4,7 +4,7 @@
   (:require [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.proposal :as proposal]
             [clojure.test :refer [deftest is testing]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             [org.replikativ.foerster.runtime.execution :as executor]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.core :as inference]
@@ -27,7 +27,7 @@
 
 (defn- await-cps [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %])
+    ((async/op-of operation) #(deliver result [:ok %])
                #(deliver result [:error %]))
     (deref result 5000 ::timed-out)))
 
@@ -85,11 +85,11 @@
       (binding [v2/*world* root]
         (let [knowledge (ygg/register! (-> (mem-gset "particle-kb")
                                            (g/conj :root {:sync? true})))
-              model (task
+              model (fn [] (task
                      (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
                      (reset! (ygg/system-signal "particle-kb")
                              (g/conj @knowledge (slot-name) {:sync? true}))
-                     (g/elements @knowledge {:sync? true}))]
+                     (g/elements @knowledge {:sync? true})))]
           (capturing-scopes [scopes]
                             (let [posterior @(task (await-op (inference/smc-infer
                                                            model 4
@@ -123,13 +123,13 @@
         n 3]
     (try
       (binding [v2/*world* root]
-        (let [model (task
+        (let [model (fn [] (task
                      (try
                        (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
                        :done
                        (finally
-                         (swap! finalized conj (:fork-id v2/*world*)))))
-              result (deref (task (await-op (inference/smc-infer
+                         (swap! finalized conj (:fork-id v2/*world*))))))
+              result (v2/value (task (await-op (inference/smc-infer
                                           model n {:world-policy :fork
                                                    :executor (:executor root)
                                                    :resample-threshold 2.0})))
@@ -272,7 +272,7 @@
                                       (if (= failing (swap! copies inc))
                                         (throw (ex-info "synthetic copy failure" {:copy failing}))
                                         (copy-world handle k opts)))]
-                                    (deref (task (try
+                                    (v2/value (task (try
                                                    (await-op (inference/smc-infer
                                                            (fn [] (observed-model)) 4
                                                            {:world-policy :fork :resample-threshold 2.0}))
@@ -432,7 +432,7 @@
       (binding [v2/*world* root]
         (ygg/register! (mem-gset "live-handle") {:grade :affine})
         (capturing-scopes [scopes]
-                          (let [result (deref (task (try
+                          (let [result (v2/value (task (try
                                                       (await-op (inference/smc-infer
                                                               (fn [] (task (reset! ran? true) :done)) 3
                                                               {:world-policy :fork}))
@@ -605,7 +605,7 @@
       (binding [v2/*world* root]
         (ygg/register! (mem-gset "live-handle-enumeration") {:grade :affine})
         (capturing-scopes [scopes]
-                          (let [result (deref (task (try
+                          (let [result (v2/value (task (try
                                                       (await-op (inference/infer
                                                               (fn [] (task (reset! ran? true)
                                                                     (sample (dist/flip 0.5) :id :x)))
@@ -623,7 +623,7 @@
   (let [root (v2/world)]
     (try
       (binding [v2/*world* root]
-        (let [model (task (sample (dist/flip 0.3) :id :x))
+        (let [model (fn [] (task (sample (dist/flip 0.3) :id :x)))
               fresh @(task (await-op (inference/infer model {:method :enumerate :world-policy :fresh})))]
           (is (= [] (measure/world-descriptors fresh)) "fresh worlds name no worlds")
           (is (< (Math/abs (measure/log-marginal fresh)) 1e-12))

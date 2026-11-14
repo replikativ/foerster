@@ -232,7 +232,7 @@
   (pcps/async
    (loop [i 0 out []]
      (if (= i n) out
-         (let [t (pcps/await (async/op-of (gfi/run-policy ((:simulator task))
+         (let [t (pcps/await (async/op-of (gfi/run-policy (:simulator task)
                                         (generative-policy (:simulate-observed? task))
                                         {:seed (+ seed i)})))
                row (try
@@ -386,12 +386,12 @@
   (pcps/async
    (when-not (get-in artifact [:task :model]) (fail "Task needs a causal replay model" {}))
    (let [abductions (pcps/await (async/op-of (abduct artifact posterior evidence)))]
-     (pcps/await (async/op-of (cf/query ((get-in artifact [:task :model]))
+     (pcps/await (async/op-of (cf/query (get-in artifact [:task :model])
                       {:abductions abductions :worlds specs}))))))
 
 (defn predictive
   "A spin generating forward rollouts from learned posterior draws. model-fn
-  receives a target map and returns a simulator spin, explicitly binding the
+  receives a target map and returns a simulator task, explicitly binding the
   parameters/state used by the rollout. Observations draw fresh; no posterior
   noise is reused. This supports action evaluation, not retrospective worlds."
   [posterior model-fn n & [{:keys [seed] :or {seed 1}}]]
@@ -401,7 +401,7 @@
      (loop [remaining particles i 0 out []]
        (if (seq remaining)
          (let [[particle _] (first remaining)
-               t (pcps/await (async/op-of (gfi/run-policy (model-fn (m/get-value particle)) (generative-policy true) {:seed (+ seed i)})))
+               t (pcps/await (async/op-of (gfi/run-policy #(model-fn (m/get-value particle)) (generative-policy true) {:seed (+ seed i)})))
                result {:value (:trace/result t)
                        :observations (into {} (for [entry (trace/entries t) :when (get-in entry [:note :simulated?])]
                                                 [(:address entry) (:value entry)]))}]

@@ -7,8 +7,7 @@
             [org.replikativ.foerster.dist :as d]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.spindel.engine.core :as engine]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn ordinary-simulator []
@@ -16,48 +15,52 @@
           {:latent z :reading x})))
 
 (defn- run [factory]
-  (binding [engine/*execution-context* (v2/world)] @(factory)))
+  (let [p (promise)]
+    (binding [v2/*world* (v2/world)]
+      ((async/op-of (factory)) #(deliver p [:ok %]) #(deliver p [:error %])))
+    (let [[k v] (deref p 30000 [:error (ex-info "timed out" {})])]
+      (if (= :ok k) v (throw v)))))
 
 (deftest existing-defn-needs-no-manual-schema-or-mask
-  (let [task (c/compile #'ordinary-simulator)
-        rows (run #(a/examples task 3))]
-    (is (= #{:latent :reading} (set (map :name (:schema task)))))
-    (is (= [[:latent :reading]] (:attention-edges task)))
-    (is (= :any (:conditionings task)))
+  (let [atask (c/compile #'ordinary-simulator)
+        rows (run #(a/examples atask 3))]
+    (is (= #{:latent :reading} (set (map :name (:schema atask)))))
+    (is (= [[:latent :reading]] (:attention-edges atask)))
+    (is (= :any (:conditionings atask)))
     (is (= 3 (count rows)))
     (is (every? #(= #{:latent :reading} (set (keys %))) rows))
-    (is (= [true false] (:observed (a/condition task {:latent 1.0}))))))
+    (is (= [true false] (:observed (a/condition atask {:latent 1.0}))))))
 
 (deftest co-parents-are-connected-for-posterior-inference
   (let [model (c/model [] (let [a (sample (d/normal 0 1) :id :a)
                                 b (sample (d/normal 0 1) :id :b)
                                 y (sample (d/normal (+ a b) 1) :id :y)] [a b y]))
-        task (c/compile model)]
-    (is (= #{#{:a :b} #{:a :y} #{:b :y}} (set (map set (:attention-edges task)))))
-    (is (= :factor-scope-cliques (get-in task [:semantics :attention])))))
+        atask (c/compile model)]
+    (is (= #{#{:a :b} #{:a :y} #{:b :y}} (set (map set (:attention-edges atask)))))
+    (is (= :factor-scope-cliques (get-in atask [:semantics :attention])))))
 
 (deftest public-core-effects-are-recognized
   (let [model (c/model [] (let [x (inference/sample (d/normal 0 1) :id :x)
                                 y (inference/sample (d/normal x 1) :id :y)] {:x x :y y}))
-        task (c/compile model)]
-    (is (= [[:x :y]] (:attention-edges task)))
-    (is (= 2 (count (run #(a/examples task 2)))))))
+        atask (c/compile model)]
+    (is (= [[:x :y]] (:attention-edges atask)))
+    (is (= 2 (count (run #(a/examples atask 2)))))))
 
 (deftest plate-instances-infer-hierarchical-identities
   (let [model (c/model [n] (loop [i 0 xs []]
                              (if (= i n) xs
                                  (recur (inc i) (conj xs (sample (d/normal 0 1) :id [:x i]))))))
-        task (c/compile model {:args [3]})]
-    (is (= [[:x 0] [:x 1] [:x 2]] (mapv :name (:schema task))))
-    (is (= #{[:x 0] [:x 1] [:x 2]} (set (keys (first (run #(a/examples task 1)))))))))
+        atask (c/compile model {:args [3]})]
+    (is (= [[:x 0] [:x 1] [:x 2]] (mapv :name (:schema atask))))
+    (is (= #{[:x 0] [:x 1] [:x 2]} (set (keys (first (run #(a/examples atask 1)))))))))
 
 (deftest types-are-derived-from-declared-distributions
   (let [model (c/model [] (let [i (sample (d/flip 0.3) :id :i)
                                 x (sample (d/exponential 2.0) :id :x)
                                 p (sample (d/beta 2.0 3.0) :id :p)] [i x p]))
-        task (c/compile model)]
-    (is (= [:finite :positive :interval] (mapv :type (:schema task))))
-    (is (= [false true] (get-in task [:schema 0 :values])))))
+        atask (c/compile model)]
+    (is (= [:finite :positive :interval] (mapv :type (:schema atask))))
+    (is (= [false true] (get-in atask [:schema 0 :values])))))
 
 (deftest variable-trace-structure-is-not-guessed-from-one-run
   (let [model (c/model [] (if (sample (d/flip 0.5) :id :branch)
@@ -69,17 +72,17 @@
         model (c/model [] (let [x (sample (d/normal 0 1) :id :x)
                                 y (sample (d/normal 0 1) :id :y)
                                 z (sample (d/normal (opaque x) 1) :id :z)] [x y z]))
-        task (c/compile model)]
-    (is (= 3 (count (:attention-edges task))))
-    (is (= :dense-conservative (get-in task [:semantics :attention])))))
+        atask (c/compile model)]
+    (is (= 3 (count (:attention-edges atask))))
+    (is (= :dense-conservative (get-in atask [:semantics :attention])))))
 
 (deftest causal-noise-reconstruction-is-derived-after-an-explicit-declaration
   (let [model (c/model [] (let [z (sample (d/normal 0 1) :id :z)
                                 x (observe (d/normal z 1) 100.0 :id :x)] {:z z :x x}))
-        task (c/compile model {:causal? true})
+        atask (c/compile model {:causal? true})
         backend {:id :oracle :sample (fn [_ request {:keys [draws]}]
                                        (task (vec (repeat draws [2.0 (second (:values request))]))))}
-        worlds (run #(task (let [artifact (a/artifact task backend {})
+        worlds (run #(task (let [artifact (a/artifact atask backend {})
                                  posterior (await-op (a/infer artifact {:x 4.0} {:draws 3 :targets [:z]}))]
                              (await-op (a/worlds artifact posterior {:x 4.0} [[:changed {:z {:do 0.0}}]])))))]
     (is (= 3 (count worlds)))
@@ -89,9 +92,9 @@
   (let [model (c/model [] (let [z (sample (d/normal 0 1) :id :z)
                                 x (sample (d/normal z 1) :id :x)
                                 y (sample (d/normal (+ (* 2 x) z) 1) :id :y)] {:z z :x x :y y}))
-        task (c/compile model {:causal? true})
+        atask (c/compile model {:causal? true})
         backend {:id :oracle :sample (fn [_ _ {:keys [draws]}] (task (vec (repeat draws [2.0 4.0 7.0]))))}
-        [posterior worlds] (run #(task (let [artifact (a/artifact task backend {})
+        [posterior worlds] (run #(task (let [artifact (a/artifact atask backend {})
                                              posterior (await-op (a/infer artifact {:y 7.0} {:draws 2 :targets [:z]}))
                                              worlds (await-op (a/worlds artifact posterior {:y 7.0} [[:changed {:z {:do 0.0}}]]))]
                                          [posterior worlds])))]

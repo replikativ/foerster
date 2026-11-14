@@ -6,13 +6,12 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.program :as program]
             [org.replikativ.foerster.runtime.async :refer [await-op]]
-            [org.replikativ.spindel.engine.core :as engine]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (deftest a-custom-program-returns-a-queryable-measure-directly
   (let [root (v2/world)]
     (try
-      (binding [engine/*execution-context* root]
+      (binding [v2/*world* root]
         (let [prior (d/categorical {2.0 1.0})
               target (program/value-target #(d/logpdf prior %) #(d/draw prior) #(d/logpdf prior %))
               result (promise)]

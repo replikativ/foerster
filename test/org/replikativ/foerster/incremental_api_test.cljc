@@ -12,7 +12,7 @@
             [org.replikativ.foerster.program :as ip]
             #?(:clj [org.replikativ.foerster.runtime.trace :as it])
             [org.replikativ.foerster.moves.transition :as transition]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.spindel.spin.keyed :refer [keyed]])
   #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :as v2 :refer [task]])))
@@ -29,7 +29,7 @@
    (do
      (defn- await-cps [operation]
        (let [result (promise)]
-         (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+         ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
          (let [[status value] (deref result 60000 [:timeout nil])]
            (case status :ok value :error (throw value)
                  (throw (ex-info "Incremental inference timed out" {}))))))
@@ -69,7 +69,7 @@
               #(ip/run {:seed 404}
                        (fn [scope]
                          (task
-                          (let [source (await-op (ip/initialize scope (ip/trace-target (keyed-model)) 8))
+                          (let [source (await-op (ip/initialize scope (ip/trace-target (fn [] (keyed-model))) 8))
                                 _ (reset! before (mapv it/choices (:particles source)))
                                 child (await-op (ip/fork scope source))
                                 child (ip/advance scope child (ip/temperature (:target child) 0.5))
@@ -208,7 +208,7 @@
                (ip/run {:seed 408}
                        (fn [scope]
                          (task
-                          (let [source (await-op (ip/initialize scope (ip/trace-target (keyed-model)) 4))
+                          (let [source (await-op (ip/initialize scope (ip/trace-target (fn [] (keyed-model))) 4))
                                 child (await-op (ip/fork scope source))
                                 child (ip/advance scope child (ip/temperature (:target child) 0.5))
                                 child (await-op (ip/resample scope child))

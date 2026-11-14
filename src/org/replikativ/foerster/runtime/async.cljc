@@ -11,22 +11,26 @@
   started off-world, so the driver never runs inside the caller's world.
   `await-op`, in a task body, awaits either."
   (:require [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.spindel.v2.host :as hs])
+            [org.replikativ.spindel.v2.host :as hs]
+            [org.replikativ.spindel.v2.savepoint :as sp])
   #?(:cljs (:require-macros [org.replikativ.foerster.runtime.async]
                             [org.replikativ.spindel.v2.core :refer [task]])))
 
 (defn op-of
   "`x` as a CPS operation: a v2 handle settles it once (its first settled
-  value or error); anything else is taken as an operation already."
+  value or error), delivered as host code (`savepoint/off-world`: never
+  inside the handle's world, so the driver continuing may call into any
+  world); anything else is taken as an operation already."
   [x]
   (if (v2/handle? x)
     (fn [resolve reject]
       (let [done (atom false)
             stop (volatile! nil)
+            deliver! (sp/off-world (fn [[v err?]] (if err? (reject v) (resolve v))))
             cb (fn [v err?]
                  (when (compare-and-set! done false true)
                    (when-let [s @stop] (s))
-                   (if err? (reject v) (resolve v))))]
+                   (deliver! [v err?])))]
         (vreset! stop (v2/observe! x cb))
         (when @done (@stop))))
     x))

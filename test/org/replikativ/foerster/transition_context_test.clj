@@ -1,5 +1,6 @@
 (ns org.replikativ.foerster.transition-context-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.core :as infer]
@@ -16,7 +17,7 @@
 
 (defn- await-cps [op]
   (let [p (promise)]
-    (op #(deliver p [:ok %]) #(deliver p [:err %]))
+    ((async/op-of op) #(deliver p [:ok %]) #(deliver p [:err %]))
     (let [[kind value] (deref p 30000 [:err (ex-info "timeout" {})])]
       (if (= :ok kind) value (throw value)))))
 

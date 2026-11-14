@@ -233,9 +233,8 @@
 (defn- reserve-span! [current size]
   ;; Share mh-chain's allocator: distinct prepared descriptors can move the
   ;; same world after rejection without replaying an earlier random stream.
-  (- (v2/update-in-world! (:trace/world current)
-                      [:inference :org.replikativ.foerster.runtime.trace/chain-moves]
-                      #(+ (or % 0) size)) size))
+  (let [path [:inference :org.replikativ.foerster.runtime.trace/chain-moves]]
+    (- (get-in (v2/update-in-world! (:trace/world current) path #(+ (or % 0) size)) path) size)))
 
 (defn step
   "Run a prepared descriptor's configured iterations. Context is the target
@@ -266,14 +265,6 @@
              (validate-context! prepared context)
              (iteration-of tree current (:iteration context)
                            (select-keys context tc/keys)))}))
-
-(defn- project-posterior-context
-  "A world of its own holding only what the posterior needs of `world`'s
-  inference state: `world` itself would retain the chain's worlds."
-  [world]
-  (doto (v2/world)
-    (v2/reset-world! {:inference (select-keys (v2/get-in-world world [:inference])
-                                              [:log-weight :trace :result :mcmc])})))
 
 (defn- canonical-session
   "A chain's root and session: a host fork of `source` (the inference's
@@ -385,18 +376,13 @@
                                         "makes only when it picks it: raise the iterations or lower its :burn")
                                    {:type :org.replikativ.foerster.core/warm-up-unfinished
                                     :iterations iterations})))
-               world (:trace/world final)]
-           (v2/update-in-world! world [:inference]
-                            (fn [state]
-                              (assoc state
-                                     :result (:trace/result final)
-                                     :trace (itrace/legacy-trace final)
-                                     :mcmc {:completed-iterations iterations
-                                            :moves moves
-                                            :acceptance-count accepted})))
+               ]
            (if (= :all (:samples kernel))
              @samples
-             [[(project-posterior-context world) 0.0]]))
+             ;; the final state as a Sample: the chain's worlds are given back
+             [[(assoc (m/sample-particle (:trace/result final) (itrace/legacy-trace final))
+                      :mcmc {:completed-iterations iterations :moves moves :acceptance-count accepted})
+               0.0]]))
          (finally
            ;; releases every world of the chain (engine v2 finalizers do not
            ;; await: the close is requested, not joined)

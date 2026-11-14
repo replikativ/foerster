@@ -38,7 +38,7 @@
    :involution (fn [{b :b} _] {:choices {:b (not b)} :aux nil :log-jacobian 0.0})})
 
 (defn- flip-b [{b :b}]
-  (task (sample (dist/flip (if b 0.0 1.0)) :id :b)))
+  (fn [] (task (sample (dist/flip (if b 0.0 1.0)) :id :b))))
 
 (defn- p-b [kernel seed]
   (let [wv (b/weighted-values (b/run-infer seed #(infer/kernel-infer (fn [] (switch)) kernel 2)))]
@@ -64,7 +64,7 @@
                                     (try (b/run-infer 123 #(ip/run {:seed 123}
                                                                    (fn [scope]
                                                                      (task
-                                                                      (let [p (await-op (ip/initialize scope (ip/trace-target (switch)) 8))
+                                                                      (let [p (await-op (ip/initialize scope (ip/trace-target (fn [] (switch))) 8))
                                                                             p (await-op (ip/move scope p (k/involutive-kernel 1 flip-move)))]
                                                                         (ip/finish scope p))))))
                                          (catch Exception e e))))))))
@@ -73,7 +73,7 @@
   (let [result (b/run-infer 124 #(ip/run {:seed 124}
                                          (fn [scope]
                                            (task
-                                            (let [p (await-op (ip/initialize scope (ip/trace-target (switch)) 8))
+                                            (let [p (await-op (ip/initialize scope (ip/trace-target (fn [] (switch))) 8))
                                                   refused (try (await-op (ip/move scope p (k/involutive-kernel 1 flip-move)))
                                                                nil
                                                                (catch Exception e (:type (ex-data e))))

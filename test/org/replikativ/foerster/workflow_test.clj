@@ -126,7 +126,9 @@
       (let [measure (b/run-infer 86 #(infer/infer (fn [] (gaussian)) opts))
             {:keys [mean]} (d/summary measure identity)]
         (is (< (Math/abs (- mean post-mean)) 0.12) (str (:method opts) " " mean)))))
-  (is (thrown? clojure.lang.ExceptionInfo (infer/infer (fn [] (gaussian)) {:method :nuts}))))
+  (is (thrown? clojure.lang.ExceptionInfo
+               (b/run-infer 86 #(infer/infer (fn [] (gaussian)) {:method :nuts :iterations 10})))
+      "NUTS needs a block site"))
 
 (deftest new-distributions
   (random/set-seed! 87)

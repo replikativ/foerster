@@ -134,6 +134,19 @@
       (get-in (v2/update-in-world! world [:inference :barriers] (fnil inc 0)) [:inference :barriers])
       (or (v2/get-in-world world [:inference :barriers]) 0))))
 
+(defn inherit-decision!
+  "Gives `child`, a fork or copy of the decided savepoint `sp`, what the
+  controller wrote in `sp`'s world after `sp` was reached: its trace entry,
+  weight and barrier count, and the handlers installed since (a particle
+  continuing in a replay's world is handed to its controller there). An
+  instance starts as `sp`'s world was when `sp` was reached; a particle
+  resampled at a barrier continues after it."
+  [sp child]
+  (let [from (:savepoint/world sp) to (:savepoint/world child)
+        state (v2/world-state from)]
+    (v2/swap-world! to merge (select-keys state [:inference :savepoint/trace :savepoint/handlers]))
+    child))
+
 (defn policy-options
   "The options a `policy` was made from, or nil for another function."
   [policy]
@@ -751,15 +764,17 @@
 
 (defn copy-complete
   "Fork a settled end-world without re-running its effects: a host fork of
-  the world the trace ended in, owned by its session. The caller owns shared
-  anchors and must keep every live population reachable until release."
+  the world the trace ended in, owned by its session's root (so it outlives
+  the trace it copies) and released with the session. The caller owns
+  shared anchors and must keep every live population reachable until
+  release."
   [t _opts]
   (pcps/async
    (when (or (not (contains? t :trace/result)) (:trace/pending t) (:trace/error t))
      (throw (ex-info "Only complete successful traces can be copied"
                      {:type ::incomplete-copy})))
    (let [s (:trace/session t)
-         w (v2/fork! (:trace/world t))]
+         w (v2/fork! (:trace/world t) {:owner (:root s)})]
      (swap! (:worlds s) conj w)
      (assoc t :trace/world w ::latent (latent-index t)))))
 

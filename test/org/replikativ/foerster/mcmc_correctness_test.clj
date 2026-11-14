@@ -25,12 +25,12 @@
             [org.replikativ.foerster.measure :as measure]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             [org.replikativ.foerster.dist :as dist]))
 
 (defn- await-cps [operation timeout-ms]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [outcome (deref result timeout-ms ::timeout)]
       (when (= ::timeout outcome)
         (throw (ex-info "CPS operation timed out" {})))
@@ -46,7 +46,7 @@
         seen (atom [])]
     (try
       (let [initial (await-cps (trace/run session
-                                          (binding [v2/*world* root] (model-fn))
+                                          model-fn
                                           (itrace/policy)
                                           {:anchor? itrace/anchor?})
                                20000)]
@@ -57,7 +57,7 @@
                    600000)
         (subvec @seen burn-in))
       (finally
-        (await-cps ((sp/close! session) identity identity) 20000)
+        (await-cps (sp/close! session) 20000)
         (v2/release-world! root)))))
 
 (defn- stats [xs]

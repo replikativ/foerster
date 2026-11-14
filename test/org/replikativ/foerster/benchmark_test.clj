@@ -42,11 +42,11 @@
     (try (binding [v2/*world* root]
            (let [op (make-inference)
                  r (if (v2/handle? op)
-                     (v2/value op 300000 ::timeout)
+                     (v2/value op 120000 ::timeout)
                      ;; a CPS operation (fn [resolve reject])
                      (let [p (promise)]
                        (op #(deliver p %) #(deliver p %))
-                       (let [v (deref p 300000 ::timeout)]
+                       (let [v (deref p 120000 ::timeout)]
                          (if (instance? Throwable v) (throw v) v))))]
              (when (= r ::timeout) (throw (ex-info "inference timed out" {})))
              r))

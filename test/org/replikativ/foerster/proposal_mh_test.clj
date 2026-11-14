@@ -3,7 +3,8 @@
   x, y ~ N(0, 1), z = 2 ~ N(x + y, 0.5). The posterior is N([8/9 8/9],
   [[5 −4] [−4 5]]/9): x and y strongly anti-correlated, so a proposal that
   moves them together along x + y = const mixes where single sites crawl."
-  (:require [clojure.test :refer [deftest is]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.diagnostics :as d]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
@@ -21,12 +22,12 @@
 (defn- along-the-ridge
   "x' ~ N(x, 0.6), then y' ~ N(y − (x' − x), 0.15): a joint move."
   [{:keys [x y]}]
-  (task
+  (fn [] (task
    (let [x' (sample (dist/normal x 0.6) :id :x)]
-     (sample (dist/normal (- y (- x' x)) 0.15) :id :y))))
+     (sample (dist/normal (- y (- x' x)) 0.15) :id :y)))))
 
 (defn- await* [op]
-  (let [p (promise)] (op #(deliver p %) #(deliver p %))
+  (let [p (promise)] ((async/op-of op) #(deliver p %) #(deliver p %))
        (let [v (deref p 60000 ::timeout)] (if (instance? Throwable v) (throw v) v))))
 
 (defn- run-chain [seed n burn]
@@ -68,7 +69,7 @@
      k)))
 
 (defn- flip-k [{:keys [k]}]
-  (task (sample (dist/bernoulli (if (= 1 k) 0.0 1.0)) :id :k)))
+  (fn [] (task (sample (dist/bernoulli (if (= 1 k) 0.0 1.0)) :id :k))))
 
 (deftest a-proposal-that-drops-a-site-scores-its-regeneration
   (random/set-seed! 5)

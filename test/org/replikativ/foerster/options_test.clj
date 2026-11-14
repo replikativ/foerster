@@ -8,14 +8,14 @@
 
 (def ^:private world (v2/world))
 
-(defn- model [] (binding [v2/*world* world] (task :done)))
+(defn- model [] (task :done))
 
 (defn- refusal [f]
   (try (f) nil
        (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
 
 (deftest unknown-options-are-refused
-  (let [model (model)]
+  (let [model (fn [] (model))]
     (is (= ::infer/unknown-options
            (refusal #(infer/smc-infer model 10 {:resample-treshold 0.3}))) "misspelled")
     (is (= ::infer/unknown-options
@@ -29,7 +29,7 @@
         "a Markov chain does not resample")))
 
 (deftest canonical-world-options-need-canonical-worlds
-  (let [model (model)]
+  (let [model (fn [] (model))]
     (doseq [opts [{:authority :some-authority} {:grant {:tokens 1}} {:world-opts {}}
                   {:world-policy :fresh :grant {:tokens 1}}]]
       (is (= ::infer/fork-only-options (refusal #(infer/smc-infer model 10 opts))) (str opts)))))

@@ -103,7 +103,7 @@
                         ((trace/policy {:constraints {(:address site) (get values name)}})
                          (assoc-in sp [:savepoint/payload :observed?] false) old))
                       (base sp old)))
-           t (pcps/await (async/op-of (gfi/run-policy (factory) policy {:seed seed})))
+           t (pcps/await (async/op-of (gfi/run-policy factory policy {:seed seed})))
            result (try
                     (let [factual (project sites names t)]
                       (when-not (every? (fn [[name value]] (= value (get values name))) factual)

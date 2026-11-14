@@ -8,7 +8,8 @@
   μ₂ = μ/2 − u with u ~ N(0, 1); merge: μ = μ₁ + μ₂, u = (μ₁ − μ₂)/2; the
   Jacobian of the split is 1 (|det [[½ 1] [½ −1]]| = 1), and of the merge
   its inverse."
-  (:require [clojure.test :refer [deftest is]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
@@ -45,7 +46,7 @@
                       :aux (/ (- m1 m2) 2) :log-jacobian 0.0 :removed #{[:mu 1] [:mu 2]}})))})
 
 (defn- await* [op]
-  (let [p (promise)] (op #(deliver p %) #(deliver p %))
+  (let [p (promise)] ((async/op-of op) #(deliver p %) #(deliver p %))
        (let [v (deref p 60000 ::timeout)] (if (instance? Throwable v) (throw v) v))))
 
 (deftest split-and-merge-reach-the-model-posterior

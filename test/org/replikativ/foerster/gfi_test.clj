@@ -1,7 +1,8 @@
 (ns org.replikativ.foerster.gfi-test
   "Gen's weight identities for `inference.gfi`, checked by hand on small
   models, and MH-by-selection against an analytic posterior."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.foerster.runtime.trace :as itrace]
@@ -13,7 +14,7 @@
 
 (defn- await-cps [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [outcome (deref result 20000 ::timeout)]
       (when (= ::timeout outcome)
         (throw (ex-info "CPS operation timed out" {})))
@@ -33,24 +34,22 @@
 (defn- hierarchical
   "x ~ N(0,1), z | x ~ N(x,1), y = 2 | z ~ N(z,1): x | y ~ N(2/3, 2/3)."
   [root]
-  (binding [v2/*world* root]
-    (task
+  (task
      (let [x (sample (dist/normal 0.0 1.0) :id :x)
            z (sample (dist/normal x 1.0) :id :z)]
        (observe (dist/normal z 1.0) 2.0 :id :y)
-       x))))
+       x)))
 
 (defn- switch
   "Which latent exists depends on b."
   [root]
-  (binding [v2/*world* root]
-    (task
+  (task
      (let [b (sample (dist/flip 0.5) :id :b)
            v (if b
                (sample (dist/normal 0.0 1.0) :id :v0)
                (sample (dist/normal 5.0 1.0) :id :v1))]
        (observe (dist/normal v 1.0) 5.0 :id :y)
-       b))))
+       b)))
 
 (deftest assess-is-the-log-joint
   (with-root [root]
@@ -136,7 +135,7 @@
 
 (deftest a-failing-program-rejects
   (with-root [root]
-    (let [model (binding [v2/*world* root] (task (throw (ex-info "boom" {}))))
+    (let [model (fn [] (task (throw (ex-info "boom" {}))))
           outcome (try (await-cps (gfi/simulate model)) (catch Exception e e))]
       (is (= :org.replikativ.foerster.runtime.gfi/model-failed (:type (ex-data outcome))))
       (is (= "boom" (ex-message (ex-cause outcome)))))))

@@ -37,4 +37,4 @@
 
 (deftest a-forward-run-returns-the-value
   (let [world (v2/world)]
-    (is (number? (binding [v2/*world* world] (deref (model) 10000 nil))))))
+    (is (number? (binding [v2/*world* world] (v2/value (model) 10000 nil))))))

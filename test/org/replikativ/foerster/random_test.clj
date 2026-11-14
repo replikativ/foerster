@@ -2,7 +2,8 @@
   "A seeded run draws the same numbers however its particles and chains are
   scheduled: every draw made in a world reads a stream keyed by the world's
   seed and what is drawn."
-  (:require [clojure.string :as str]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.string :as str]
             [org.replikativ.spindel.engine.hash :as hash]
             [clojure.walk :as walk]
             [clojure.test :refer [deftest is testing]]
@@ -104,7 +105,7 @@
 
 (defn- await-cps [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [[tag v] (deref result 20000 [:error (ex-info "timed out" {})])]
       (if (= :ok tag) v (throw v)))))
 
@@ -119,7 +120,7 @@
   [seed n step interleave?]
   (random/set-seed! seed)
   (let [root (v2/world)
-        model (binding [v2/*world* root] (named-model))]
+        model named-model]
     (loop [t (await-cps (gfi/simulate model)) i 0 xs []]
       (if (= i n)
         (do (await-cps (gfi/close! t)) xs)
@@ -145,8 +146,7 @@
   (let [noise (fn [interleave?]
                 (random/set-seed! 9)
                 (let [root (v2/world)
-                      model (binding [v2/*world* root]
-                              (task (sample (dist/flip 0.3) :id :c)))
+                      model (fn [] (task (sample (dist/flip 0.3) :id :c)))
                       t (await-cps (gfi/simulate model))]
                   (when interleave? (random/uniform01))
                   (let [[n] (cf/noise-of t)]

@@ -16,7 +16,7 @@
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.spin.combinators :refer [parallel]]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
@@ -26,7 +26,7 @@
 
 (defn- await* [op]
   (let [p (promise)]
-    (op #(deliver p [:ok %]) #(deliver p [:error %]))
+    ((async/op-of op) #(deliver p [:ok %]) #(deliver p [:error %]))
     (let [[k v :as r] (deref p 60000 [:timeout])]
       (case k :ok v :error (throw v) (throw (ex-info "timed out" {:result r}))))))
 
@@ -58,7 +58,7 @@
     (try
       (await* (trace/run session model (itrace/policy {:constraints constraints})
                          {:anchor? (constantly false)}))
-      (finally (await* ((sp/close! session) identity identity))))))
+      (finally (await* (sp/close! session))))))
 
 (defn consistent
   "Differences between `moved` (a trace an update produced) and a

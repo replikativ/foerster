@@ -2,7 +2,8 @@
   "HMC on block sites against analytic and quadrature posteriors, with
   pure-Clojure reference blocks (the oracles of the spindel ↔ raster block
   contract)."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :refer [run-infer weighted-values w-mean-sd]]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.moves.hmc :as hmc]
@@ -160,12 +161,11 @@
         flags (atom #{})
         samples (atom [])
         await-cps (fn [op] (let [p (promise)]
-                             (op #(deliver p [:ok %]) #(deliver p [:err %]))
+                             ((async/op-of op) #(deliver p [:ok %]) #(deliver p [:err %]))
                              (let [[k v] (deref p 60000 [:err (ex-info "timeout" {})])]
                                (if (= k :ok) v (throw v)))))]
     (try
-      (let [model (binding [v2/*world* root]
-                    (task (let [mu (sample (block/block-dist b inputs) :id :mu :init [0.0 0.0])]
+      (let [model (fn [] (task (let [mu (sample (block/block-dist b inputs) :id :mu :init [0.0 0.0])]
                             (loop [i 0]
                               (when (< i (count ys))
                                 (let [y (nth ys i)]
@@ -188,7 +188,7 @@
               (is (< (Math/abs (- mean m)) 0.05) (str "mean " mean " vs " m))
               (is (< (Math/abs (- sd s)) 0.05) (str "sd " sd " vs " s))))))
       (finally
-        (await-cps ((sp/close! session) identity identity))
+        (await-cps (sp/close! session))
         (v2/release-world! root)))))
 
 ;; --- blocks under the particle methods ----------------------------------------
@@ -232,19 +232,18 @@
         root (v2/world)
         session (sp/open! root {:seed 12 :fork-opts {:systems :none}})
         await-cps (fn [op] (let [p (promise)]
-                             (op #(deliver p [:ok %]) #(deliver p [:err %]))
+                             ((async/op-of op) #(deliver p [:ok %]) #(deliver p [:err %]))
                              (let [[k v] (deref p 60000 [:err (ex-info "timeout" {})])]
                                (if (= k :ok) v (throw v)))))]
     (try
-      (let [model (binding [v2/*world* root]
-                    (task [(sample (block/block-dist b gauss-inputs) :id :mu :init [0.0])
+      (let [model (fn [] (task [(sample (block/block-dist b gauss-inputs) :id :mu :init [0.0])
                            (sample (dist/normal 0.0 1.0) :id :z)]))
             t0 (await-cps (trace/run session model (itrace/policy {:init? true}) {:anchor? itrace/anchor?}))
             {:keys [moves accepted]} (await-cps (itrace/mh-chain t0 20 {:step (hmc/within-gibbs {:step-size 0.1 :steps 8})}))]
         (is (= 40 moves))
         (is (< 20 accepted 41) (str accepted " of " moves)))
       (finally
-        (await-cps ((sp/close! session) identity identity))
+        (await-cps (sp/close! session))
         (v2/release-world! root)))))
 
 (deftest a-replay-that-adds-a-site-keeps-the-chain-exact

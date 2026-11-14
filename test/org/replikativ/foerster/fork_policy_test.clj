@@ -87,11 +87,11 @@
     (try
       (in-root
        (let [log (sa/atom [:root])
-             model (task (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+             model (fn [] (task (let [x (sample (dist/normal 0.0 1.0) :id :x)]
                            (observe (dist/normal x 1.0) 0.5 :id :y)
                            (observe (dist/normal x 1.0) 0.7 :id :z)
                            (swap! log conj :mine)
-                           [x @log]))]
+                           [x @log])))]
          (capturing-scopes [scopes]
                            (let [posterior @(task (await-op (inference/smc-infer
                                                           model 400 {:world-policy :fork :batch 16 :executor exec
@@ -454,7 +454,7 @@
                                                                (task
                                                                 ;; importance weights, resampling (copies
                                                                 ;; of canonical worlds), then moves
-                                                                (let [p (await-op (ip/initialize scope (ip/trace-target (queue-model queue)
+                                                                (let [p (await-op (ip/initialize scope (ip/trace-target (fn [] (queue-model queue))
                                                                                                                      {:world-policy :fork})
                                                                                               600))
                                                                       p (ip/advance scope p (ip/temperature (:target p) 1.0))
@@ -473,7 +473,7 @@
                          (let [posterior @(task (await-op (ip/run {:seed 7 :world-policy :fork}
                                                                (fn [scope]
                                                                  (task
-                                                                  (let [p (await-op (ip/initialize scope (ip/trace-target (queue-model queue)
+                                                                  (let [p (await-op (ip/initialize scope (ip/trace-target (fn [] (queue-model queue))
                                                                                                                        {:world-policy :fork})
                                                                                                 40))
                                                                         p (ip/advance scope p (ip/temperature (:target p) 1.0))
@@ -489,7 +489,7 @@
      (is (thrown-with-msg? Exception #"world-policy :fork"
                            (deref (task (await-op (ip/run {:seed 1}
                                                        (fn [scope]
-                                                         (task (ip/finish scope (await-op (ip/initialize scope (ip/trace-target (queue-model (sa/atom backlog))
+                                                         (task (ip/finish scope (await-op (ip/initialize scope (ip/trace-target (fn [] (queue-model (sa/atom backlog)))
                                                                                                                              {:world-policy :fork})
                                                                                                       4))))))))
                                   10000 ::timed-out))))))

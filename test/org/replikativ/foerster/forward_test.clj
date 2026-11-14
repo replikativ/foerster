@@ -4,12 +4,11 @@
   (:require [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [intervene! observe sample]]
-            [org.replikativ.spindel.engine.addressing :refer [with-scope]]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- in-world [world make]
   (binding [v2/*world* world]
-    (deref (make) 10000 ::timed-out)))
+    (v2/value (make) 10000 ::timed-out)))
 
 (deftest a-named-site-draws-afresh-each-time-it-is-reached
   (let [world (v2/world)
@@ -29,7 +28,7 @@
                      #(task
                        (intervene! [:a :x] 5.0)
                        (intervene! :y 7.0)
-                       [(with-scope [:a] (sample (dist/normal 0.0 1.0) :id :x))
+                       [(v2/with-path [:a] (sample (dist/normal 0.0 1.0) :id :x))
                         (sample (dist/normal 0.0 1.0) :id :y)])))
         "a scoped name is its path; a top-level name is itself")))
 

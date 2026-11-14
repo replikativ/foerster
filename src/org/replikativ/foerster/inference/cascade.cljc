@@ -50,7 +50,7 @@
         (dotimes [i k]
           ((async/now sp/fork sp)
            (fn [child]
-             (aset out i child)
+             (aset out i (itrace/inherit-decision! sp child))
              (when (zero? (swap! remaining dec)) (resolve (vec out))))
            (fn [e] (when (compare-and-set! failed? false true) (reject e)))))))))
 

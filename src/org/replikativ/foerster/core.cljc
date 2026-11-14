@@ -271,8 +271,8 @@
                     (dissoc o :world-policy)))))))
 
 (defn- compiled-rmh
-  "`:rmh` on the model compiled (`foerster.inference.compiled`): the spin must come
-  from an `analysis/model` whose structure is static given its arguments.
+  "`:rmh` on the model compiled (`foerster.inference.compiled`): the thunk must apply
+  an `analysis/model` whose structure is static given its arguments.
   Opt-in and JVM-only; continuous latents, single-site random-walk MH with
   a fixed step; the chains run on `:executor` (see `foerster.inference.compiled`)."
   #?(:clj [model iterations burn step-size chains opts]

@@ -115,16 +115,18 @@
     ((:distribution m) (select-keys values (:parents m)))))
 
 (defn model
-  "An ordinary foerster model spin: one sample site per node, node IDs as
-  addresses. Use with inference, cf/query, attribution and trace policies."
+  "An ordinary foerster model (a function creating a task): one sample site
+  per node, node IDs as addresses. Use with inference, cf/query,
+  attribution and trace policies."
   [fitted]
-  (task
-   (loop [remaining (:order fitted) values {}]
-     (if (seq remaining)
-       (let [v (first remaining)
-             x (sample (distribution fitted v values) :id v)]
-         (recur (rest remaining) (assoc values v x)))
-       values))))
+  (fn []
+    (task
+     (loop [remaining (:order fitted) values {}]
+       (if (seq remaining)
+         (let [v (first remaining)
+               x (sample (distribution fitted v values) :id v)]
+           (recur (rest remaining) (assoc values v x)))
+         values)))))
 
 (defn- abduct-noise [fitted node row]
   (let [law (distribution fitted node row) x (get row node)]

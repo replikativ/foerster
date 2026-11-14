@@ -3,7 +3,8 @@
   observed as y_t ~ N(x_t, 1), its observations pushed one at a time. After
   each push the particle filter's x_t must match the Kalman filtering
   distribution, and its evidence the Kalman marginal likelihood."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.inference.particle-mcmc :as pmcmc]
             [org.replikativ.foerster.runtime.trace :as itrace]
@@ -17,7 +18,7 @@
 
 (defn- await-cps [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [outcome (deref result 60000 ::timeout)]
       (when (= ::timeout outcome)
         (throw (ex-info "CPS operation timed out" {})))
@@ -26,13 +27,12 @@
 (def ^:private ys [0.8 1.9 1.2 3.0 2.5])
 
 (defn- random-walk [root]
-  (binding [v2/*world* root]
-    (task
+  (task
      (loop [t 0 x (sample (dist/normal 0.0 1.0) :id [:x 0])]
        (sample (dist/normal x 1.0) :id [:y t] :stream true)
        (if (= t (dec (count ys)))
          x
-         (recur (inc t) (sample (dist/normal x 1.0) :id [:x (inc t)])))))))
+         (recur (inc t) (sample (dist/normal x 1.0) :id [:x (inc t)]))))))
 
 (defn- kalman
   "[mean var log-likelihood] of the filtering distribution after each y."
@@ -132,11 +132,10 @@
     ((:close step'))))
 
 (defn- endless-walk [root]
-  (binding [v2/*world* root]
-    (task
+  (task
      (loop [t 0 x (sample (dist/normal 0.0 1.0) :id [:x 0])]
        (sample (dist/normal x 1.0) :id [:y t] :stream true)
-       (recur (inc t) (sample (dist/normal x 1.0) :id [:x (inc t)]))))))
+       (recur (inc t) (sample (dist/normal x 1.0) :id [:x (inc t)])))))
 
 (deftest a-push-does-not-convert-the-history
   ;; The step measure is built at every push. Converting every particle's

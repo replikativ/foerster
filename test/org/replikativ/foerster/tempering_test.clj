@@ -73,7 +73,7 @@
 
 (deftest options-are-checked
   (let [root (v2/world)
-        model (binding [v2/*world* root] (bimodal))
+        model bimodal
         refusal (fn [f] (try (f) nil (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))]
     (is (= ::tp/invalid-waste-free (refusal #(tp/tempered model 10 {:waste-free 3}))))
     (is (= ::infer/invalid-world-policy (refusal #(infer/tempered-infer model 10 {:world-policy :elsewhere}))))

@@ -11,9 +11,8 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.inference.smc :as smc]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             [org.replikativ.spindel.v2.savepoint :as sp]
-            [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.foerster.runtime.execution :as executor]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.random :as random]))
@@ -79,7 +78,7 @@
 
 (deftest options-are-checked
   (let [root (v2/world)
-        model (binding [v2/*world* root] (static-model))
+        model static-model
         refusal (fn [opts] (try ((smc/smc model 10 opts) (fn [_]) (fn [_])) nil
                                 (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))]
     (is (= ::smc/rejuvenate-without-anchors (refusal {:rejuvenate {:moves 1}})))
@@ -99,22 +98,23 @@
     (is (< (Math/abs (- p b/varlen-truth)) 0.06) (str p " vs " b/varlen-truth))
     (is (pos? (:accepted (:rejuvenation measure))))))
 
-(defn- live-worlds [root]
-  (count (world-scope/handles @(:scope (sp/session root)))))
-
 (deftest moves-give-their-worlds-back
   ;; a displaced or rejected particle's world is released at once, not when
   ;; the session closes: the live worlds stay near N·(lag + 1)
   (random/set-seed! 15)
   (let [n 100
         root (v2/world)
-        live (promise)]
-    (binding [v2/*world* root]
-      ((smc/smc (fn [] (hmm)) n {:root root :resample-threshold 1.0
-                         :anchors {:lag 2} :rejuvenate {:moves 3}})
-       (fn [_] (deliver live (live-worlds root)))
-       (fn [e] (deliver live e))))
-    (let [worlds (deref live 120000 ::timeout)]
+        live (promise)
+        close! sp/close!]
+    ;; the worlds the session still holds when inference ends and closes it
+    (with-redefs [sp/close! (fn [s] (deliver live (count @(:worlds s))) (close! s))]
+      (binding [v2/*world* root]
+        (let [done (promise)]
+          ((smc/smc (fn [] (hmm)) n {:root root :resample-threshold 1.0
+                                     :anchors {:lag 2} :rejuvenate {:moves 3}})
+           #(deliver done %) #(deliver live %))
+          (deref done 120000 nil))))
+    (let [worlds (deref live 1000 ::timeout)]
       (is (and (number? worlds) (<= worlds (* 5 n))) (str worlds " live worlds")))))
 
 (deftest seeded-moves-reproduce-on-a-thread-pool
@@ -141,20 +141,19 @@
 
 (defn- await-cps [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [[k v] (deref result 120000 [:error (ex-info "timed out" {})])]
       (if (= :ok k) v (throw v)))))
 
 (def ^:private stream-ys [0.8 1.9 1.2 3.0 2.5])
 
 (defn- random-walk [root]
-  (binding [v2/*world* root]
-    (task
+  (task
      (loop [t 0 x (sample (dist/normal 0.0 1.0) :id [:x 0])]
        (sample (dist/normal x 1.0) :id [:y t] :stream true)
        (if (= t (dec (count stream-ys)))
          x
-         (recur (inc t) (sample (dist/normal x 1.0) :id [:x (inc t)])))))))
+         (recur (inc t) (sample (dist/normal x 1.0) :id [:x (inc t)]))))))
 
 (deftest streaming-with-a-lag-tracks-the-kalman-filter
   ;; the stream data stay fixed in every move; the last state follows the
@@ -186,8 +185,7 @@
   ;; the retained trajectory is drawn backwards through the moves before the
   ;; sweep, which needs stream values not yet seen
   (let [root (v2/world)
-        model (binding [v2/*world* root]
-                (task (let [x (sample (dist/bernoulli 0.5) :id :x)]
+        model (fn [] (task (let [x (sample (dist/bernoulli 0.5) :id :x)]
                         (sample (dist/flip 0.5) :id :y :stream true)
                         x)))
         p (promise)]

@@ -3,14 +3,14 @@
   world, so it forks with the particle and is discarded with it — Anglican's
   `mem` and its Chinese restaurant process, on spindel worlds.
 
-  `mem` turns a spin-returning function into one that computes each
+  `mem` turns a task-returning function into one that computes each
   argument list once per world: the first call samples, later calls (in the
   same particle, and in every particle forked after it) return that value.
   Nonparametric models are written with it, as a stick per index or a
   mean per cluster:
 
     (let [mean-of (process/mem (fn [k] (task (sample (dist/normal 0 10) :id [:mean k]))))]
-      (task … (await-op (mean-of 3)) …))
+      (task … (await (mean-of 3)) …))
 
   Name the sample sites inside a memoized function by its arguments, as
   above: a value is drawn once, at the first call.
@@ -23,18 +23,16 @@
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample]]
-            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]])
-  #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.foerster.runtime.async :refer [await-op]])))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task await]])
+  #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :as v2 :refer [task await]])))
 
 (defn- world [] (v2/current-world))
 
 (defn mem
-  "`f` (a function returning a spin or a value) memoized per world: each
+  "`f` (a function returning a task or a value) memoized per world: each
   argument list is computed once in a particle, and particles forked later
   share what was computed before the fork. Returns a function of the same
-  arguments returning a spin."
+  arguments returning a task."
   [f]
   (let [id #?(:clj (Object.) :cljs (js-obj))]
     (fn [& args]
@@ -45,7 +43,7 @@
          (if cached
            (first cached)
            (let [out (apply f args)
-                 v (if (v2/handle? out) (await-op out) out)]
+                 v (if (v2/handle? out) (await out) out)]
              (v2/update-in-world! (world) [:inference :mem key] (constantly [v]))
              v)))))))
 
@@ -57,7 +55,7 @@
 
 (defn crp-draw
   "Seat a customer in the Chinese restaurant process `name` with
-  concentration `alpha` > 0: a spin resolving the table index, an existing
+  concentration `alpha` > 0: a task resolving the table index, an existing
   table k with probability ∝ its customers, a new table (index = the number
   of tables) ∝ α. `:id` names the sample site."
   [name alpha & {:keys [id]}]

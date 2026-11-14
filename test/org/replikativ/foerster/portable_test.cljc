@@ -12,7 +12,7 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]])
   #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :as v2 :refer [task]])))
 
@@ -22,7 +22,7 @@
   (let [context (v2/world)
         finish (fn [outcome] (check outcome) (done))]
     (binding [v2/*world* context]
-      ((task-fn) finish finish))))
+      ((async/op-of (task-fn)) finish finish))))
 
 (defn- conjugate-model []
   ;; μ ~ N(0, 1), y ~ N(μ, 1), y = 1: posterior mean 0.5
@@ -62,7 +62,7 @@
   (is (= {:x 3.0 :y 7.0} (get-in population [0 :worlds :nested]))))
 
 (deftest counterfactual-world-composition-is-portable
-  (let [task #(cf/query (causal-model)
+  (let [task #(cf/query (fn [] (causal-model))
                         {:evidence {:x 1.0 :y 3.0}
                          :worlds [[:shifted {:x {:shift 1.0}}]
                                   [:nested (fn [worlds] {:x {:do (inc (get-in worlds [:shifted :x]))}})]]})]
@@ -75,7 +75,7 @@
   (ip/run {:seed 731}
           (fn [scope]
             (task
-             (let [p (await-op (ip/initialize scope (ip/trace-target (conjugate-model)) 64))
+             (let [p (await-op (ip/initialize scope (ip/trace-target (fn [] (conjugate-model))) 64))
                    p (ip/advance scope p (ip/temperature (:target p) 1.0))
                    p (await-op (ip/resample scope p))
                    p (await-op (ip/move scope p (k/single-site-mh-kernel 2)))]

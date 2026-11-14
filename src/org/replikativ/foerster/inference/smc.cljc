@@ -179,7 +179,7 @@
         (dotimes [i n]
           ((async/now sp/fork (nth sps i))
            (fn [child]
-             (aset children i child)
+             (aset children i (itrace/inherit-decision! (nth sps i) child))
              (when (zero? (swap! remaining dec))
                (resolve (vec children))))
            (fn [e] (when (compare-and-set! failed? false true) (reject e)))))))))
@@ -198,7 +198,7 @@
                                   ((async/now sp/copy (first group) (count group))
                                    #(vreset! out [:ok %]) #(vreset! out [:error %]))
                                   (case (first @out)
-                                    :ok [id (second @out)]
+                                    :ok [id (mapv #(itrace/inherit-decision! (first group) %) (second @out))]
                                     :error (throw (second @out))
                                     (throw (ex-info "A copy did not settle synchronously"
                                                     {:type ::asynchronous-copy}))))))
@@ -1137,16 +1137,17 @@
                   sp/result-site
                   (fn [{world :savepoint/world result :savepoint/payload}]
                     (if-let [slot (slot-of world)]
-                      (do (swap! state assoc-in [:done slot] {:sample (sample-of world result)
-                                                              :log-weight (weight-of world)
-                                                              :stage (stage-of world)})
-                  ;; the Sample holds what the measure needs; give the world
-                  ;; back now instead of holding every finished particle until
-                  ;; the session closes
-                          (sp/release-world! session world)
-                          (if batch
-                            (batch-finished! (stage-of world))
-                            (arrived!)))
+                      (let [stage (stage-of world)]
+                        (swap! state assoc-in [:done slot] {:sample (sample-of world result)
+                                                            :log-weight (weight-of world)
+                                                            :stage stage})
+                        ;; the Sample holds what the measure needs; give the
+                        ;; world back now instead of holding every finished
+                        ;; particle until the session closes
+                        (sp/release-world! session world)
+                        (if batch
+                          (batch-finished! stage)
+                          (arrived!)))
               ;; a program without savepoints: one deterministic particle
                       (finish! on-done (m/empirical (vec (repeat n [(sample-of world result) 0.0]))))))
                   sp/error-site

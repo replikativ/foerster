@@ -4,7 +4,8 @@
   The model is confounded: Z ~ N(0,1), X ~ N(Z,1), Y ~ N(X+Z,1). Seeing X = 1
   says something about Z (E[Y | X=1] = 1.5); setting X = 1 does not
   (E[Y | do(X=1)] = 1)."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.select :as sel]
@@ -32,7 +33,7 @@
 
 (defn- await-cps [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [outcome (deref result 20000 ::timeout)]
       (when (= ::timeout outcome)
         (throw (ex-info "CPS operation timed out" {})))
@@ -43,9 +44,9 @@
   [make policy-opts]
   (let [root (v2/world)
         session (sp/open! root {:seed (random/fresh-seed) :fork-opts {:systems :none} :retain-released? false})
-        t (await-cps (trace/run session (binding [v2/*world* root] (make))
+        t (await-cps (trace/run session make
                                 (itrace/policy policy-opts)))]
-    (await-cps ((sp/close! session) identity identity))
+    (await-cps (sp/close! session))
     [(:trace/result t) (itrace/log-weight t) t]))
 
 (defn- scm []

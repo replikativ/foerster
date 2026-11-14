@@ -1,17 +1,17 @@
 (ns org.replikativ.foerster.nested-filter-contract-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.dist :as d]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.inference.smc2 :as smc2]
             [org.replikativ.foerster.runtime.scope :as scope]
-            [org.replikativ.spindel.engine.core :as engine]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- run [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [[status value] (deref result 10000 [::timeout nil])]
       (case status
         :ok value
@@ -21,16 +21,16 @@
 (defn- with-root [f]
   (let [root (v2/world)]
     (try
-      (binding [engine/*execution-context* root] (f))
+      (binding [v2/*world* root] (f))
       (finally (v2/release-world! root)))))
 
 (deftest smc2-rejects-a-parameter-prior-after-an-inner-latent
   (with-root
     (fn []
-      (let [model (task (let [z (sample (d/flip 0.5) :id :z)
+      (let [model (fn [] (task (let [z (sample (d/flip 0.5) :id :z)
                               theta (sample (d/flip (if z 0.9 0.1)) :id :theta)]
                           (sample (d/flip (if theta 0.8 0.2)) :id :y :stream true)
-                          theta))]
+                          theta)))]
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"parameters must precede"
                               (run (smc2/smc2 model {:params #{:theta} :n-theta 2 :n-x 2 :seed 17}))))))))
 
@@ -38,9 +38,9 @@
   (with-root
     (fn []
       (let [executed (atom 0)
-            model (task (swap! executed inc)
+            model (fn [] (task (swap! executed inc)
                         (sample (d/flip 0.5) :id :theta)
-                        (sample (d/flip 0.5) :id :y :stream true))]
+                        (sample (d/flip 0.5) :id :y :stream true)))]
         (doseq [[option value type] [[:world-policy :fork ::smc2/unsupported-world-policy]
                                      [:world-opts {:systems :all} ::smc2/unsupported-world-policy]
                                      [:anchors :all ::smc2/nonforkable-inner-filter]
@@ -57,10 +57,10 @@
 (deftest dependent-parameters-are-allowed-within-the-prior-prefix
   (with-root
     (fn []
-      (let [model (task (let [a (sample (d/flip 0.5) :id :a)
+      (let [model (fn [] (task (let [a (sample (d/flip 0.5) :id :a)
                               b (sample (d/flip (if a 0.9 0.1)) :id :b)]
                           (sample (d/flip (if b 0.8 0.2)) :id :y :stream true)
-                          {:a a :b b}))
+                          {:a a :b b})))
             step (run (smc2/smc2 model {:params #{:a :b} :n-theta 3 :n-x 2 :seed 19}))]
         (try
           (is (false? (:done? step)))
@@ -74,9 +74,9 @@
 (deftest a-stream-step-cannot-consume-two-observations
   (with-root
     (fn []
-      (let [model (task (let [a (sample (d/normal 0 1) :id :y0 :stream true)
+      (let [model (fn [] (task (let [a (sample (d/normal 0 1) :id :y0 :stream true)
                               b (sample (d/normal 0 1) :id :y1 :stream true)]
-                          [a b]))
+                          [a b])))
             start (run (smc/stream model 2 {:seed 23}))]
         (try
           (let [next-step (run ((:push start) 1.0))]
@@ -91,11 +91,11 @@
 (deftest proposal-control-flow-cannot-break-the-parameter-prefix
   (with-root
     (fn []
-      (let [model (task (let [a (sample (d/uniform 0 1) :id :a)
+      (let [model (fn [] (task (let [a (sample (d/uniform 0 1) :id :a)
                               _ (when (> a 0.5) (sample (d/flip 0.5) :id :z))
                               b (sample (d/uniform 0 1) :id :b)]
                           (sample (d/flip 0.5) :id :y :stream true)
-                          [a b]))]
+                          [a b])))]
         (with-redefs-fn {#'smc2/prior-draw (fn [& _]
                                              (fn [resolve _] (resolve {:a 0.25 :b 0.25})))
                          #'smc2/random-walk (fn [_]
@@ -110,9 +110,9 @@
 (deftest a-stream-barrier-cannot-hide-unreached-parameters
   (with-root
     (fn []
-      (let [model (task (sample (d/flip 0.5) :id :a)
+      (let [model (fn [] (task (sample (d/flip 0.5) :id :a)
                         (sample (d/flip 0.5) :id :y :stream true)
-                        (sample (d/flip 0.5) :id :b))]
+                        (sample (d/flip 0.5) :id :b)))]
         (with-redefs-fn {#'smc2/prior-draw (fn [& _]
                                              (fn [resolve _] (resolve {:a true :b true})))}
           #(is (thrown-with-msg? clojure.lang.ExceptionInfo #"first inner stream barrier"

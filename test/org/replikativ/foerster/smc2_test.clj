@@ -2,7 +2,8 @@
   "PMMH and SMC² against exact answers: the observation noise s of a
   Gaussian random walk, whose likelihood the Kalman filter gives exactly, so
   its posterior and the evidence follow by quadrature over s."
-  (:require [clojure.test :refer [deftest is]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
@@ -59,14 +60,14 @@
 
 (defn- await-cps [operation]
   (let [p (promise)]
-    (operation #(deliver p [:ok %]) #(deliver p [:error %]))
+    ((async/op-of operation) #(deliver p [:ok %]) #(deliver p [:error %]))
     (let [[k v] (deref p 300000 [:error (ex-info "timed out" {})])]
       (if (= :ok k) v (throw v)))))
 
 (deftest smc2-tracks-the-noise-posterior-online
   (random/set-seed! 52)
   (let [root (v2/world)
-        step0 (await-cps (smc2/smc2 (fn [] (binding [v2/*world* root] (model true)))
+        step0 (await-cps (smc2/smc2 (fn [] (model true))
                                     {:params #{:s} :n-theta 40 :n-x 40 :ess-target 0.9}))
         final (reduce (fn [step y] (await-cps ((:push step) y))) step0 ys)
         measure (:measure final)
@@ -85,7 +86,7 @@
   (let [run (fn []
               (random/set-seed! 53)
               (let [root (v2/world)
-                    step0 (await-cps (smc2/smc2 (fn [] (binding [v2/*world* root] (model true)))
+                    step0 (await-cps (smc2/smc2 (fn [] (model true))
                                                 {:params #{:s} :n-theta 10 :n-x 10 :ess-target 0.9}))
                     final (reduce (fn [step y] (await-cps ((:push step) y))) step0 (take 4 ys))
                     out [(m/log-marginal (:measure final))
@@ -97,7 +98,7 @@
 (deftest smc2-counts-what-the-program-saw-before-the-stream
   (random/set-seed! 54)
   (let [root (v2/world)
-        step0 (await-cps (smc2/smc2 (fn [] (binding [v2/*world* root] (model true true)))
+        step0 (await-cps (smc2/smc2 (fn [] (model true true))
                                     {:params #{:s} :n-theta 40 :n-x 30}))
         final (reduce (fn [step y] (await-cps ((:push step) y))) step0 ys)
         measure (:measure final)

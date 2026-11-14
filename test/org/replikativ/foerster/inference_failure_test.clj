@@ -29,9 +29,9 @@
             ;; identically. This mirrors the production failure mode
             ;; (a broken model where `sample` runs outside spin context
             ;; and throws on every particle).
-                failing-model (task
-                               (throw (ex-info "model went boom"
-                                               {:reason :regression-test})))
+                failing-model (fn [] (task
+                                      (throw (ex-info "model went boom"
+                                                      {:reason :regression-test}))))
 
                 outer (task
                        (try
@@ -49,7 +49,7 @@
         ;; would block on the inference forever. 5s is generous — the
         ;; expected path is "fail fast, the moment any particle throws"
         ;; (well under 1s with 3 particles).
-                result (deref outer 5000 ::timed-out)]
+                result (v2/value outer 5000 ::timed-out)]
             (is (not= ::timed-out result)
                 "smc-infer must NOT hang when particles fail")
             (when (not= ::timed-out result)

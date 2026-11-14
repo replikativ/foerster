@@ -9,7 +9,7 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.runtime.trace-owner :as owner]
             [org.replikativ.spindel.v2.savepoint :as sp]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             
             ))
@@ -17,7 +17,7 @@
 (defn- run [make]
   (binding [v2/*world* (v2/world)]
     (let [p (promise)]
-      ((make) #(deliver p [:ok %]) #(deliver p [:error %]))
+      ((async/op-of (make)) #(deliver p [:ok %]) #(deliver p [:error %]))
       (let [[status result :as outcome] (deref p 30000 [::timeout nil])]
         (if (= :ok status) result
             (throw (if (= :error status) result (ex-info "Program timed out" {:outcome outcome}))))))))
@@ -34,7 +34,7 @@
       (let [result (run #(ip/run {:seed 42}
                                  (fn [scope]
                                    (task
-                                    (let [p (await-op (ip/initialize scope (ip/trace-target (coin-model)) 128))
+                                    (let [p (await-op (ip/initialize scope (ip/trace-target (fn [] (coin-model))) 128))
                                           p (ip/advance scope p (ip/temperature (:target p) 1.0))
                                           p (await-op (ip/resample scope p))
                                           p (await-op (ip/move scope p (k/single-site-mh-kernel 3)))]
@@ -54,7 +54,7 @@
   (let [result (run #(ip/run {:seed 5}
                              (fn [scope]
                                (task
-                                (let [p (await-op (ip/initialize scope (ip/trace-target (coin-model)) 1000))
+                                (let [p (await-op (ip/initialize scope (ip/trace-target (fn [] (coin-model))) 1000))
                                       p (ip/advance scope p (ip/temperature (:target p) 1.0))
                                       p (await-op (ip/resample scope p))]
                                   (ip/finish scope p))))))]
@@ -82,7 +82,7 @@
 
 (deftest unfinished-programs-and-incompatible-targets-are-refused
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Finish the population"
-                        (run #(ip/run (fn [scope] (ip/initialize scope (ip/trace-target (coin-model)) 2))))))
+                        (run #(ip/run (fn [scope] (ip/initialize scope (ip/trace-target (fn [] (coin-model))) 2))))))
   (is (thrown? clojure.lang.ExceptionInfo (ip/trace-target nil {:world-policy :elsewhere})))
   (is (thrown? clojure.lang.ExceptionInfo
                (ip/advance {:owner :a} {:owner :b} {}))))
@@ -172,7 +172,7 @@
       (let [result (run #(ip/run {:seed 42}
                                  (fn [scope]
                                    (task
-                                    (let [p (await-op (ip/initialize scope (ip/trace-target (coin-model) {:beta 1.0}) 4))
+                                    (let [p (await-op (ip/initialize scope (ip/trace-target (fn [] (coin-model)) {:beta 1.0}) 4))
                                           p (await-op (ip/move scope p (k/cycle 2 [(k/single-site-mh-kernel 10)])))]
                                       (ip/finish scope p))))))]
         (is (= 4 (count (m/get-particles result))))
@@ -188,7 +188,7 @@
         result (run #(ip/run {:seed 31}
                              (fn [scope]
                                (task
-                                (let [source (await-op (ip/initialize scope (ip/trace-target (coin-model)) 6))
+                                (let [source (await-op (ip/initialize scope (ip/trace-target (fn [] (coin-model))) 6))
                                       child (await-op (ip/fork scope source))
                                       parent (ip/advance scope source (ip/temperature (:target source) 1.0))
                                       _ (reset! stale (try (ip/finish scope source) nil
@@ -207,7 +207,7 @@
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #"frozen tuning"
                         (run #(ip/run (fn [scope]
                                         (task
-                                         (let [p (await-op (ip/initialize scope (ip/trace-target (coin-model) {:beta 1.0}) 2))
+                                         (let [p (await-op (ip/initialize scope (ip/trace-target (fn [] (coin-model)) {:beta 1.0}) 2))
                                                p (await-op (ip/move scope p
                                                                  (k/cycle 1 [(k/single-site-mh-kernel 1)
                                                                              (k/random-walk-mh-kernel 2 {:burn 1})])))]
@@ -231,7 +231,7 @@
   (let [escaped (atom nil)]
     (run #(ip/run (fn [scope]
                     (task
-                     (let [p (await-op (ip/initialize scope (ip/trace-target (coin-model)) 2))]
+                     (let [p (await-op (ip/initialize scope (ip/trace-target (fn [] (coin-model))) 2))]
                        (reset! escaped [scope p])
                        (ip/finish scope p))))))
     (let [[scope p] @escaped]
@@ -243,9 +243,9 @@
         result (run #(ip/run {:seed 42}
                              (fn [scope]
                                (task
-                                (let [model (task (let [h (sample (d/flip 0.5) :id :h)]
+                                (let [model (fn [] (task (let [h (sample (d/flip 0.5) :id :h)]
                                                     (observe (d/flip (if h 1.0 0.0)) true :id :y)
-                                                    h))
+                                                    h)))
                                       source (ip/trace-target model {:beta 1.0})
                                       destination (ip/temperature source 1.0)
                                       kernel (ip/transport-kernel source destination

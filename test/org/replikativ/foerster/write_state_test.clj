@@ -10,14 +10,14 @@
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.atom :as sa]
             [org.replikativ.spindel.core :as sp]
-            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.spindel.spin.keyed :refer [keyed]]))
 
 (defn- await* [op]
   (let [p (promise)]
-    (op #(deliver p [:ok %]) #(deliver p [:error %]))
+    ((async/op-of op) #(deliver p [:ok %]) #(deliver p [:error %]))
     (let [[k v] (deref p 30000 [:timeout nil])]
       (case k
         :ok v

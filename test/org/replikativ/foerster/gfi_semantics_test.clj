@@ -3,7 +3,8 @@
   kept values that leave their support, the densities of sites a replay draws
   afresh or drops, constrained sites across replays, and constraints the run
   never reaches. Each is checked against an exact answer."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.moves.involutive :as inv]
@@ -15,7 +16,7 @@
 
 (defn- await-cps [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [outcome (deref result 60000 ::timeout)]
       (when (= ::timeout outcome)
         (throw (ex-info "CPS operation timed out" {})))
@@ -39,30 +40,27 @@
   "x ~ Exp(1), z | x ~ U(0, x): no data, so the target is the prior,
   E[x] = 1 and E[z] = 1/2. Moving x below z leaves z outside its support."
   [root]
-  (binding [v2/*world* root]
-    (task (let [x (sample (dist/exponential 1.0) :id :x)
+  (task (let [x (sample (dist/exponential 1.0) :id :x)
                 z (sample (dist/uniform 0.0 x) :id :z)]
-            [x z]))))
+            [x z])))
 
 (defn- hierarchical
   "x ~ N(0,1), z | x ~ N(x,1), y = 2 | z ~ N(z,1)."
   [root]
-  (binding [v2/*world* root]
-    (task (let [x (sample (dist/normal 0.0 1.0) :id :x)
+  (task (let [x (sample (dist/normal 0.0 1.0) :id :x)
                 z (sample (dist/normal x 1.0) :id :z)]
             (observe (dist/normal z 1.0) 2.0 :id :y)
-            x))))
+            x)))
 
 (defn- switch
   "Which latent exists depends on b."
   [root]
-  (binding [v2/*world* root]
-    (task (let [b (sample (dist/flip 0.5) :id :b)
+  (task (let [b (sample (dist/flip 0.5) :id :b)
                 v (if b
                     (sample (dist/normal 0.0 1.0) :id :v0)
                     (sample (dist/normal 5.0 1.0) :id :v1))]
             (observe (dist/normal v 1.0) 5.0 :id :y)
-            b))))
+            b)))
 
 (def ^:private y-switch 2.0)
 
@@ -70,13 +68,12 @@
   "b ~ flip(1/2); v0 ~ N(0,1) drawn from its site proposal N(3,1) when b,
   else v1 ~ N(5,1); y = 2 ~ N(v,1). P(b | y) = N(2;0,√2) / (N(2;0,√2) + N(2;5,√2))."
   [root]
-  (binding [v2/*world* root]
-    (task (let [b (sample (dist/flip 0.5) :id :b)
+  (task (let [b (sample (dist/flip 0.5) :id :b)
                 v (if b
                     (sample (dist/normal 0.0 1.0) :id :v0 :proposal (dist/normal 3.0 1.0))
                     (sample (dist/normal 5.0 1.0) :id :v1))]
             (observe (dist/normal v 1.0) y-switch :id :y)
-            b))))
+            b)))
 
 (def ^:private exact-p-b
   (let [a (Math/exp (lp (dist/normal 0.0 (Math/sqrt 2.0)) y-switch))
@@ -124,8 +121,7 @@
   (random/set-seed! 5)
   (with-root [root]
     (let [proposal (fn [_choices]
-                     (binding [v2/*world* root]
-                       (task (sample (dist/exponential 1.0) :id :x))))
+                     (fn [] (task (sample (dist/exponential 1.0) :id :x))))
           samples (loop [t (await-cps (gfi/simulate (fn [] (nested-support root)))) i 0 acc []]
                     (if (= i 4000)
                       (do (await-cps (gfi/close! t)) acc)
@@ -159,8 +155,7 @@
   (random/set-seed! 13)
   (with-root [root]
     (let [flip-b (fn [{b :b}]
-                   (binding [v2/*world* root]
-                     (task (sample (dist/flip (if b 0.0 1.0)) :id :b))))
+                   (fn [] (task (sample (dist/flip (if b 0.0 1.0)) :id :b))))
           p (p-b-chain root (fn [t _] (gfi/mh-proposal t flip-b)) 12000)]
       (is (< (Math/abs (- p exact-p-b)) 0.04)
           (str "P(b) " p " exact " exact-p-b)))))
@@ -253,8 +248,7 @@
 
 (deftest update-reports-a-failing-replay
   (with-root [root]
-    (let [model (binding [v2/*world* root]
-                  (task (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+    (let [model (fn [] (task (let [x (sample (dist/normal 0.0 1.0) :id :x)]
                           (when (> x 5.0) (throw (ex-info "too large" {})))
                           (sample (dist/normal x 1.0) :id :z))))
           t (await-cps (gfi/simulate model))
@@ -267,8 +261,7 @@
   ;; z ~ U(x, x + 1/2): shifting x by 2 redraws z from its new support; the
   ;; reverse redraws it back, so the ratio is the prior ratio of x alone
   (with-root [root]
-    (let [model (binding [v2/*world* root]
-                  (task (let [x (sample (dist/normal 0.0 1.0) :id :x)
+    (let [model (fn [] (task (let [x (sample (dist/normal 0.0 1.0) :id :x)
                               z (sample (dist/uniform x (+ x 0.5)) :id :z)]
                           [x z])))
           shift {:propose (fn [_] {:aux 2.0 :log-q 0.0})
@@ -304,8 +297,7 @@
   ;; two runs from the same seeded trace propose the same moves, whatever the
   ;; process generator has drawn in between
   (with-root [root]
-    (let [proposal (fn [_] (binding [v2/*world* root]
-                             (task (sample (dist/normal 0.0 1.0) :id :x))))
+    (let [proposal (fn [_] (fn [] (task (sample (dist/normal 0.0 1.0) :id :x))))
           run (fn [noise]
                 (let [{t :trace} (await-cps (gfi/generate (fn [] (hierarchical root)) {} {:seed 9}))]
                   (dotimes [_ noise] (random/fresh-seed))

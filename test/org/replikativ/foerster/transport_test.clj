@@ -48,7 +48,7 @@
         result (b/run-infer 92 #(ip/run {:seed 92}
                                         (fn [scope]
                                           (task
-                                           (let [source (ip/trace-target (coin))
+                                           (let [source (ip/trace-target (fn [] (coin)))
                                                  destination (ip/temperature source 1.0)
                                                  kernel (ip/transport-kernel
                                                          source destination
@@ -77,7 +77,7 @@
        (b/run-infer 93 #(ip/run {:seed 93}
                                 (fn [scope]
                                   (task
-                                   (let [source (ip/trace-target (coin))
+                                   (let [source (ip/trace-target (fn [] (coin)))
                                          destination (ip/temperature source 1.0)
                                          kernel (ip/transport-kernel source destination
                                                                      (fn [_ _] {:updates {:typo true} :log-q 0.0 :log-jacobian 0.0})
@@ -93,7 +93,7 @@
                                 (fn [scope]
                                   (task
                                    (let [source (ip/value-target (constantly 0.0) (constantly 0.0) (constantly 0.0))
-                                         destination (ip/trace-target (coin))
+                                         destination (ip/trace-target (fn [] (coin)))
                                          kernel (ip/transport-kernel source destination
                                                                      (fn [x] {:value x :log-q 0.0 :log-jacobian 0.0})
                                                                      (fn [_ _] 0.0))

@@ -3,7 +3,8 @@
   a linear-Gaussian twin is exact, a confounded one is exact whatever the
   posterior over the confounder, and the probability of necessity of a binary
   model matches its analytic value."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.causal.counterfactual :as cf]
             [org.replikativ.foerster.model.mechanism :as mech]
             [org.replikativ.foerster.measure :as m]
@@ -17,16 +18,14 @@
 
 (defn- await-cps [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [outcome (deref result 60000 ::timeout)]
       (when (= ::timeout outcome)
         (throw (ex-info "CPS operation timed out" {})))
       (if (= :ok (first outcome)) (second outcome) (throw (second outcome))))))
 
-(def ^:private root (v2/world))
-
 (defmacro ^:private model [& body]
-  `(binding [v2/*world* root] (task ~@body)))
+  `(task ~@body))
 
 (defn- close? [a b] (< (Math/abs (- a b)) 1e-9))
 
@@ -104,10 +103,10 @@
 (deftest reusable-abduction-and-nested-worlds
   ;; X -> M -> Y plus X -> Y. Both intermediate and outcome noise must
   ;; survive interventions; natural direct effect fixes M from world x=0.
-  (let [program (model (let [x (sample (dist/normal 0 1) :id :x)
+  (let [program (fn [] (model (let [x (sample (dist/normal 0 1) :id :x)
                              z (sample (dist/normal x 1) :id :z)
                              y (sample (dist/normal (+ x z) 1) :id :y)]
-                         {:x x :z z :y y}))
+                         {:x x :z z :y y})))
         {t :trace} (await-cps (gfi/generate program {:x 1.0 :z 3.0 :y 7.0}))]
     (try
       (let [a (cf/abduct-trace t 0.0)
@@ -124,8 +123,8 @@
       (finally (await-cps (gfi/close! t))))))
 
 (deftest shifts-and-deterministic-interventions
-  (let [program (model (let [x (sample (dist/normal 2 3) :id :x)
-                             z (deterministic (* 2 x) :id :z)] [x z]))
+  (let [program (fn [] (model (let [x (sample (dist/normal 2 3) :id :x)
+                             z (deterministic (* 2 x) :id :z)] [x z])))
         {t :trace} (await-cps (gfi/generate program {:x 8.0}))]
     (try
       (let [a (cf/abduct-trace t)
@@ -137,7 +136,7 @@
 
 (deftest incomplete-observed-coupling-is-refused-or-predicted
   (let [law (reify dist/Distribution (-draw [_] 7.0) (-logpdf [_ _] 0.0))
-        program (model (observe law 99.0 :id :y))
+        program (fn [] (model (observe law 99.0 :id :y)))
         a {:factual 99.0 :noise {} :unsupported [:y] :weight 0.0}]
     (is (thrown? Exception (await-cps (cf/predict program a {}))))
     (let [r (await-cps (cf/predict program a {} {:strict? false}))]
@@ -159,7 +158,7 @@
     (is (= [1.0 3.0] (mapv #(get-in % [:noise :x]) draws)))))
 
 (deftest unified-query-accepts-posteriors-and-cross-world-events
-  (let [program (model (sample (dist/normal 0 1) :id :x))
+  (let [program (fn [] (model (sample (dist/normal 0 1) :id :x)))
         particle #(m/sample-particle % {:x {:value % :distribution (dist/normal 0 1)}})
         p (m/empirical [[(particle 1.0) (Math/log 0.25)] [(particle 3.0) (Math/log 0.75)]])
         r (await-cps (cf/query program {:posterior p :worlds [[:shifted {:x {:shift 2.0}}]]
@@ -168,7 +167,7 @@
     (is (= 5.0 (get-in r [0 :worlds :shifted])))
     (is (close? 3.0 (cf/expectation r #(get-in % [:worlds :factual])))))
   (is (thrown? Exception
-               (await-cps (cf/query (model (sample (dist/flip 0.5) :id :x))
+               (await-cps (cf/query (fn [] (model (sample (dist/flip 0.5) :id :x)))
                                     {:evidence {:x true} :particles 0})))))
 
 (deftest structural-laws-can-be-extended-and-categorical-abduction-is-supported
@@ -180,8 +179,8 @@
   (is (= [2 3] (dist/support (mech/shifted (dist/bernoulli 0.5) 2)))))
 
 (deftest noise-attribution-and-joint-repairs
-  (let [program (model (let [x (sample (dist/normal 0 1) :id :x)
-                             y (sample (dist/normal 0 1) :id :y)] (+ x y)))
+  (let [program (fn [] (model (let [x (sample (dist/normal 0 1) :id :x)
+                             y (sample (dist/normal 0 1) :id :y)] (+ x y))))
         a {:factual 5.0 :noise {:x 2.0 :y 3.0} :unsupported [] :weight 0.0}
         report (await-cps (attr/attribute-noise program a [{:x 0.0 :y 0.0}]
                                                 {:nodes [:x :y] :score identity}))

@@ -21,7 +21,7 @@
 (defn- posterior-mean [run]
   (let [world (v2/world)
         result (binding [v2/*world* world]
-                 (deref (run) 60000 ::timed-out))]
+                 (v2/value (run) 60000 ::timed-out))]
     (is (not= ::timed-out result) "inference finished")
     (when-not (= ::timed-out result)
       (:mean (infer/query result identity)))))
