@@ -3,14 +3,12 @@
   savepoint sites Gen-style addresses a caller can name from outside, and
   every trace entry records its path."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.spindel.engine.addressing :refer [with-scope]]
-            [org.replikativ.spindel.trace :as trace]
+            [org.replikativ.spindel.v2.trace :as trace]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.effects :refer [sample]]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.dist :as dist]))
 
 (defn- await-cps [operation]
@@ -26,15 +24,15 @@
   root world and session of its own; returns the trace."
   ([make] (run make {}))
   ([make constraints]
-   (let [root (context/create-execution-context)
+   (let [root (v2/world)
          session (sp/open! root {:fork-opts {:systems :none} :retain-released? false})
-         t (await-cps (trace/run session (binding [ec/*execution-context* root] (make))
+         t (await-cps (trace/run session (binding [v2/*world* root] (make))
                                  (itrace/policy {:constraints constraints})))]
-     (await-cps (sp/close! session))
+     (await-cps ((sp/close! session) identity identity))
      t)))
 
 (defn- steps []
-  (spin
+  (task
    (loop [i 0 xs []]
      (if (= i 3)
        xs
@@ -48,12 +46,12 @@
     (is (= [:step 1 :x] (get (trace/by-path t) [:step 1 :x])))))
 
 (deftest a-scalar-name-is-its-own-address
-  (let [t (run #(spin (sample (dist/normal 0.0 1.0) :id :top)))]
+  (let [t (run #(task (sample (dist/normal 0.0 1.0) :id :top)))]
     (is (= [:top] (:trace/order t)))
     (is (= [:top] (get-in t [:trace/entries :top :path])))))
 
 (defn- branchy []
-  (spin
+  (task
    (let [b (sample (dist/flip 0.5) :id :b)
          _ (when b (sample (dist/normal 0.0 1.0)))
          v (sample (dist/normal 0.0 1.0))]
@@ -71,13 +69,13 @@
 
 (deftest a-name-reused-in-one-run-is-an-error
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Duplicate site address"
-                        (run #(spin (loop [i 0]
+                        (run #(task (loop [i 0]
                                       (when (< i 2)
                                         (sample (dist/normal 0.0 1.0) :id :x)
                                         (recur (inc i)))))))))
 
 (deftest a-scope-prefixes-names-and-nests
-  (let [t (run #(spin
+  (let [t (run #(task
                  [(loop [i 0 xs []]
                     (if (= i 2)
                       xs
@@ -93,7 +91,7 @@
     (is (= 0.5 (second (first (:trace/result t)))) "constrained from outside by scoped name")))
 
 (deftest unnamed-sites-in-different-scopes-are-different-sites
-  (let [t (run #(spin [(with-scope [:a] (sample (dist/normal 0.0 1.0)))
+  (let [t (run #(task [(with-scope [:a] (sample (dist/normal 0.0 1.0)))
                        (with-scope [:b] (sample (dist/normal 0.0 1.0)))]))
         [pa pb] (map #(get-in t [:trace/entries % :path]) (:trace/order t))]
     (is (= 2 (count (distinct (:trace/order t)))))

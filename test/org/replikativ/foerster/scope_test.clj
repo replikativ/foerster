@@ -4,9 +4,7 @@
             [org.replikativ.spindel.effects.await :as await]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.foerster.runtime.scope :as scope]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- completion [operation]
   (let [p (promise)]
@@ -41,22 +39,22 @@
       (is (identical? error (second @(completion (scope/close! s))))))))
 
 (deftest inference-failure-remains-the-cause-if-cleanup-fails
-  (binding [ec/*execution-context* (ctx/create-execution-context)]
+  (binding [v2/*world* (v2/world)]
     (let [original (ex-info "model failure" {}) cleanup (ex-info "cleanup failure" {})
           [_ error] @(completion
                       (scope/run (fn [s]
                                    (scope/acquire! s (constantly :resource)
                                                    (fn [_] (fn [_ reject] (reject cleanup))))
-                                   (spin (throw original)))))]
+                                   (task (throw original)))))]
       (is (identical? original (ex-cause error)))
       (is (= ::scope/cleanup-failed (:type (ex-data error)))))))
 
 (deftest cancellation-awaits-asynchronous-resource-finalization
-  (let [root (ctx/create-execution-context)
+  (let [root (v2/world)
         entered (promise) releasing (promise) proceed (promise)
         task* (atom nil)
         outcome (future
-                  (binding [ec/*execution-context* root]
+                  (binding [v2/*world* root]
                     (let [task (scope/run
                                 (fn [s]
                                   (scope/acquire! s (constantly :resource)
@@ -67,14 +65,14 @@
                                                         @proceed
                                                         (binding [pcps/*in-trampoline* false]
                                                           (resolve nil))))))
-                                  (spin
+                                  (task
                                    (deliver entered true)
                                    (await/await (fn [_ _] nil)))))]
                       (reset! task* task)
                       (try @task (catch Throwable e e)))))]
     (try
       (is (= true (deref entered 5000 ::timeout)))
-      (binding [ec/*execution-context* root]
+      (binding [v2/*world* root]
         (spin-core/cancel-spin! @task*))
       (is (= true (deref releasing 5000 ::timeout)))
       (is (= ::waiting (deref outcome 20 ::waiting)))
@@ -82,7 +80,7 @@
       (let [error (deref outcome 5000 ::timeout)]
         (is (instance? Throwable error))
         (is (= spin-core/spin-cancelled (:type (ex-data error)))))
-      (finally (deliver proceed true) (ctx/close-context! root)))))
+      (finally (deliver proceed true) (v2/release-world! root)))))
 
 (deftest thousands-of-synchronous-releases-are-stack-safe-and-exactly-once
   (let [s (scope/create) released (atom [])]

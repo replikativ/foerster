@@ -12,20 +12,18 @@
             [org.replikativ.foerster.program :as ip]
             #?(:clj [org.replikativ.foerster.runtime.trace :as it])
             [org.replikativ.foerster.moves.transition :as transition]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.spindel.spin.keyed :refer [keyed]])
-  #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
+  #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :as v2 :refer [task]])))
 
 (defn- coin [i]
-  (spin (let [x (sample (d/flip 0.3) :id [:coin i])]
+  (task (let [x (sample (d/flip 0.3) :id [:coin i])]
           (observe (d/flip (if x 0.9 0.2)) true :id [:observed i])
           x)))
 
 (defn- keyed-model []
-  (spin (await (keyed :coins [0 1] coin))))
+  (task (await-op (keyed :coins [0 1] coin))))
 
 #?(:clj
    (do
@@ -39,9 +37,9 @@
      (deftest ordinary-public-mh-infers-keyed-only-models
   ;; Neither latent has a replay anchor. Public MH must discover keyed
   ;; ownership rather than requiring callers to select another driver.
-       (doseq [make [(fn [] (infer/infer (keyed-model) {:method :mh :iterations 2400 :chains 2
+       (doseq [make [(fn [] (infer/infer (fn [] (keyed-model)) {:method :mh :iterations 2400 :chains 2
                                                         :burn 400 :seed 401}))
-                     (fn [] (infer/kernel-infer (keyed-model)
+                     (fn [] (infer/kernel-infer (fn [] (keyed-model))
                                                 (k/single-site-mh-kernel 2400 {:samples :all :burn 400})
                                                 2 {:seed 402}))]]
          (let [measure (b/run-infer 400 make)
@@ -52,7 +50,7 @@
      (deftest finite-gibbs-composes-with-the-public-mh-driver
        (let [kernel (k/cycle 500 [(k/finite-gibbs-kernel 1 [:coin 0])
                                   (k/single-site-mh-kernel 1)] {:samples :all :burn 50})
-             measure (b/run-infer 403 #(infer/infer (keyed-model) {:method :kernel :kernel kernel
+             measure (b/run-infer 403 #(infer/infer (fn [] (keyed-model)) {:method :kernel :kernel kernel
                                                                    :chains 2 :seed 403}))
              samples (b/weighted-values measure)]
          (is (k/markov-kernel? (k/finite-gibbs-kernel 1 [:coin 0])))
@@ -70,21 +68,21 @@
               404
               #(ip/run {:seed 404}
                        (fn [scope]
-                         (spin
-                          (let [source (await (ip/initialize scope (ip/trace-target (keyed-model)) 8))
+                         (task
+                          (let [source (await-op (ip/initialize scope (ip/trace-target (keyed-model)) 8))
                                 _ (reset! before (mapv it/choices (:particles source)))
-                                child (await (ip/fork scope source))
+                                child (await-op (ip/fork scope source))
                                 child (ip/advance scope child (ip/temperature (:target child) 0.5))
-                                child (await (ip/resample scope child))
+                                child (await-op (ip/resample scope child))
                                 initial-mass (get-in child [:mass :log-mass])
-                                child (await (ip/move scope child
+                                child (await-op (ip/move scope child
                                                       (k/cycle 3 [(k/finite-gibbs-kernel 1 [:coin 0])
                                                                   (k/single-site-mh-kernel 1)])))
                                 _ (reset! after (mapv it/choices (:particles source)))
                                 _ (reset! masses [initial-mass (get-in child [:mass :log-mass])])
                             ;; Source worlds remain usable after the copied child
                             ;; moved and reclaimed its own intermediate states.
-                                source (await (ip/move scope source (k/finite-gibbs-kernel 1 [:coin 1])))
+                                source (await-op (ip/move scope source (k/finite-gibbs-kernel 1 [:coin 1])))
                                 child-result (ip/finish scope child)]
                             (ip/finish scope source)
                             child-result)))))]
@@ -94,10 +92,10 @@
          (is (= [:advance :resample :move] (mapv :operation (:history result))))))
 
      (deftest gibbs-with-source-retention-leaves-the-source-available
-       (let [root (ctx/create-execution-context)]
+       (let [root (v2/world)]
          (try
-           (binding [ec/*execution-context* root]
-             (let [source (:trace (await-cps (gfi/generate (keyed-model) {} {:seed 405})))
+           (binding [v2/*world* root]
+             (let [source (:trace (await-cps (gfi/generate (fn [] (keyed-model)) {} {:seed 405})))
                    original (it/choices source)]
                (try
                  (await-cps (it/update-gibbs source [:coin 0] {:iteration 0 :keep-old? true}))
@@ -108,25 +106,25 @@
                                                          {:iteration 1 :keep-old? true}))]
                    (is (= #{[:coin 0] [:coin 1]} (set (keys (it/choices (:trace again)))))))
                  (finally (await-cps (gfi/close! source))))))
-           (finally (ctx/stop-context! root)))))
+           (finally (v2/release-world! root)))))
 
      (defn- nested-coin [calls group i]
-       (spin (swap! calls update [group i] (fnil inc 0))
+       (task (swap! calls update [group i] (fnil inc 0))
              (let [x (sample (d/flip 0.3) :id [:nested group i])]
                (observe (d/flip (if x 0.9 0.2)) true :id [:nested-observed group i])
                x)))
 
      (defn- nested-group [calls group]
-       (spin (await (keyed :items [0 1] (fn [i] (nested-coin calls group i))))))
+       (task (await-op (keyed :items [0 1] (fn [i] (nested-coin calls group i))))))
 
      (defn- nested-model [calls]
-       (spin (await (keyed :groups [0] (fn [group] (nested-group calls group))))))
+       (task (await-op (keyed :groups [0] (fn [group] (nested-group calls group))))))
 
      (deftest finite-gibbs-reruns-only-the-owning-nested-key
-       (let [root (ctx/create-execution-context) calls (atom {})]
+       (let [root (v2/world) calls (atom {})]
          (try
-           (binding [ec/*execution-context* root]
-             (let [source (:trace (await-cps (gfi/generate (nested-model calls) {} {:seed 406})))
+           (binding [v2/*world* root]
+             (let [source (:trace (await-cps (gfi/generate (fn [] (nested-model calls)) {} {:seed 406})))
                    original (it/choices source)
                    before @calls]
                (try
@@ -145,29 +143,29 @@
                    (is (= (mapv (fn [group] (mapv #(get (it/choices chosen) [:nested group %]) [0 1])) [0])
                           (:trace/result chosen))))
                  (finally (await-cps (gfi/close! source))))))
-           (finally (ctx/stop-context! root)))))))
+           (finally (v2/release-world! root)))))))
 
 #?(:clj
    (do
      (defn- conditional-collections []
-       (spin
+       (task
         (let [prefix (sample (d/flip 0.5) :id :prefix)
-              switches (await (keyed :switches [0]
-                                     (fn [_] (spin (sample (d/flip 0.5) :id :switch)))))]
+              switches (await-op (keyed :switches [0]
+                                     (fn [_] (task (sample (d/flip 0.5) :id :switch)))))]
           (when (first switches)
-            (await (keyed :later [0]
-                          (fn [_] (spin (observe (d/flip 0.8) true :id :later-observation))))))
+            (await-op (keyed :later [0]
+                          (fn [_] (task (observe (d/flip 0.8) true :id :later-observation))))))
           [prefix (first switches)])))
 
      (deftest changing-an-earlier-collection-replays-the-prefix-before-dropping-a-later-one
-       (let [root (ctx/create-execution-context)]
+       (let [root (v2/world)]
          (try
-           (binding [ec/*execution-context* root]
+           (binding [v2/*world* root]
              (let [draw-switch (fn [value]
                                  (fn [site _]
                                    (when (= :switch (:savepoint/address site))
                                      {:value value :symmetric? true})))
-                   source (await-cps (gfi/run-policy (conditional-collections)
+                   source (await-cps (gfi/run-policy (fn [] (conditional-collections))
                                                      (it/policy {:draw (draw-switch true)}) {:seed 409}))]
                (try
                  (is (contains? (:trace/entries source) :later-observation))
@@ -178,19 +176,19 @@
                    (is (not (contains? (:trace/entries next) :later-observation)))
                    (is (= [(get (it/choices source) :prefix) false] (:trace/result next))))
                  (finally (await-cps (gfi/close! source))))))
-           (finally (ctx/stop-context! root)))))))
+           (finally (v2/release-world! root)))))))
 
 (defn- run-portable [make check done]
-  (let [root (ctx/create-execution-context)
+  (let [root (v2/world)
         finish (fn [result]
                  (try (check result)
-                      (finally (ctx/stop-context! root) (done))))]
-    (binding [ec/*execution-context* root]
+                      (finally (v2/release-world! root) (done))))]
+    (binding [v2/*world* root]
       ((make) finish finish))))
 
 (deftest finite-gibbs-and-mh-are-portable-public-kernels
   (let [task (fn []
-               (infer/infer (keyed-model)
+               (infer/infer (fn [] (keyed-model))
                             {:method :kernel :chains 1 :seed 407
                              :kernel (k/cycle 4 [(k/finite-gibbs-kernel 1 [:coin 0])
                                                  (k/single-site-mh-kernel 1)])}))
@@ -209,12 +207,12 @@
   (let [task (fn []
                (ip/run {:seed 408}
                        (fn [scope]
-                         (spin
-                          (let [source (await (ip/initialize scope (ip/trace-target (keyed-model)) 4))
-                                child (await (ip/fork scope source))
+                         (task
+                          (let [source (await-op (ip/initialize scope (ip/trace-target (keyed-model)) 4))
+                                child (await-op (ip/fork scope source))
                                 child (ip/advance scope child (ip/temperature (:target child) 0.5))
-                                child (await (ip/resample scope child))
-                                child (await (ip/move scope child (k/finite-gibbs-kernel 1 [:coin 0])))
+                                child (await-op (ip/resample scope child))
+                                child (await-op (ip/move scope child (k/finite-gibbs-kernel 1 [:coin 0])))
                                 result (ip/finish scope child)]
                             (ip/finish scope source)
                             result)))))

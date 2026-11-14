@@ -9,18 +9,18 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- model []
   ;; x ~ Bernoulli(½), y ~ Flip(x ? 0.9 : 0.1); conditioned on y = true from
   ;; outside, P(x = 1) = 0.9
-  (spin
+  (task
    (let [x (sample (dist/bernoulli 0.5) :id :x)]
      (sample (dist/flip (if (= 1 x) 0.9 0.1)) :id :y)
      x)))
 
 (deftest the-retained-particle-is-conditioned-like-the-others
-  (let [measure (b/run-infer 21 #(infer/infer (model) {:method :pgibbs :particles 2 :iterations 4000
+  (let [measure (b/run-infer 21 #(infer/infer (fn [] (model)) {:method :pgibbs :particles 2 :iterations 4000
                                                        :policy (itrace/policy {:constraints {:y true}})}))
         {:keys [mean]} (d/summary measure identity)]
     (is (< (Math/abs (- mean 0.9)) 0.03) (str "P(x = 1) " mean))))
@@ -28,12 +28,12 @@
 (defn- guided-branch []
   ;; k ~ Bernoulli(½); with k = 1 a site b ~ Flip(½) that a replay draws
   ;; from its guide Flip(0.9): the guide must not shift the posterior
-  (spin
+  (task
    (let [k (sample (dist/bernoulli 0.5) :id :k)]
      [k (when (= 1 k) (sample (dist/flip 0.5) :id :b :proposal (dist/flip 0.9)))])))
 
 (deftest mh-scores-a-guided-site-it-drops-under-its-guide
-  (let [measure (b/run-infer 22 #(infer/infer (guided-branch) {:method :mh :iterations 6000 :chains 2 :burn 500}))
+  (let [measure (b/run-infer 22 #(infer/infer (fn [] (guided-branch)) {:method :mh :iterations 6000 :chains 2 :burn 500}))
         vs (map (comp m/get-value first) (m/get-particles measure))
         born (filter #(= 1 (first %)) vs)
         pk (/ (count born) (double (count vs)))
@@ -44,7 +44,7 @@
 (deftest particle-gibbs-with-moves-recovers-the-posterior
   ;; the retained particle moves too (`smc/retained-stages`); its exactness is
   ;; checked by enumeration in `sweep-enumeration-test`, this is the API path
-  (let [measure (b/run-infer 23 #(infer/infer (model) {:method :pgibbs :particles 3 :iterations 3000
+  (let [measure (b/run-infer 23 #(infer/infer (fn [] (model)) {:method :pgibbs :particles 3 :iterations 3000
                                                        :anchors :all :rejuvenate {:moves 1}
                                                        :policy (itrace/policy {:constraints {:y true}})}))
         {:keys [mean]} (d/summary measure identity)]
@@ -54,7 +54,7 @@
   "x1 ~ flip(½) → y1; x2 ~ flip(x1 ? 0.1 : 0.9) → y2; x3 ~ flip(x2 ? 0.1 :
   0.9) → y3, every y observed true."
   []
-  (spin
+  (task
    (let [x1 (sample (dist/flip 0.5) :id :x1)
          _ (observe (dist/flip (if x1 0.8 0.2)) true :id :y1)
          x2 (sample (dist/flip (if x1 0.1 0.9)) :id :x2)
@@ -75,8 +75,8 @@
   ;; often (P(x1) ≈ 0.5). Over six seeds the fixed chain gave 0.785–0.821 and
   ;; TV 0.013–0.078.
   (let [policy (itrace/policy {:interventions {:x2 true}})
-        exact (law (b/run-infer 1 #(infer/infer (chain-hmm) {:method :enumerate :policy policy})))
-        chain (law (b/run-infer 5 #(infer/pgas-infer (chain-hmm) 2 1000 {:policy policy :seed 5})))
+        exact (law (b/run-infer 1 #(infer/infer (fn [] (chain-hmm)) {:method :enumerate :policy policy})))
+        chain (law (b/run-infer 5 #(infer/pgas-infer (fn [] (chain-hmm)) 2 1000 {:policy policy :seed 5})))
         p-x1 (fn [law] (reduce + (map (fn [[xs w]] (if (first xs) w 0.0)) law)))
         tv (* 0.5 (reduce + (map #(Math/abs (- (get chain % 0.0) (get exact % 0.0)))
                                  (distinct (concat (keys chain) (keys exact))))))]

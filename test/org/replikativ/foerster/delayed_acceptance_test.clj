@@ -12,7 +12,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.moves.kernel :as k]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 ;; y_i ~ N(a + b·x_i, σ = 0.5), (a, b) ~ N(0, I): a conjugate posterior
 (def ^:private xs [-1.0 -0.6 -0.2 0.1 0.4 0.7 1.0 1.3])
@@ -41,7 +41,7 @@
                                          [(* -0.5 (+ (* a a) (* b b))) (double-array [(- a) (- b)])]))}))
 
 (defn- model []
-  (spin (let [[a b] (sample (block/block-dist prior-block nil) :id :theta :init [0.0 0.0])]
+  (task (let [[a b] (sample (block/block-dist prior-block nil) :id :theta :init [0.0 0.0])]
           (loop [i 0]
             (when (< i (count xs))
               (observe (dist/normal (+ a (* b (nth xs i))) sigma) (nth ys i) :id [:y i])
@@ -54,7 +54,7 @@
   (fn [th] (reduce + (map (fn [x m s] (let [z (/ (- x m) s)] (* -0.5 z z))) th mu sds))))
 
 (defn- run [coarse]
-  (b/run-infer 41 #(infer/kernel-infer (model)
+  (b/run-infer 41 #(infer/kernel-infer (fn [] (model))
                                        (k/delayed-acceptance-kernel 3000 {:theta coarse}
                                                                     {:scales 0.15 :samples :all :burn 300})
                                        4)))
@@ -84,11 +84,11 @@
   ;; :y exists only while x's first coordinate is positive: a move of :x
   ;; that makes it negative takes :y out of the path
   (let [coarse (fn [th] (let [[u v] th] (* -0.5 (+ (* u u) (* v v)))))
-        model #(spin (let [[x0] (sample (block/block-dist pair-block nil) :id :x :init [0.5 0.0])]
+        model #(task (let [[x0] (sample (block/block-dist pair-block nil) :id :x :init [0.5 0.0])]
                        (when (pos? x0)
                          (sample (block/block-dist pair-block nil) :id :y :init [0.0 0.0]))
                        x0))
-        measure (b/run-infer 5 #(infer/kernel-infer (model)
+        measure (b/run-infer 5 #(infer/kernel-infer (fn [] (model))
                                                     (k/delayed-acceptance-kernel 200 {:x coarse :y coarse}
                                                                                  {:scales 1.0 :samples :all})
                                                     2))]
@@ -108,10 +108,10 @@
   ;; causes here is below what this sample size can see, so this is a
   ;; sanity check of the conditional-block path, not a detector of it.
   (let [coarse (fn [th] (let [[u v] th] (* -0.5 (+ (* u u) (* v v)))))
-        model #(spin (let [[x0] (sample (block/block-dist pair-block nil) :id :x :init [0.5 0.0])
+        model #(task (let [[x0] (sample (block/block-dist pair-block nil) :id :x :init [0.5 0.0])
                            y (when (pos? x0) (sample (block/block-dist pair-block nil) :id :y :init [0.0 0.0]))]
                        {:x0 x0 :y0 (first y)}))
-        measure (b/run-infer 9 #(infer/kernel-infer (model)
+        measure (b/run-infer 9 #(infer/kernel-infer (fn [] (model))
                                                     (k/delayed-acceptance-kernel 20000 {:x coarse :y coarse}
                                                                                  {:scales 1.2 :samples :all :burn 500})
                                                     4))
@@ -133,7 +133,7 @@
         (str error))))
 
 (deftest scales-must-match-the-block
-  (let [error (try (b/run-infer 3 #(infer/kernel-infer (model)
+  (let [error (try (b/run-infer 3 #(infer/kernel-infer (fn [] (model))
                                                        (k/delayed-acceptance-kernel 10 {:theta (constantly 0.0)}
                                                                                     {:scales [0.15]})
                                                        1))

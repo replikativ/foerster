@@ -11,13 +11,11 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.inference.smc :as smc]
-            [org.replikativ.spindel.effects.await :as aw]
-            [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.spindel.world.scope :as world-scope]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.engine.executor :as executor]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.foerster.runtime.execution :as executor]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.random :as random]))
 
 ;; μ ~ N(0,1), y_i ~ N(μ,1), 50 observations: μ | y ~ N(Σy/51, 1/51)
@@ -27,7 +25,7 @@
 (def ^:private truth [(/ (reduce + ys) 51.0) (Math/sqrt (/ 1.0 51.0))])
 
 (defn- static-model []
-  (spin (let [mu (sample (dist/normal 0.0 1.0) :id :mu)]
+  (task (let [mu (sample (dist/normal 0.0 1.0) :id :mu)]
           (loop [i 0]
             (when (< i (count ys))
               (observe (dist/normal mu 1.0) (nth ys i) :id [:y i])
@@ -35,8 +33,8 @@
           mu)))
 
 (deftest a-static-parameter-stays-diverse-and-exact
-  (let [plain (b/weighted-values (b/run-infer 5 #(smc/smc (static-model) 200 {})))
-        moved (b/run-infer 5 #(smc/smc (static-model) 200
+  (let [plain (b/weighted-values (b/run-infer 5 #(smc/smc (fn [] (static-model)) 200 {})))
+        moved (b/run-infer 5 #(smc/smc (fn [] (static-model)) 200
                                        {:anchors #{:mu}
                                         :rejuvenate {:moves 2 :propose (proposal/random-walk 0.2)}}))
         wv (b/weighted-values moved)]
@@ -53,9 +51,9 @@
 (deftest moving-every-state-lowers-the-hmm-error
   ;; every state anchored: moves rejuvenate the degenerate past, which the
   ;; smoothing marginals the error measures depend on
-  (let [plain (b/hmm-error (b/weighted-values (b/run-infer 11 #(smc/smc (hmm) 300 {:resample-threshold 1.0}))))
+  (let [plain (b/hmm-error (b/weighted-values (b/run-infer 11 #(smc/smc (fn [] (hmm)) 300 {:resample-threshold 1.0}))))
         moved (b/hmm-error (b/weighted-values
-                            (b/run-infer 11 #(smc/smc (hmm) 300 {:resample-threshold 1.0
+                            (b/run-infer 11 #(smc/smc (fn [] (hmm)) 300 {:resample-threshold 1.0
                                                                  :anchors :all
                                                                  :rejuvenate {:moves 2}}))))]
     (is (< moved 0.045) (str "rms " moved))
@@ -63,7 +61,7 @@
 
 (deftest a-lag-window-bounds-the-live-anchors
   (let [n 100
-        measure (b/run-infer 12 #(smc/smc (hmm) n {:resample-threshold 1.0
+        measure (b/run-infer 12 #(smc/smc (fn [] (hmm)) n {:resample-threshold 1.0
                                                    :anchors {:lag 2}
                                                    :rejuvenate {:moves 1}}))
         {:keys [max-anchors moves]} (:rejuvenation measure)]
@@ -74,14 +72,14 @@
 (deftest seeded-resample-move-reproduces
   (let [run (fn [] (let [exec (executor/thread-pool-executor {:threads 4})]
                      (try (b/weighted-values
-                           (b/run-infer 13 #(smc/smc (static-model) 50
+                           (b/run-infer 13 #(smc/smc (fn [] (static-model)) 50
                                                      {:executor exec :anchors :all :rejuvenate {:moves 1}})))
                           (finally (.close ^java.lang.AutoCloseable exec)))))]
     (is (= (run) (run)))))
 
 (deftest options-are-checked
-  (let [root (context/create-execution-context)
-        model (binding [ec/*execution-context* root] (static-model))
+  (let [root (v2/world)
+        model (binding [v2/*world* root] (static-model))
         refusal (fn [opts] (try ((smc/smc model 10 opts) (fn [_]) (fn [_])) nil
                                 (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))]
     (is (= ::smc/rejuvenate-without-anchors (refusal {:rejuvenate {:moves 1}})))
@@ -95,7 +93,7 @@
 (deftest a-move-may-change-how-many-observations-there-are
   ;; b = true adds an observation: a move flipping b at the second barrier
   ;; would end the program before reaching it, and is rejected
-  (let [measure (b/run-infer 14 #(smc/smc (b/varlen-model) 500
+  (let [measure (b/run-infer 14 #(smc/smc (fn [] (b/varlen-model)) 500
                                           {:resample-threshold 1.0 :anchors :all :rejuvenate {:moves 2}}))
         p (b/w-mean #(if % 1.0 0.0) (b/weighted-values measure))]
     (is (< (Math/abs (- p b/varlen-truth)) 0.06) (str p " vs " b/varlen-truth))
@@ -109,10 +107,10 @@
   ;; the session closes: the live worlds stay near N·(lag + 1)
   (random/set-seed! 15)
   (let [n 100
-        root (context/create-execution-context)
+        root (v2/world)
         live (promise)]
-    (binding [ec/*execution-context* root]
-      ((smc/smc (hmm) n {:root root :resample-threshold 1.0
+    (binding [v2/*world* root]
+      ((smc/smc (fn [] (hmm)) n {:root root :resample-threshold 1.0
                          :anchors {:lag 2} :rejuvenate {:moves 3}})
        (fn [_] (deliver live (live-worlds root)))
        (fn [e] (deliver live e))))
@@ -123,17 +121,17 @@
   ;; latents in awaited sub-spins run concurrently; siblings share anchors,
   ;; and every replay names its seed
   (let [ys (vec (take 12 ys))
-        step (fn [t x] (spin (sample (dist/normal x 1.0) :id [:x t])))
+        step (fn [t x] (task (sample (dist/normal x 1.0) :id [:x t])))
         model (fn []
-                (spin (loop [t 0 x 0.0]
+                (task (loop [t 0 x 0.0]
                         (if (= t (count ys))
                           x
-                          (let [x' (aw/await (step t x))]
+                          (let [x' (await-op (step t x))]
                             (observe (dist/normal x' 1.0) (nth ys t) :id [:y t])
                             (recur (inc t) x'))))))
         run (fn [] (let [exec (executor/thread-pool-executor {:threads 4})]
                      (try (b/weighted-values
-                           (b/run-infer 16 #(smc/smc (model) 60
+                           (b/run-infer 16 #(smc/smc (fn [] (model)) 60
                                                      {:executor exec :resample-threshold 1.0
                                                       :anchors :all :rejuvenate {:moves 3}})))
                           (finally (.close ^java.lang.AutoCloseable exec)))))]
@@ -150,8 +148,8 @@
 (def ^:private stream-ys [0.8 1.9 1.2 3.0 2.5])
 
 (defn- random-walk [root]
-  (binding [ec/*execution-context* root]
-    (spin
+  (binding [v2/*world* root]
+    (task
      (loop [t 0 x (sample (dist/normal 0.0 1.0) :id [:x 0])]
        (sample (dist/normal x 1.0) :id [:y t] :stream true)
        (if (= t (dec (count stream-ys)))
@@ -162,8 +160,8 @@
   ;; the stream data stay fixed in every move; the last state follows the
   ;; Kalman filter
   (random/set-seed! 6)
-  (let [root (context/create-execution-context)
-        step0 (await-cps (smc/stream (random-walk root) 2000
+  (let [root (v2/world)
+        step0 (await-cps (smc/stream (fn [] (random-walk root)) 2000
                                      {:resample-threshold 1.0 :anchors {:lag 1} :rejuvenate {:moves 1}
                                       :executor (executor/thread-pool-executor {:threads 1})}))
         final (reduce (fn [step y] (await-cps ((:push step) y))) step0 stream-ys)
@@ -187,9 +185,9 @@
 (deftest conditional-moves-are-refused-in-a-stream
   ;; the retained trajectory is drawn backwards through the moves before the
   ;; sweep, which needs stream values not yet seen
-  (let [root (context/create-execution-context)
-        model (binding [ec/*execution-context* root]
-                (spin (let [x (sample (dist/bernoulli 0.5) :id :x)]
+  (let [root (v2/world)
+        model (binding [v2/*world* root]
+                (task (let [x (sample (dist/bernoulli 0.5) :id :x)]
                         (sample (dist/flip 0.5) :id :y :stream true)
                         x)))
         p (promise)]

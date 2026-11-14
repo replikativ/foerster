@@ -10,9 +10,7 @@
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.inference.smc2 :as smc2]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 ;; x_t = x_{t-1} + N(0,1), y_t ~ N(x_t, s), s ~ U(0.3, 2.0)
 (def ^:private ys [0.4 -0.6 1.9 0.2 2.8 1.1 3.5 2.0])
@@ -20,7 +18,7 @@
 (defn- model
   ([stream?] (model stream? false))
   ([stream? pre?]
-   (spin (let [s (sample (dist/uniform 0.3 2.0) :id :s)]
+   (task (let [s (sample (dist/uniform 0.3 2.0) :id :s)]
           ;; with pre?, an observation of s before the stream begins
            (when pre? (observe (dist/normal s 0.5) 1.4 :id :pre))
            (loop [t 0 x 0.0]
@@ -52,7 +50,7 @@
       :log-evidence (Math/log (/ z 1.7))})))
 
 (deftest pmmh-finds-the-noise-posterior
-  (let [measure (b/run-infer 51 #(smc2/pmmh (model false) 40 150
+  (let [measure (b/run-infer 51 #(smc2/pmmh (fn [] (model false)) 40 150
                                             {:params #{:s} :scale 0.3 :burn 30}))
         thetas (map :s (:thetas measure))
         mean (/ (reduce + thetas) (count thetas))]
@@ -67,8 +65,8 @@
 
 (deftest smc2-tracks-the-noise-posterior-online
   (random/set-seed! 52)
-  (let [root (context/create-execution-context)
-        step0 (await-cps (smc2/smc2 (binding [ec/*execution-context* root] (model true))
+  (let [root (v2/world)
+        step0 (await-cps (smc2/smc2 (fn [] (binding [v2/*world* root] (model true)))
                                     {:params #{:s} :n-theta 40 :n-x 40 :ess-target 0.9}))
         final (reduce (fn [step y] (await-cps ((:push step) y))) step0 ys)
         measure (:measure final)
@@ -86,8 +84,8 @@
 (deftest seeded-smc2-reproduces
   (let [run (fn []
               (random/set-seed! 53)
-              (let [root (context/create-execution-context)
-                    step0 (await-cps (smc2/smc2 (binding [ec/*execution-context* root] (model true))
+              (let [root (v2/world)
+                    step0 (await-cps (smc2/smc2 (fn [] (binding [v2/*world* root] (model true)))
                                                 {:params #{:s} :n-theta 10 :n-x 10 :ess-target 0.9}))
                     final (reduce (fn [step y] (await-cps ((:push step) y))) step0 (take 4 ys))
                     out [(m/log-marginal (:measure final))
@@ -98,8 +96,8 @@
 
 (deftest smc2-counts-what-the-program-saw-before-the-stream
   (random/set-seed! 54)
-  (let [root (context/create-execution-context)
-        step0 (await-cps (smc2/smc2 (binding [ec/*execution-context* root] (model true true))
+  (let [root (v2/world)
+        step0 (await-cps (smc2/smc2 (fn [] (binding [v2/*world* root] (model true true)))
                                     {:params #{:s} :n-theta 40 :n-x 30}))
         final (reduce (fn [step y] (await-cps ((:push step) y))) step0 ys)
         measure (:measure final)

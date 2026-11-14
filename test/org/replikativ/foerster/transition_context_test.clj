@@ -11,9 +11,8 @@
             [org.replikativ.foerster.runtime.trace :as it]
             [org.replikativ.foerster.moves.transition :as transition]
             [org.replikativ.foerster.moves.transition-context :as tc]
-            [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.trace :as trace]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- await-cps [op]
   (let [p (promise)]
@@ -128,7 +127,7 @@
                                     (apply adapt state i args))}
       #(b/run-infer 893 (fn []
                           (infer/kernel-infer
-                           (spin (sample (block/block-dist gaussian nil) :id :x :init [0.2]))
+                           (fn [] (task (sample (block/block-dist gaussian nil) :id :x :init [0.2])))
                            (k/cycle 11 [(k/single-site-mh-kernel 100)
                                         (k/within-gibbs (k/nuts-kernel 1 {:burn 10}))]) 1))))
     (is (= (range 10) @seen))))

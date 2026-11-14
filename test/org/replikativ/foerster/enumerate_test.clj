@@ -9,13 +9,13 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- burglary
   "Pearl's alarm network: burglary and earthquake set off the alarm, which
   John reports."
   []
-  (spin
+  (task
    (let [burglary (sample (dist/flip 0.01) :id :burglary)
          quake (sample (dist/flip 0.02) :id :quake)
          alarm (sample (dist/flip (cond (and burglary quake) 0.95 burglary 0.94 quake 0.29 :else 0.001)) :id :alarm)]
@@ -31,7 +31,7 @@
     {:p (/ (reduce + (map second (filter first states))) z) :log-z (Math/log z)}))
 
 (deftest enumeration-is-exact
-  (let [measure (b/run-infer 91 #(infer/infer (burglary) {:method :enumerate}))
+  (let [measure (b/run-infer 91 #(infer/infer (fn [] (burglary)) {:method :enumerate}))
         p (reduce + (map (fn [[s w]] (if (m/get-value s) w 0.0))
                          (map vector (map first (m/get-particles measure))
                               (weights/normalize-log-weights (mapv second (m/get-particles measure))))))]
@@ -41,10 +41,10 @@
 
 (deftest branches-depend-on-earlier-choices
   ;; k ~ uniform{1,2,3}; x ~ binomial(k, ½); observe x = 1 through a factor
-  (let [measure (b/run-infer 92 #(infer/infer (spin (let [k (sample (dist/uniform-discrete 1 4) :id :k)
+  (let [measure (b/run-infer 92 #(infer/infer (fn [] (task (let [k (sample (dist/uniform-discrete 1 4) :id :k)
                                                           x (sample (dist/binomial k 0.5) :id :x)]
                                                       (factor (if (= x 1) 0.0 ##-Inf))
-                                                      k))
+                                                      k)))
                                               {:method :enumerate}))
         ;; P(x = 1 | k) = k / 2^k: 1/2, 1/2, 3/8
         w {1 0.5 2 0.5 3 0.375}
@@ -58,7 +58,7 @@
 
 (deftest continuous-sites-are-refused
   (is (= ::enumerate/infinite-support
-         (try (b/run-infer 93 #(infer/infer (spin (sample (dist/normal 0.0 1.0) :id :x)) {:method :enumerate}))
+         (try (b/run-infer 93 #(infer/infer (fn [] (task (sample (dist/normal 0.0 1.0) :id :x))) {:method :enumerate}))
               nil
               (catch clojure.lang.ExceptionInfo e
                 (:type (ex-data (or (ex-cause e) e))))))))
@@ -66,14 +66,14 @@
 (deftest impossible-branches-are-dropped
   ;; the only possible outcome is :ok; the branch with the continuous site
   ;; has probability zero and must not be run on
-  (let [measure (b/run-infer 1 #(infer/infer (spin (if (sample (dist/flip 0.0) :id :z)
+  (let [measure (b/run-infer 1 #(infer/infer (fn [] (task (if (sample (dist/flip 0.0) :id :z)
                                                      (sample (dist/normal 0.0 1.0) :id :x)
-                                                     :ok))
+                                                     :ok)))
                                              {:method :enumerate}))]
     (is (= [:ok] (mapv (comp m/get-value first) (m/get-particles measure))))))
 
 (deftest nil-is-an-observable-outcome
-  (let [measure (b/run-infer 2 #(infer/infer (spin (observe (dist/categorical {nil 1.0 :a 3.0}) nil :id :y) :done)
+  (let [measure (b/run-infer 2 #(infer/infer (fn [] (task (observe (dist/categorical {nil 1.0 :a 3.0}) nil :id :y) :done))
                                              {:method :enumerate}))]
     (is (< (Math/abs (- (m/log-marginal measure) (Math/log 0.25))) 1e-12))))
 
@@ -85,7 +85,7 @@
   "x ~ flip(0.3); observe flip(x ? 0.9 : 0.1) = true. With `world-do`, the
   model first intervenes on x in its own world (`intervene!`)."
   [world-do]
-  (spin
+  (task
    (when (some? world-do) (intervene! :x world-do))
    (let [x (sample (dist/flip 0.3) :id :x)]
      (observe (dist/flip (if x 0.9 0.1)) true :id :y)
@@ -114,11 +114,11 @@
            ["temperature" nil {:policy (itrace/policy {:temperature 0.5})}
             (+ (* 0.3 (Math/sqrt 0.9)) (* 0.7 (Math/sqrt 0.1)))
             (/ (* 0.3 (Math/sqrt 0.9)) (+ (* 0.3 (Math/sqrt 0.9)) (* 0.7 (Math/sqrt 0.1)))) 2]]]
-    (let [exact (b/run-infer 3 #(infer/infer (noisy-flip world-do) (assoc opts :method :enumerate)))
+    (let [exact (b/run-infer 3 #(infer/infer (fn [] (noisy-flip world-do)) (assoc opts :method :enumerate)))
           [ez ep] (evidence-and-p-true exact)
           ;; importance sampling under the same policy agrees
           [iz ip] (evidence-and-p-true
-                   (b/run-infer 4 #(infer/infer (noisy-flip world-do)
+                   (b/run-infer 4 #(infer/infer (fn [] (noisy-flip world-do))
                                                 (assoc opts :method :importance :particles 4000 :seed 4))))]
       (is (< (Math/abs (- ez z)) 1e-12) (str label ": evidence " ez))
       (is (< (Math/abs (- ep p-true)) 1e-12) (str label ": posterior " ep))
@@ -133,5 +133,5 @@
                         ["unknown option" {:particles-per-branch 3}]
                         ["predictive policy" {:policy (itrace/policy {:simulate-observed? true})}]]]
     (is (thrown? clojure.lang.ExceptionInfo
-                 (b/run-infer 5 #(infer/infer (noisy-flip nil) (assoc opts :method :enumerate))))
+                 (b/run-infer 5 #(infer/infer (fn [] (noisy-flip nil)) (assoc opts :method :enumerate))))
         label)))

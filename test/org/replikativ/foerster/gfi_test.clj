@@ -7,9 +7,7 @@
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.effects :refer [sample observe]]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.random :as random]))
 
@@ -22,11 +20,11 @@
       (if (= :ok (first outcome)) (second outcome) (throw (second outcome))))))
 
 (defmacro ^:private with-root [[root] & body]
-  `(let [~root (context/create-execution-context)]
+  `(let [~root (v2/world)]
      (try
        ~@body
        (finally
-         (context/close-context! ~root)))))
+         (v2/release-world! ~root)))))
 
 (defn- lp [dist v] (dist/logpdf dist v))
 
@@ -35,8 +33,8 @@
 (defn- hierarchical
   "x ~ N(0,1), z | x ~ N(x,1), y = 2 | z ~ N(z,1): x | y ~ N(2/3, 2/3)."
   [root]
-  (binding [ec/*execution-context* root]
-    (spin
+  (binding [v2/*world* root]
+    (task
      (let [x (sample (dist/normal 0.0 1.0) :id :x)
            z (sample (dist/normal x 1.0) :id :z)]
        (observe (dist/normal z 1.0) 2.0 :id :y)
@@ -45,8 +43,8 @@
 (defn- switch
   "Which latent exists depends on b."
   [root]
-  (binding [ec/*execution-context* root]
-    (spin
+  (binding [v2/*world* root]
+    (task
      (let [b (sample (dist/flip 0.5) :id :b)
            v (if b
                (sample (dist/normal 0.0 1.0) :id :v0)
@@ -56,18 +54,18 @@
 
 (deftest assess-is-the-log-joint
   (with-root [root]
-    (let [{:keys [weight result]} (await-cps (gfi/assess (hierarchical root) {:x 0.5 :z 1.5}))]
+    (let [{:keys [weight result]} (await-cps (gfi/assess (fn [] (hierarchical root)) {:x 0.5 :z 1.5}))]
       (is (= 0.5 result))
       (is (close? weight (+ (lp (dist/normal 0.0 1.0) 0.5)
                             (lp (dist/normal 0.5 1.0) 1.5)
                             (lp (dist/normal 1.5 1.0) 2.0)))))
     (testing "a free sample site is an error"
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"every sample site"
-                            (await-cps (gfi/assess (hierarchical root) {:x 0.5})))))))
+                            (await-cps (gfi/assess (fn [] (hierarchical root)) {:x 0.5})))))))
 
 (deftest generate-weighs-by-the-constrained-and-observed-sites
   (with-root [root]
-    (let [{t :trace w :weight} (await-cps (gfi/generate (hierarchical root) {:z 1.5}))
+    (let [{t :trace w :weight} (await-cps (gfi/generate (fn [] (hierarchical root)) {:z 1.5}))
           x (:trace/result t)]
       (is (close? w (+ (lp (dist/normal x 1.0) 1.5) (lp (dist/normal 1.5 1.0) 2.0))))
       (is (= [:x] (itrace/latent-addresses t)))
@@ -76,7 +74,7 @@
 (deftest update-keeps-rescores-and-discards
   (with-root [root]
     (testing "a constrained upstream site: z is kept and rescored, nothing fresh"
-      (let [{t :trace} (await-cps (gfi/generate (hierarchical root) {:x 0.5 :z 1.5}))
+      (let [{t :trace} (await-cps (gfi/generate (fn [] (hierarchical root)) {:x 0.5 :z 1.5}))
             {t' :trace w :weight d :discard} (await-cps (gfi/update t {:x -0.5}))]
         (is (= -0.5 (:trace/result t')))
         (is (close? w (- (+ (lp (dist/normal 0.0 1.0) -0.5) (lp (dist/normal -0.5 1.0) 1.5))
@@ -84,7 +82,7 @@
         (is (= {:x 0.5} d) "the overwritten value of a constrained choice")
         (await-cps (gfi/close! t))))
     (testing "a branch change: the old branch's site is discarded, the new one drawn"
-      (let [{t :trace} (await-cps (gfi/generate (switch root) {:b true :v0 0.3}))
+      (let [{t :trace} (await-cps (gfi/generate (fn [] (switch root)) {:b true :v0 0.3}))
             {t' :trace w :weight d :discard} (await-cps (gfi/update t {:b false}))
             v1 (get (itrace/choices t') :v1)]
         (is (false? (:trace/result t')))
@@ -100,17 +98,17 @@
 (deftest regenerate-is-mh-by-selection
   (with-root [root]
     (testing "regenerating nothing is the identity"
-      (let [t (await-cps (gfi/simulate (hierarchical root)))]
+      (let [t (await-cps (gfi/simulate (fn [] (hierarchical root))))]
         (is (identical? t (:trace (await-cps (gfi/regenerate t #{})))))
         (await-cps (gfi/close! t))))
     (testing "a selector selects like the set of its addresses"
-      (let [t (await-cps (gfi/simulate (hierarchical root)))
+      (let [t (await-cps (gfi/simulate (fn [] (hierarchical root))))
             {t' :trace} (await-cps (gfi/regenerate t (sel/id :z)))]
         (is (= (get (itrace/choices t) :x) (get (itrace/choices t') :x)) "x kept")
         (await-cps (gfi/close! t))))
     (testing "alternating x and z moves sample x | y ~ N(2/3, 2/3)"
       (random/set-seed! 7)
-      (let [xs (loop [t (await-cps (gfi/simulate (hierarchical root)))
+      (let [xs (loop [t (await-cps (gfi/simulate (fn [] (hierarchical root))))
                       i 0
                       xs []]
                  (if (= i 4000)
@@ -128,7 +126,7 @@
   (random/set-seed! 11)
   (with-root [root]
     (let [ws (vec (repeatedly 1500 (fn []
-                                     (let [{t :trace w :weight} (await-cps (gfi/generate (hierarchical root) {}))]
+                                     (let [{t :trace w :weight} (await-cps (gfi/generate (fn [] (hierarchical root)) {}))]
                                        (await-cps (gfi/close! t))
                                        w))))
           log-z (weights/log-mean-exp ws)]
@@ -138,7 +136,7 @@
 
 (deftest a-failing-program-rejects
   (with-root [root]
-    (let [model (binding [ec/*execution-context* root] (spin (throw (ex-info "boom" {}))))
+    (let [model (binding [v2/*world* root] (task (throw (ex-info "boom" {}))))
           outcome (try (await-cps (gfi/simulate model)) (catch Exception e e))]
       (is (= :org.replikativ.foerster.runtime.gfi/model-failed (:type (ex-data outcome))))
       (is (= "boom" (ex-message (ex-cause outcome)))))))

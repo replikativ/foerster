@@ -8,13 +8,11 @@
             [org.replikativ.foerster.effects :refer [deterministic observe sample]]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 ;; μ ~ N(0,1), y = 1 ~ N(μ,1): μ | y ~ N(1/2, 1/2), so 2μ has mean 1.
 (defn- model []
-  (spin
+  (task
    (let [mu (sample (dist/normal 0.0 1.0) :id :mu)
          twice (deterministic (* 2.0 mu) :id :twice)]
      (observe (dist/normal mu 1.0) 1.0 :id :y)
@@ -24,10 +22,10 @@
   (:mean (m/measure-stats measure #(m/site-value % address))))
 
 (deftest deterministic-values-follow-the-posterior
-  (doseq [[label make] [["importance sampling" #(infer/importance-sampling (model) 3000)]
-                        ["SMC" #(infer/smc-infer (model) 3000)]
-                        ["particle Gibbs" #(infer/pgibbs-infer (model) 50 40)]
-                        ["MH" #(infer/kernel-infer (model)
+  (doseq [[label make] [["importance sampling" #(infer/importance-sampling (fn [] (model)) 3000)]
+                        ["SMC" #(infer/smc-infer (fn [] (model)) 3000)]
+                        ["particle Gibbs" #(infer/pgibbs-infer (fn [] (model)) 50 40)]
+                        ["MH" #(infer/kernel-infer (fn [] (model))
                                                    (k/random-walk-mh-kernel 600 {:step-size 0.8 :samples :all :burn 100})
                                                    4)]]]
     (testing label
@@ -38,5 +36,5 @@
             "the recorded value is the one computed")))))
 
 (deftest a-forward-run-returns-the-value
-  (let [world (context/create-execution-context)]
-    (is (number? (binding [ec/*execution-context* world] (deref (model) 10000 nil))))))
+  (let [world (v2/world)]
+    (is (number? (binding [v2/*world* world] (deref (model) 10000 nil))))))

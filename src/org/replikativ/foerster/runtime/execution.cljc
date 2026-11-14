@@ -4,6 +4,20 @@
   (:require [is.simm.partial-cps.runtime :as cps-runtime]
             [org.replikativ.spindel.v2.host :as hs]))
 
+(defn synchronous-executor
+  "An executor running each task at once on the calling thread (JVM): the
+  worlds and particles on it run one after another, repeatably."
+  []
+  #?(:clj (reify java.util.concurrent.Executor
+            (execute [_ r] (.run ^Runnable r)))
+     :cljs nil))
+
+(defn thread-pool-executor
+  "A fixed pool of `:threads` threads (JVM)."
+  [{:keys [threads] :or {threads 2}}]
+  #?(:clj (java.util.concurrent.Executors/newFixedThreadPool (int threads))
+     :cljs nil))
+
 (defn spread!
   "Runs `(f i)` for i below `n`, over the threads of `executor` (spindel's
   default executor when nil) on the JVM; one after another in ClojureScript.

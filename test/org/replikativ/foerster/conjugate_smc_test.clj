@@ -8,12 +8,12 @@
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.inference.smc :as smc]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (def ^:private ys [1 0 1 1 1 0 1 1 1 0 1 1])
 
 (defn- model []
-  (spin (loop [c (conj/beta-bernoulli 1 1) i 0]
+  (task (loop [c (conj/beta-bernoulli 1 1) i 0]
           (if (= i (count ys))
             (sample (conj/posterior c) :id :p)
             (do (observe (conj/predictive c) (nth ys i) :id [:y i])
@@ -23,7 +23,7 @@
   (let [k (count (filter #{1} ys)) n (count ys)
         lbeta (fn [a b] (- (+ (dist/lgamma a) (dist/lgamma b)) (dist/lgamma (+ a b))))
         exact-z (- (lbeta (+ 1 k) (+ 1 (- n k))) (lbeta 1 1))
-        measure (b/run-infer 81 #(smc/smc (model) 2000 {}))
+        measure (b/run-infer 81 #(smc/smc (fn [] (model)) 2000 {}))
         p (b/w-mean identity (b/weighted-values measure))]
     (is (< (Math/abs (- (m/log-marginal measure) exact-z)) 1e-9) "every particle carries the same posterior")
     (is (< (Math/abs (- p (/ (+ 1.0 k) (+ 2 n)))) 0.01) (str p))))

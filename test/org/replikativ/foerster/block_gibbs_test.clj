@@ -9,10 +9,10 @@
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- model []
-  (spin
+  (task
    (let [z (sample (dist/bernoulli 0.3) :id :z)
          mu (sample (dist/normal (* 2.0 z) 1.0) :id :mu)]
      (observe (dist/normal mu 0.5) 1.5 :id :y)
@@ -31,14 +31,14 @@
                                       :disc (k/prior-block-kernel)}
                                      (fn [address _] (if (= address :mu) :cont :disc))
                                      {:samples :all :burn 500})
-        wv (b/weighted-values (b/run-infer 101 #(infer/kernel-infer (model) kernel 4)))
+        wv (b/weighted-values (b/run-infer 101 #(infer/kernel-infer (fn [] (model)) kernel 4)))
         p-z (b/w-mean first wv)
         mean-mu (b/w-mean second wv)]
     (is (< (Math/abs (- p-z (:p-z exact))) 0.05) (str "P(z) " p-z " vs " (:p-z exact)))
     (is (< (Math/abs (- mean-mu (:mean-mu exact))) 0.07) (str "E[mu] " mean-mu " vs " (:mean-mu exact)))))
 
 (defn- signed []
-  (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+  (task (let [x (sample (dist/normal 0.0 1.0) :id :x)]
           (observe (dist/normal x 1.0) 0.0 :id :y)
           x)))
 
@@ -49,10 +49,10 @@
                                      {:pos (k/random-walk-block-kernel {:step-size 2.0})}
                                      (fn [_ entry] (if (pos? (:value entry)) :pos :neg))
                                      {:samples :all})
-        start #(spin (let [x (sample (dist/normal 0.0 1.0) :id :x :init 0.5)]
+        start #(task (let [x (sample (dist/normal 0.0 1.0) :id :x :init 0.5)]
                        (observe (dist/normal x 1.0) 0.0 :id :y)
                        x))
-        xs (map m/get-value (map first (m/get-particles (b/run-infer 102 #(infer/kernel-infer (start) kernel 1)))))]
+        xs (map m/get-value (map first (m/get-particles (b/run-infer 102 #(infer/kernel-infer (fn [] (start)) kernel 1)))))]
     (is (seq xs))
     (is (every? pos? xs) "the chain never leaves the block it moves")))
 
@@ -71,7 +71,7 @@
   (let [kernel (k/block-gibbs-kernel 10 (k/round-robin-selector [:all])
                                      {:all (k/random-walk-block-kernel {:step-size 0.5})}
                                      (constantly :all))
-        outcome (try (b/run-infer 103 #(infer/kernel-infer (model) kernel 1))
+        outcome (try (b/run-infer 103 #(infer/kernel-infer (fn [] (model)) kernel 1))
                      (catch Exception e e))]
     (is (= ::k/not-real-valued
            (some (comp :type ex-data) (take-while some? (iterate ex-cause outcome)))))))
@@ -79,5 +79,5 @@
 (deftest signed-model-is-well-formed
   ;; guard for the model above: a plain chain crosses zero
   (let [xs (map m/get-value (map first (m/get-particles
-                                        (b/run-infer 104 #(infer/kernel-infer (signed) (k/random-walk-mh-kernel 400 {:step-size 2.0 :samples :all}) 1)))))]
+                                        (b/run-infer 104 #(infer/kernel-infer (fn [] (signed)) (k/random-walk-mh-kernel 400 {:step-size 2.0 :samples :all}) 1)))))]
     (is (some neg? xs))))

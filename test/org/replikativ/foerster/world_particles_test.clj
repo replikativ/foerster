@@ -4,17 +4,14 @@
   (:require [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.proposal :as proposal]
             [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.engine.executor :as executor]
-            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.execution :as executor]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.core :as inference]
             [org.replikativ.foerster.measure :as measure]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.atom :as sa]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.spindel.yggdrasil :as ygg]
             [yggdrasil.convergent.gset :as g]))
@@ -24,7 +21,7 @@
           {:sync? true}))
 
 (defn- observed-model []
-  (spin
+  (task
    (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
    :done))
 
@@ -35,31 +32,31 @@
     (deref result 5000 ::timed-out)))
 
 (deftest world-policy-is-explicit
-  (let [root (context/create-execution-context)]
+  (let [root (v2/world)]
     (try
-      (binding [ec/*execution-context* root]
+      (binding [v2/*world* root]
         (let [result
-              @(spin
+              @(task
                 (try
-                  (await (inference/smc-infer
-                          (spin :done) 1 {:world-policy :unknown}))
+                  (await-op (inference/smc-infer
+                          (fn [] (task :done)) 1 {:world-policy :unknown}))
                   :unexpected-success
                   (catch Throwable error error)))]
           (is (instance? Throwable result))
           (is (= ::inference/invalid-world-policy
                  (:type (ex-data result))))))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 (deftest pure-inference-has-no-world-descriptors
-  (let [root (context/create-execution-context)]
+  (let [root (v2/world)]
     (try
-      (binding [ec/*execution-context* root]
-        (let [posterior @(spin (await (inference/smc-infer (spin 7) 2 {:world-policy :fresh})))]
+      (binding [v2/*world* root]
+        (let [posterior @(task (await-op (inference/smc-infer (fn [] (task 7)) 2 {:world-policy :fresh})))]
           (is (= [7 7] (mapv measure/get-value (measure/get-contexts posterior))))
           (is (= [] (measure/world-descriptors posterior)))))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 ;; -----------------------------------------------------------------------------
 ;; Canonical worlds on savepoint SMC
@@ -80,21 +77,21 @@
   (every? #(and (= :discarded (:status @%)) (empty? (:handles @%))) scopes))
 
 (defn- slot-name []
-  (keyword (str "p" (rtp/get-state ec/*execution-context* [:inference :slot]))))
+  (keyword (str "p" (v2/get-in-world v2/*world* [:inference :slot]))))
 
 (deftest smc-resamples-independent-worlds-and-discards-the-tree
-  (let [root (context/create-execution-context)]
+  (let [root (v2/world)]
     (try
-      (binding [ec/*execution-context* root]
+      (binding [v2/*world* root]
         (let [knowledge (ygg/register! (-> (mem-gset "particle-kb")
                                            (g/conj :root {:sync? true})))
-              model (spin
+              model (task
                      (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
                      (reset! (ygg/system-signal "particle-kb")
                              (g/conj @knowledge (slot-name) {:sync? true}))
                      (g/elements @knowledge {:sync? true}))]
           (capturing-scopes [scopes]
-                            (let [posterior @(spin (await (inference/smc-infer
+                            (let [posterior @(task (await-op (inference/smc-infer
                                                            model 4
                                                            {:world-policy :fork
                                             ;; resample even with equal weights
@@ -117,7 +114,7 @@
                                 (is (= 1 (count @scopes)) "the root and the session's worlds share one")
                                 (is (settled? @scopes)))))))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 (deftest every-lineage-ends-once
   (let [root (context/create-execution-context
@@ -125,14 +122,14 @@
         finalized (atom [])
         n 3]
     (try
-      (binding [ec/*execution-context* root]
-        (let [model (spin
+      (binding [v2/*world* root]
+        (let [model (task
                      (try
                        (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
                        :done
                        (finally
-                         (swap! finalized conj (:fork-id ec/*execution-context*)))))
-              result (deref (spin (await (inference/smc-infer
+                         (swap! finalized conj (:fork-id v2/*world*)))))
+              result (deref (task (await-op (inference/smc-infer
                                           model n {:world-policy :fork
                                                    :executor (:executor root)
                                                    :resample-threshold 2.0})))
@@ -143,25 +140,25 @@
           (is (= n (count @finalized)))
           (is (apply distinct? @finalized) "each world reaches one terminal path")))
       (finally
-        (context/close-context! root)))))
+        (v2/release-world! root)))))
 
 (deftest every-particle-runs-the-whole-model
   ;; A canonical model's effects may be random without a sample site (a
   ;; model call): each particle makes its own, none shares another's prefix.
-  (let [root (context/create-execution-context)
+  (let [root (v2/world)
         calls (atom 0)]
     (try
-      (binding [ec/*execution-context* root]
-        (let [posterior @(spin (await (inference/smc-infer
-                                       (spin
+      (binding [v2/*world* root]
+        (let [posterior @(task (await-op (inference/smc-infer
+                                       (fn [] (task
                                         (let [answer (swap! calls inc)]
                                           (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
-                                          answer))
+                                          answer)))
                                        4 {:world-policy :fork})))]
           (is (= 4 @calls))
           (is (= #{1 2 3 4} (set (map measure/get-value (measure/get-contexts posterior)))))))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 (deftest cancelling-public-inference-spin-cancels-and-joins-worlds
   (let [root (context/create-execution-context
@@ -185,21 +182,21 @@
                                         (future
                                           @release-discard
                                           (if (fn? operation) (operation resolve reject) (resolve operation))))))]
-                                  (binding [ec/*execution-context* root]
+                                  (binding [v2/*world* root]
                                     (let [task (inference/smc-infer
-                                                (spin
+                                                (fn [] (task
                                                  (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
                                                  (try
                                                    (deliver model-entered true)
-                                                   (await (fn [_resolve _reject] nil))
-                                                   (finally (reset! model-cleaned? true))))
+                                                   (await-op (fn [_resolve _reject] nil))
+                                                   (finally (reset! model-cleaned? true)))))
                                                 2
                                                 {:world-policy :fork
                                                  :executor (:executor root)})]
                                       (reset! task* task)
                                       (try @task (catch Throwable error error))))))]
                           (is (= true (deref model-entered 5000 ::timed-out)))
-                          (binding [ec/*execution-context* root]
+                          (binding [v2/*world* root]
                             (spin-core/cancel-spin! @task*))
                           (is (= true (deref discard-entered 5000 ::timed-out)))
                           (is (= ::still-waiting (deref outcome 100 ::still-waiting))
@@ -213,7 +210,7 @@
                                 "the public Spin rejects only after every world is discarded"))))
       (finally
         (deliver release-discard true)
-        (context/close-context! root)))))
+        (v2/release-world! root)))))
 
 (deftest cancellation-during-the-root-fork-joins-the-late-world
   (let [root (context/create-execution-context
@@ -237,15 +234,15 @@
                                            (deliver fork-entered true)
                                            (future @release-fork (resolve handle)))
                                          reject))))]
-                                  (binding [ec/*execution-context* root]
+                                  (binding [v2/*world* root]
                                     (let [task (inference/smc-infer
-                                                (spin (reset! model-ran? true) :done) 1
+                                                (fn [] (task (reset! model-ran? true) :done)) 1
                                                 {:world-policy :fork
                                                  :executor (:executor root)})]
                                       (reset! task* task)
                                       (try @task (catch Throwable error error))))))]
                           (is (= true (deref fork-entered 5000 ::timed-out)))
-                          (binding [ec/*execution-context* root]
+                          (binding [v2/*world* root]
                             (spin-core/cancel-spin! @task*))
                           (is (= ::still-waiting (deref outcome 100 ::still-waiting))
                               "cancellation waits for the fork in flight")
@@ -258,15 +255,15 @@
                             (is (= 1 (count (world-scope/descriptors (first @scopes))))))))
       (finally
         (deliver release-fork true)
-        (context/close-context! root)))))
+        (v2/release-world! root)))))
 
 (deftest a-copy-failure-fails-inference-and-leaves-no-world
   (doseq [failing [1 2]] ; the particles, a resampling
-    (let [root (context/create-execution-context)
+    (let [root (v2/world)
           copies (atom 0)
           copy-world ygg/copy-fork!]
       (try
-        (binding [ec/*execution-context* root]
+        (binding [v2/*world* root]
           (capturing-scopes [scopes]
                             (let [result
                                   (with-redefs
@@ -275,9 +272,9 @@
                                       (if (= failing (swap! copies inc))
                                         (throw (ex-info "synthetic copy failure" {:copy failing}))
                                         (copy-world handle k opts)))]
-                                    (deref (spin (try
-                                                   (await (inference/smc-infer
-                                                           (observed-model) 4
+                                    (deref (task (try
+                                                   (await-op (inference/smc-infer
+                                                           (fn [] (observed-model)) 4
                                                            {:world-policy :fork :resample-threshold 2.0}))
                                                    (catch Throwable error error)))
                                            5000 ::timed-out))
@@ -288,19 +285,19 @@
                               (is (= [:ok nil] (await-cps ((:discard! recovery)))) "cleanup is idempotent")
                               (is (settled? @scopes)))))
         (finally
-          (context/stop-context! root))))))
+          (v2/release-world! root))))))
 
 (deftest model-failure-exposes-portable-world-recovery
-  (let [root (context/create-execution-context)]
+  (let [root (v2/world)]
     (try
-      (binding [ec/*execution-context* root]
-        (let [result (deref (spin
+      (binding [v2/*world* root]
+        (let [result (deref (task
                              (try
                                (await
                                 (inference/smc-infer
-                                 (spin
+                                 (fn [] (task
                                   (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
-                                  (throw (ex-info "model failed" {:stage :model})))
+                                  (throw (ex-info "model failed" {:stage :model}))))
                                  3
                                  {:world-policy :fork}))
                                :unexpected-success
@@ -318,10 +315,10 @@
           (is (= [:ok nil] (await-cps ((:discard! recovery)))))
           (is (= :discarded (:status @(:manager recovery))))))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 (defn- latent-model []
-  (spin
+  (task
    (let [x (sample (dist/normal 0.0 1.0) :id :x)]
      (observe (dist/normal x 1.0) 0.5 :id :y)
      x)))
@@ -333,13 +330,13 @@
   ;; slot 0 of every particle Gibbs sweep follows the trajectory drawn from
   ;; the sweep before, so each sweep holds a value of the previous one (PGAS
   ;; redraws the retained particle's past, which here is all of it)
-  (let [root (context/create-execution-context)
+  (let [root (v2/world)
         n 4]
     (try
-      (binding [ec/*execution-context* root]
-        (doseq [[method run] [[:pgibbs #(inference/pgibbs-infer (latent-model) n 3 {:world-policy :fork})]
-                              [:pgas #(inference/pgas-infer (latent-model) n 3 {:world-policy :fork})]]]
-          (let [posterior @(spin (await (run)))
+      (binding [v2/*world* root]
+        (doseq [[method run] [[:pgibbs #(inference/pgibbs-infer (fn [] (latent-model)) n 3 {:world-policy :fork})]
+                              [:pgas #(inference/pgas-infer (fn [] (latent-model)) n 3 {:world-policy :fork})]]]
+          (let [posterior @(task (await-op (run)))
                 sweeps (sweeps-of posterior n)]
             (is (= 3 (count sweeps)) (str method))
             (when (= :pgibbs method)
@@ -348,29 +345,29 @@
             (is (= (* 3 n) (count (measure/world-descriptors posterior))))
             (is (every? #(= :discarded (:fork/status %)) (measure/world-descriptors posterior))))))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 (deftest interacting-particle-mcmc-runs-in-canonical-worlds
-  (let [root (context/create-execution-context)]
+  (let [root (v2/world)]
     (try
-      (binding [ec/*execution-context* root]
-        (let [posterior @(spin (await (inference/ipmcmc-infer
-                                       (latent-model) 3 2
+      (binding [v2/*world* root]
+        (let [posterior @(task (await-op (inference/ipmcmc-infer
+                                       (fn [] (latent-model)) 3 2
                                        {:world-policy :fork :num-nodes 2 :num-csmc-nodes 1})))]
           (is (pos? (count (measure/get-contexts posterior))))
           (is (every? #(= :particle (:fork/purpose %)) (measure/world-descriptors posterior)))))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 (deftest a-proposal-decides-the-latent-sites
-  (let [root (context/create-execution-context)
+  (let [root (v2/world)
         ;; the value 42 with a density one nat above the site's prior: the
         ;; weight is log p(42) − log q(42) = −1, plus the observation
         fixed (proposal/from-fn (fn [{d :dist}] {:value 42.0 :log-q (+ 1.0 (dist/logpdf d 42.0))}))]
     (try
-      (binding [ec/*execution-context* root]
+      (binding [v2/*world* root]
         (doseq [policy [:fresh :fork]]
-          (let [posterior @(spin (await (inference/importance-sampling (latent-model) 3
+          (let [posterior @(task (await-op (inference/importance-sampling (fn [] (latent-model)) 3
                                                                        {:world-policy policy
                                                                         :proposal fixed})))]
             (is (= [42.0 42.0 42.0] (mapv measure/get-value (measure/get-contexts posterior))))
@@ -378,7 +375,7 @@
                         (mapv second (measure/get-particles posterior)))
                 "the proposal's correction and the observation make the weight"))))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 (defn- wallet-authority
   "A ledger outside every world: {world-id {:wallet {resource n} :from id}}."
@@ -406,16 +403,16 @@
     (balance [_ context] (get-in @ledger [(:fork-id context) :wallet]))))
 
 (deftest particles-split-the-inference-s-budget
-  (let [root (context/create-execution-context)
+  (let [root (v2/world)
         ledger (atom {(:fork-id root) {:wallet {:tokens 100}}})
-        tokens #(get-in @ledger [(:fork-id ec/*execution-context*) :wallet :tokens])]
+        tokens #(get-in @ledger [(:fork-id v2/*world*) :wallet :tokens])]
     (try
-      (binding [ec/*execution-context* root]
-        (let [posterior @(spin (await (inference/smc-infer
-                                       (spin
+      (binding [v2/*world* root]
+        (let [posterior @(task (await-op (inference/smc-infer
+                                       (fn [] (task
                                         (let [at-start (tokens)]
                                           (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
-                                          [at-start (tokens)]))
+                                          [at-start (tokens)])))
                                        4 {:world-policy :fork
                                           :authority (wallet-authority ledger)
                                           :grant {:tokens 12}
@@ -426,18 +423,18 @@
           (is (= {(:fork-id root) {:wallet {:tokens 100}}} @ledger)
               "every world gives back what it has left; nothing is multiplied")))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 (deftest a-world-that-may-not-be-copied-is-not-made-into-particles
-  (let [root (context/create-execution-context)
+  (let [root (v2/world)
         ran? (atom false)]
     (try
-      (binding [ec/*execution-context* root]
+      (binding [v2/*world* root]
         (ygg/register! (mem-gset "live-handle") {:grade :affine})
         (capturing-scopes [scopes]
-                          (let [result (deref (spin (try
-                                                      (await (inference/smc-infer
-                                                              (spin (reset! ran? true) :done) 3
+                          (let [result (deref (task (try
+                                                      (await-op (inference/smc-infer
+                                                              (fn [] (task (reset! ran? true) :done)) 3
                                                               {:world-policy :fork}))
                                                       (catch Throwable error error)))
                                               5000 ::timed-out)]
@@ -446,28 +443,28 @@
                             (is (not @ran?) "refused before the model runs")
                             (is (settled? @scopes)))))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 ;; -----------------------------------------------------------------------------
 ;; Importance sampling, PIMH and BBVI in canonical worlds
 ;; -----------------------------------------------------------------------------
 
 (deftest particle-methods-see-the-caller-s-state-in-isolated-worlds
-  (let [root (context/create-execution-context)]
+  (let [root (v2/world)]
     (try
-      (binding [ec/*execution-context* root]
+      (binding [v2/*world* root]
         (let [log (sa/atom [:root])
               model (fn []
-                      (spin
+                      (task
                        (let [x (sample (dist/normal 0.0 1.0) :id :x)]
                          (observe (dist/normal x 1.0) 0.5 :id :y)
                          (swap! log conj :mine)
                          @log)))]
-          (doseq [[method run] [[:importance #(inference/importance-sampling (model) 4 {:world-policy :fork})]
-                                [:pimh #(inference/pimh-infer (model) 3 2 {:world-policy :fork})]
-                                [:bbvi #(inference/bbvi-infer (model) 4 2 {:world-policy :fork})]]]
+          (doseq [[method run] [[:importance #(inference/importance-sampling (fn [] (model)) 4 {:world-policy :fork})]
+                                [:pimh #(inference/pimh-infer (fn [] (model)) 3 2 {:world-policy :fork})]
+                                [:bbvi #(inference/bbvi-infer (fn [] (model)) 4 2 {:world-policy :fork})]]]
             (capturing-scopes [scopes]
-                              (let [posterior @(spin (await (run)))
+                              (let [posterior @(task (await-op (run)))
                                     descriptors (measure/world-descriptors posterior)]
                                 (is (every? #{[:root :mine]} (mapv measure/get-value (measure/get-contexts posterior)))
                                     (str method ": each particle sees the caller's state and its own write only"))
@@ -480,7 +477,7 @@
                                 (is (seq @scopes) (str method))
                                 (is (settled? @scopes) (str method ": every world is discarded")))))))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 ;; -----------------------------------------------------------------------------
 ;; Exact enumeration in canonical worlds
@@ -507,7 +504,7 @@
   "The paper's queue: the server's speed and every job's jitter are unknown;
   completions are reported with noise. It serves on the caller's queue."
   [queue]
-  (spin
+  (task
    (let [speed (sample (dist/categorical {0.8 0.5, 1.4 0.5}) :id :speed)]
      (doseq [{:keys [id reported] :as job} readings]
        (let [jitter (sample (dist/categorical {0.8 0.5, 1.2 0.5}) :id [:jitter id])
@@ -531,13 +528,13 @@
     [(/ (reduce + (map :p (filter #(= 1.4 (:speed %)) paths))) z) (Math/log z)]))
 
 (deftest enumeration-runs-on-the-caller-s-state
-  (let [root (context/create-execution-context)
+  (let [root (v2/world)
         [p-fast log-z] (queue-reference)]
     (try
-      (binding [ec/*execution-context* root]
+      (binding [v2/*world* root]
         (let [queue (sa/atom backlog)]
           (capturing-scopes [scopes]
-                            (let [posterior @(spin (await (inference/infer (queue-model queue)
+                            (let [posterior @(task (await-op (inference/infer (fn [] (queue-model queue))
                                                                            {:method :enumerate :world-policy :fork})))
                                   values (mapv measure/get-value (measure/get-contexts posterior))
                                   descriptors (measure/world-descriptors posterior)]
@@ -558,20 +555,20 @@
                                 (is (= 1 (count @scopes)))
                                 (is (settled? @scopes)))))))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 (deftest enumeration-branches-write-in-isolation
-  (let [root (context/create-execution-context)]
+  (let [root (v2/world)]
     (try
-      (binding [ec/*execution-context* root]
+      (binding [v2/*world* root]
         (let [log (sa/atom [:root])
-              posterior @(spin (await (inference/infer
-                                       (spin
+              posterior @(task (await-op (inference/infer
+                                       (fn [] (task
                                         (let [x (sample (dist/flip 0.5) :id :x)]
                                           (swap! log conj x)
                                           (let [y (sample (dist/categorical {:a 0.2 :b 0.8}) :id :y)]
                                             (swap! log conj y)
-                                            @log)))
+                                            @log))))
                                        {:method :enumerate :world-policy :fork})))
               ps (measure/get-particles posterior)]
           (is (= #{[:root true :a] [:root true :b] [:root false :a] [:root false :b]}
@@ -580,38 +577,38 @@
           (is (= [:root] @log))
           (is (< (Math/abs (measure/log-marginal posterior)) 1e-12))))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 (deftest enumeration-branches-split-the-inference-s-budget
-  (let [root (context/create-execution-context)
+  (let [root (v2/world)
         ledger (atom {(:fork-id root) {:wallet {:tokens 100}}})
-        tokens #(get-in @ledger [(:fork-id ec/*execution-context*) :wallet :tokens])]
+        tokens #(get-in @ledger [(:fork-id v2/*world*) :wallet :tokens])]
     (try
-      (binding [ec/*execution-context* root]
-        (let [posterior @(spin (await (inference/infer
-                                       (spin
+      (binding [v2/*world* root]
+        (let [posterior @(task (await-op (inference/infer
+                                       (fn [] (task
                                         (let [at-start (tokens)]
                                           (sample (dist/categorical {:a 1.0 :b 1.0 :c 1.0}) :id :x)
-                                          [at-start (tokens)]))
+                                          [at-start (tokens)])))
                                        {:method :enumerate :world-policy :fork
                                         :authority (wallet-authority ledger) :grant {:tokens 12}})))]
           (is (= (repeat 3 [12 4]) (map (comp measure/get-value first) (measure/get-particles posterior)))
               "the model starts with the grant; three branches share it evenly")
           (is (= {(:fork-id root) {:wallet {:tokens 100}}} @ledger) "every branch gives back what it has left")))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 (deftest enumeration-refuses-a-world-that-may-not-be-copied
-  (let [root (context/create-execution-context)
+  (let [root (v2/world)
         ran? (atom false)]
     (try
-      (binding [ec/*execution-context* root]
+      (binding [v2/*world* root]
         (ygg/register! (mem-gset "live-handle-enumeration") {:grade :affine})
         (capturing-scopes [scopes]
-                          (let [result (deref (spin (try
-                                                      (await (inference/infer
-                                                              (spin (reset! ran? true)
-                                                                    (sample (dist/flip 0.5) :id :x))
+                          (let [result (deref (task (try
+                                                      (await-op (inference/infer
+                                                              (fn [] (task (reset! ran? true)
+                                                                    (sample (dist/flip 0.5) :id :x)))
                                                               {:method :enumerate :world-policy :fork}))
                                                       (catch Throwable error error)))
                                               5000 ::timed-out)]
@@ -620,14 +617,14 @@
                             (is (not @ran?) "refused before the model runs")
                             (is (settled? @scopes)))))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))
 
 (deftest enumeration-options-are-checked
-  (let [root (context/create-execution-context)]
+  (let [root (v2/world)]
     (try
-      (binding [ec/*execution-context* root]
-        (let [model (spin (sample (dist/flip 0.3) :id :x))
-              fresh @(spin (await (inference/infer model {:method :enumerate :world-policy :fresh})))]
+      (binding [v2/*world* root]
+        (let [model (task (sample (dist/flip 0.3) :id :x))
+              fresh @(task (await-op (inference/infer model {:method :enumerate :world-policy :fresh})))]
           (is (= [] (measure/world-descriptors fresh)) "fresh worlds name no worlds")
           (is (< (Math/abs (measure/log-marginal fresh)) 1e-12))
           (doseq [opts [{:resample-threshold 0.5} {:grant {:tokens 1}} {:world-policy :fresh :world-opts {}}]]
@@ -635,4 +632,4 @@
                          (inference/infer model (assoc opts :method :enumerate)))
                 (str opts)))))
       (finally
-        (context/stop-context! root)))))
+        (v2/release-world! root)))))

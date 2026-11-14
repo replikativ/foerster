@@ -10,14 +10,14 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.model.process :as process]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- seat-three [alpha]
-  (spin
-   (let [a (await (process/crp-draw :r alpha :id [:z 0]))
-         b (await (process/crp-draw :r alpha :id [:z 1]))
-         c (await (process/crp-draw :r alpha :id [:z 2]))]
+  (task
+   (let [a (await-op (process/crp-draw :r alpha :id [:z 0]))
+         b (await-op (process/crp-draw :r alpha :id [:z 1]))
+         c (await-op (process/crp-draw :r alpha :id [:z 2]))]
      [a b c])))
 
 (defn- partition-of [[a b c]]
@@ -28,7 +28,7 @@
 (deftest crp-partitions-are-exact
   ;; Ewens: P(together) = 1/(1+α)·2/(2+α)·… ; for α = 1: 1/3, 1/6, and the
   ;; three pair+single partitions 1/6 each
-  (let [measure (b/run-infer 101 #(infer/infer (seat-three 1.0) {:method :enumerate}))
+  (let [measure (b/run-infer 101 #(infer/infer (fn [] (seat-three 1.0)) {:method :enumerate}))
         ws (weights/normalize-log-weights (mapv second (m/get-particles measure)))
         p (reduce (fn [acc [[s _] w]] (update acc (partition-of (m/get-value s)) (fnil + 0.0) w))
                   {} (map vector (m/get-particles measure) ws))]
@@ -38,11 +38,11 @@
     (is (< (Math/abs (m/log-marginal measure)) 1e-12) "no evidence: the probabilities sum to one")))
 
 (defn- memo-model []
-  (spin
-   (let [mean-of (process/mem (fn [k] (spin (sample (dist/normal 0.0 1.0) :id [:mean k]))))
-         a (await (mean-of 0))
-         b (await (mean-of 0))
-         c (await (mean-of 1))]
+  (task
+   (let [mean-of (process/mem (fn [k] (task (sample (dist/normal 0.0 1.0) :id [:mean k]))))
+         a (await-op (mean-of 0))
+         b (await-op (mean-of 0))
+         c (await-op (mean-of 1))]
      (observe (dist/normal a 0.5) 1.0 :id :y)
      [a b c])))
 
@@ -50,7 +50,7 @@
   (doseq [opts [{:method :smc :particles 200}
                 {:method :mh :iterations 300 :chains 2 :burn 50}]]
     (testing (name (:method opts))
-      (let [measure (b/run-infer 102 #(infer/infer (memo-model) opts))
+      (let [measure (b/run-infer 102 #(infer/infer (fn [] (memo-model)) opts))
             values (map (comp m/get-value first) (m/get-particles measure))]
         (is (every? (fn [[a b _]] (= a b)) values) "a repeated call returns the first value")
         (is (some (fn [[a _ c]] (not= a c)) values) "another argument draws its own")
@@ -58,7 +58,7 @@
 
 (defn- inner []
   ;; z uniform on {0, 1, 2}, a flip of bias z/2 came up heads: P(z) ∝ z
-  (spin
+  (task
    (let [z (sample (dist/uniform-discrete 0 3) :id :z)]
      (observe (dist/flip (/ z 2.0)) true :id :heads)
      z)))
@@ -66,12 +66,12 @@
 (deftest nested-inference-is-exact-under-enumeration
   ;; the outer agent samples the inner posterior {1: 1/3, 2: 2/3}, then sees
   ;; a signal that favours 2: P(x = 2) = (2/3·0.9) / (2/3·0.9 + 1/3·0.1)
-  (let [outer #(spin
-                (let [q (await (infer/conditional (inner) {:method :enumerate}))
+  (let [outer #(task
+                (let [q (await-op (infer/conditional (fn [] (inner)) {:method :enumerate}))
                       x (sample q :id :x)]
                   (observe (dist/flip (if (= x 2) 0.9 0.1)) true :id :signal)
                   x))
-        measure (b/run-infer 103 #(infer/infer (outer) {:method :enumerate}))
+        measure (b/run-infer 103 #(infer/infer (fn [] (outer)) {:method :enumerate}))
         ws (weights/normalize-log-weights (mapv second (m/get-particles measure)))
         p2 (reduce + (map (fn [[[s _] w]] (if (= 2 (m/get-value s)) w 0.0))
                           (map vector (m/get-particles measure) ws)))

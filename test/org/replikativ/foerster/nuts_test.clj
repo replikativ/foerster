@@ -13,7 +13,7 @@
             [org.replikativ.foerster.measure :as measure]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.moves.transition :as transition]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (def ^:private scales [0.05 0.2 0.5 1.0 2.0 3.0 5.0 8.0 12.0 20.0])
 
@@ -27,8 +27,8 @@
                   :value+grad (fn [th _] [(lp th) (double-array (map (fn [x s] (- (/ x (* s s)))) (vec th) scales))])})))
 
 (deftest nuts-adapts-to-an-ill-conditioned-target
-  (let [measure (b/run-infer 121 #(infer/infer (spin (sample (block/block-dist scaled-gaussian nil) :id :x
-                                                             :init (vec (repeat 10 0.5))))
+  (let [measure (b/run-infer 121 #(infer/infer (fn [] (task (sample (block/block-dist scaled-gaussian nil) :id :x
+                                                             :init (vec (repeat 10 0.5)))))
                                                {:method :nuts :iterations 1000 :chains 4 :burn 500}))]
     (doseq [j (range 10)]
       (let [cs (d/chains measure #(nth % j))]
@@ -44,8 +44,8 @@
                            (@#'nuts/fisher-variance qs gs) scales)))))
 
 (deftest nuts-adapts-a-fisher-metric
-  (let [measure (b/run-infer 122 #(infer/infer (spin (sample (block/block-dist scaled-gaussian nil) :id :x
-                                                             :init (vec (repeat 10 0.5))))
+  (let [measure (b/run-infer 122 #(infer/infer (fn [] (task (sample (block/block-dist scaled-gaussian nil) :id :x
+                                                             :init (vec (repeat 10 0.5)))))
                                                {:method :nuts :iterations 1000 :chains 4 :burn 500 :metric :fisher}))]
     (doseq [j (range 10)]
       (let [cs (d/chains measure #(nth % j))]
@@ -82,7 +82,7 @@
 
 (deftest constrained-latents-in-natural-coordinates
   (testing "σ > 0 by its log"
-    (let [measure (b/run-infer 122 #(infer/infer (spin (sample (block/block-dist mean-and-scale nil) :id :th :init [2.0 0.0]))
+    (let [measure (b/run-infer 122 #(infer/infer (fn [] (task (sample (block/block-dist mean-and-scale nil) :id :th :init [2.0 0.0])))
                                                  {:method :nuts :iterations 1000 :chains 4 :burn 500}))
           [mu sigma] @grid-means
           s (fn [i] (d/summary measure #(nth (block/constrain mean-and-scale %) i)))]
@@ -95,7 +95,7 @@
                           :value+grad (fn [x _] (let [p (aget ^doubles x 0)]
                                                   [(+ (* 8 (Math/log p)) (* 4 (Math/log (- 1 p))))
                                                    (double-array [(- (/ 8 p) (/ 4 (- 1 p)))])]))})
-          measure (b/run-infer 123 #(infer/infer (spin (sample (block/block-dist b nil) :id :p :init [0.0]))
+          measure (b/run-infer 123 #(infer/infer (fn [] (task (sample (block/block-dist b nil) :id :p :init [0.0])))
                                                  {:method :nuts :iterations 1000 :chains 4 :burn 500}))
           s (d/summary measure #(first (block/constrain b %)))]
       (is (< (Math/abs (- (:mean s) (/ 9.0 14))) (* 4 (:mcse s))) (str s))
@@ -108,9 +108,9 @@
                        {:log-density (fn [th _] (* -0.5 (let [m (aget ^doubles th 0)] (* m m))))
                         :value+grad (fn [th _] (let [m (aget ^doubles th 0)] [(* -0.5 m m) (double-array [(- m)])]))})]
     (is (= ::nuts/incomplete-target
-           (try (b/run-infer 124 #(infer/infer (spin (let [[mu] (sample (block/block-dist b nil) :id :mu :init [0.0])]
+           (try (b/run-infer 124 #(infer/infer (fn [] (task (let [[mu] (sample (block/block-dist b nil) :id :mu :init [0.0])]
                                                        (observe (dist/normal mu 1.0) 2.0 :id :y)
-                                                       mu))
+                                                       mu)))
                                                {:method :nuts :iterations 20 :chains 1 :burn 10}))
                 nil
                 (catch Exception e
@@ -149,7 +149,7 @@
                                                     (double-array [(- (aget x 0))])])})
         run (fn [process-seed seed]
               (b/run-infer process-seed
-                           #(infer/infer (spin (sample (block/block-dist target nil) :id :x :init [0.0]))
+                           #(infer/infer (fn [] (task (sample (block/block-dist target nil) :id :x :init [0.0])))
                                          {:method :nuts :seed seed :iterations 30 :burn 10 :chains 2 :max-depth 2})))
         a (run 12 731) b (run 999 731) other (run 12 732)
         values #(mapv (comp measure/get-value first) (measure/get-particles %))
@@ -172,7 +172,7 @@
                             {:log-density (fn [x _] (* -5e11 (aget x 0) (aget x 0)))
                              :value+grad (fn [x _] [(* -5e11 (aget x 0) (aget x 0))
                                                     (double-array [(* -1e12 (aget x 0))])])})
-        result (b/run-infer 21 #(infer/infer (spin (sample (block/block-dist target nil) :id :x :init [0.0]))
+        result (b/run-infer 21 #(infer/infer (fn [] (task (sample (block/block-dist target nil) :id :x :init [0.0])))
                                              {:method :nuts :seed 123 :iterations 4 :burn 0 :chains 2 :max-depth 2}))]
     (is (some (comp :diverging :sampler-stats first) (measure/get-particles result)))))
 
@@ -195,7 +195,7 @@
   (doseq [[jitter extra-gradients extra-densities] [[false 1 1] [true 2 2]]]
     (let [densities (atom 0) gradients (atom 0)
           b (counting-gaussian 3 densities gradients)
-          result (b/run-infer 31 #(infer/infer (spin (sample (block/block-dist b nil) :id :x :init [0.0 0.0 0.0]))
+          result (b/run-infer 31 #(infer/infer (fn [] (task (sample (block/block-dist b nil) :id :x :init [0.0 0.0 0.0])))
                                                {:method :nuts :seed 1 :iterations 200 :burn 0 :chains 1 :jitter jitter}))
           particles (measure/get-particles result)
           stats (map (comp :sampler-stats first) particles)
@@ -218,7 +218,7 @@
                             {:log-density (fn [x _] (* -5e3 (aget x 0) (aget x 0)))
                              :value+grad (fn [x _] [(* -5e3 (aget x 0) (aget x 0))
                                                     (double-array [(* -1e4 (aget x 0))])])})
-        result (b/run-infer 22 #(infer/infer (spin (sample (block/block-dist narrow nil) :id :x :init [0.01]))
+        result (b/run-infer 22 #(infer/infer (fn [] (task (sample (block/block-dist narrow nil) :id :x :init [0.01])))
                                              {:method :nuts :seed 7 :iterations 50 :burn 0 :chains 2 :max-depth 6}))
         stats (map (comp :sampler-stats first) (measure/get-particles result))]
     (is (some :diverging stats))
@@ -266,8 +266,8 @@
         da-init @#'nuts/da-init]
     (with-redefs-fn {#'nuts/init-step-size (fn [_ _ _ _ eps] (swap! heuristic conj eps) 0.25)
                      #'nuts/da-init (fn [eps] (swap! restarts conj eps) (da-init eps))}
-      #(b/run-infer 41 (fn [] (infer/infer (spin (sample (block/block-dist (isotropic-gaussian 2 1.0) nil) :id :x
-                                                         :init [0.1 0.2]))
+      #(b/run-infer 41 (fn [] (infer/infer (fn [] (task (sample (block/block-dist (isotropic-gaussian 2 1.0) nil) :id :x
+                                                         :init [0.1 0.2])))
                                            {:method :nuts :seed 3 :iterations 210 :burn 200 :chains 1}))))
     (is (= 3 (count @heuristic)))
     (is (= 0.1 (first @heuristic)))
@@ -279,8 +279,8 @@
   ;; them, and a second run given them with :burn 0 runs frozen at them,
   ;; resumed from the first run's last state (no jitter: with :burn 0 every
   ;; draw is kept, so a start must already be a posterior draw)
-  (let [model #(spin (sample (block/block-dist scaled-gaussian nil) :id :x :init %))
-        warm (b/run-infer 125 #(infer/infer (model (vec (repeat 10 0.5)))
+  (let [model #(task (sample (block/block-dist scaled-gaussian nil) :id :x :init %))
+        warm (b/run-infer 125 #(infer/infer (fn [] (model (vec (repeat 10 0.5))))
                                             {:method :nuts :seed 11 :iterations 600 :chains 1 :burn 500}))
         particles (measure/get-particles warm)
         stats (mapv (comp :sampler-stats first) particles)
@@ -291,7 +291,7 @@
     ;; the variance estimate of N(0, s²) coordinates is s²
     (doseq [[v s] (map vector (:x inverse-metric) scales)]
       (is (< 0.5 (/ v (* s s)) 2.0) (str v " vs " (* s s))))
-    (let [frozen (b/run-infer 126 #(infer/infer (model last-draw)
+    (let [frozen (b/run-infer 126 #(infer/infer (fn [] (model last-draw))
                                                 {:method :nuts :seed 12 :iterations 1000 :chains 4 :burn 0 :jitter false
                                                  :step-size step-size :inverse-metric inverse-metric}))
           fstats (mapv (comp :sampler-stats first) (measure/get-particles frozen))]
@@ -310,7 +310,7 @@
   (is (thrown? AssertionError (k/nuts-kernel 10 {:inverse-metric [1.0 -1.0]})))
   (is (thrown? AssertionError (k/nuts-kernel 10 {:step-size {:x ##Inf}})))
   (is (= ::nuts/inverse-metric-dimension
-         (try (b/run-infer 127 #(infer/infer (spin (sample (block/block-dist (isotropic-gaussian 2 1.0) nil) :id :x :init [0.0 0.0]))
+         (try (b/run-infer 127 #(infer/infer (fn [] (task (sample (block/block-dist (isotropic-gaussian 2 1.0) nil) :id :x :init [0.0 0.0])))
                                              {:method :nuts :iterations 5 :chains 1 :inverse-metric [1.0 2.0 3.0]}))
               nil
               (catch Exception e
@@ -323,7 +323,7 @@
   "Each chain's first draw under NUTS frozen at a step size so small that it
   is the chain's start to 1e-9: `opts` go to infer."
   [seed block init opts]
-  (let [result (b/run-infer seed #(infer/infer (spin (sample (block/block-dist block nil) :id :x :init init))
+  (let [result (b/run-infer seed #(infer/infer (fn [] (task (sample (block/block-dist block nil) :id :x :init init)))
                                                (merge {:method :nuts :iterations 1 :burn 0 :max-depth 1
                                                        :step-size 1e-12}
                                                       opts)))]
@@ -373,12 +373,12 @@
                               :value+grad (fn [^doubles th {:keys [a]}]
                                             (let [b (aget th 0)]
                                               [(b-lp b a) (double-array [(+ (- a b) (- 2.0 b))])]))})]
-    (spin (let [[a] (sample (block/block-dist a-block nil) :id :a :init [0.0])
+    (task (let [[a] (sample (block/block-dist a-block nil) :id :a :init [0.0])
                 [b] (sample (block/block-dist b-block {:a a}) :id :b :init [0.0])]
             [a b]))))
 
 (deftest a-block-other-sites-depend-on-is-refused-with-the-workarounds
-  (let [e (try (b/run-infer 128 #(infer/infer (dependent-blocks) {:method :nuts :iterations 5 :chains 1 :burn 0}))
+  (let [e (try (b/run-infer 128 #(infer/infer (fn [] (dependent-blocks)) {:method :nuts :iterations 5 :chains 1 :burn 0}))
                nil
                (catch Exception e
                  (loop [e e] (cond (nil? e) nil
@@ -393,7 +393,7 @@
     (is (re-find #"k/delayed-acceptance-kernel" (ex-message e))))
   (testing "HMC, a suggested workaround, samples the same model exactly"
     ;; a ~ N(0,1), b | a ~ N(a,1), 2 | b ~ N(b,1): E[a | y] = y/3, E[b | y] = 2y/3
-    (let [measure (b/run-infer 129 #(infer/kernel-infer (dependent-blocks)
+    (let [measure (b/run-infer 129 #(infer/kernel-infer (fn [] (dependent-blocks))
                                                         (k/within-gibbs (k/hmc-kernel 4000 {:step-size 0.3 :steps 5 :samples :all :burn 500}))
                                                         4))
           s (fn [i] (d/summary measure #(nth % i)))]
@@ -421,7 +421,7 @@
                                         {:name :o :shape [2] :support :ordered}
                                         {:name :p :shape [3] :support :simplex}]}
                        {:log-density (fn [x _] (lp x)) :value+grad (fn [x _] [(lp x) (grad x)])})
-        measure (b/run-infer 131 #(infer/infer (spin (sample (block/block-dist b nil) :id :th :init (vec (repeat 6 0.0))))
+        measure (b/run-infer 131 #(infer/infer (fn [] (task (sample (block/block-dist b nil) :id :th :init (vec (repeat 6 0.0)))))
                                                {:method :nuts :seed 9 :iterations 1500 :chains 4 :burn 500}))
         x (fn [i] (d/summary measure #(nth (block/constrain b %) i)))
         dirichlet-sd (fn [a] (Math/sqrt (/ (* a (- 10.0 a)) (* 100.0 11.0))))
@@ -453,10 +453,10 @@
         weights (mapv (fn [s] (/ (Math/exp (/ (* -0.5 y y) (+ 1 (* s s)))) (Math/sqrt (+ 1 (* s s))))) sigmas)
         p-z1 (/ (weights 1) (reduce + weights))
         e-mu (+ (* (- 1 p-z1) (/ y (+ 1 (* 0.25)))) (* p-z1 (/ y (+ 1 4.0))))
-        measure (b/run-infer 132 #(infer/infer (spin (let [z (sample (dist/bernoulli 0.5) :id :z :init 0)
+        measure (b/run-infer 132 #(infer/infer (fn [] (task (let [z (sample (dist/bernoulli 0.5) :id :z :init 0)
                                                            [mu] (sample (block/block-dist sloppy {:s (nth sigmas z)})
                                                                         :id :mu :init [0.0])]
-                                                       [z mu]))
+                                                       [z mu])))
                                                {:method :nuts :seed 13 :iterations 3000 :burn 500 :chains 4}))
         z (d/summary measure #(double (first %)))
         mu (d/summary measure second)]

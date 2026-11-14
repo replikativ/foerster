@@ -19,7 +19,7 @@
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.inference.smc :as smc]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 ;; -----------------------------------------------------------------------------
 ;; Enumeration
@@ -85,7 +85,7 @@
         ks (mapv #(keyword (str "x" (inc %))) (range k))]
     {:addresses ks
      :model (fn []
-              (spin
+              (task
                (loop [i 0 prev nil xs []]
                  (if (= i k)
                    xs
@@ -131,7 +131,7 @@
                      (run-briefly
                       (fn []
                         (fn [resolve reject]
-                          ((smc/smc (model) n (merge {:seed seed} opts extra {:retained retained}))
+                          ((smc/smc (fn [] (model)) n (merge {:seed seed} opts extra {:retained retained}))
                            (fn [measure]
                              (let [ps (m/get-particles measure)
                                    i (random/with-stream* [7 8] ::pick

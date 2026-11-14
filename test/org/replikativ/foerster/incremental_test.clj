@@ -16,15 +16,13 @@
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.spindel.effects.await :as aw]
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
             [org.replikativ.spindel.engine.addressing :as addressing]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.spin.combinators :refer [parallel]]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.spindel.spin.keyed :refer [keyed]]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.trace :as trace]))
+            [org.replikativ.spindel.v2.savepoint :as sp]
+            [org.replikativ.spindel.v2.trace :as trace]))
 
 (defn- await* [op]
   (let [p (promise)]
@@ -54,13 +52,13 @@
   anchors: scoring needs none, and a model under `parallel` must not be
   forked while its children are in flight (spindel savepoints.md)."
   [model constraints]
-  (let [root (ctx/create-execution-context)
+  (let [root (v2/world)
         session (sp/open! root {:seed (random/fresh-seed) :fork-opts {:systems :none}
                                 :retain-released? false})]
     (try
       (await* (trace/run session model (itrace/policy {:constraints constraints})
                          {:anchor? (constantly false)}))
-      (finally (await* (sp/close! session))))))
+      (finally (await* ((sp/close! session) identity identity))))))
 
 (defn consistent
   "Differences between `moved` (a trace an update produced) and a
@@ -90,26 +88,26 @@
 (def ^:private ys (mapv #(+ (* -2.0 %) 1.0 (if (zero? (mod (long (* 2 %)) 7)) 40.0 0.0)) xs))
 
 (defn- point [m b x y i]
-  (spin
+  (task
    (let [o (sample (dist/flip 0.1) :id [:o i])]
      (observe (dist/normal (if o 0.0 (+ (* m x) b)) (if o 100.0 0.5)) y :id [:y i])
      o)))
 
 (defn- regression-items []
-  (spin
+  (task
    (let [m (sample (dist/normal 0.0 1.0) :id :m)
          b (sample (dist/normal 0.0 1.0) :id :b)]
      (loop [i 0 n-out 0]
        (if (= i (count xs))
          [m b n-out]
-         (let [o (aw/await (addressing/with-key i (point m b (xs i) (ys i) i)))]
+         (let [o (await-op (addressing/with-key i (point m b (xs i) (ys i) i)))]
            (recur (inc i) (if o (inc n-out) n-out))))))))
 
 (defn- regression-parallel []
-  (spin
+  (task
    (let [m (sample (dist/normal 0.0 1.0) :id :m)
          b (sample (dist/normal 0.0 1.0) :id :b)
-         os (aw/await (apply parallel (map-indexed (fn [i x] (addressing/with-key i (point m b x (ys i) i))) xs)))]
+         os (await-op (apply parallel (map-indexed (fn [i x] (addressing/with-key i (point m b x (ys i) i))) xs)))]
      [m b (count (filter true? os))])))
 
 (defn- flip-at [address]
@@ -124,7 +122,7 @@
   "Run `moves` (mh-step options) in turn from a generated trace of `model`,
   each accepted or not; after each, the current trace must be consistent."
   [model moves]
-  (let [t0 (:trace (await* (gfi/generate (model) {})))]
+  (let [t0 (:trace (await* (gfi/generate (fn [] (model)) {})))]
     (try
       (is (nil? (consistent (model) t0)) "the generated trace")
       (reduce (fn [t [i opts]]
@@ -139,37 +137,37 @@
   ;; awaits its items in turn (anchors inside `parallel` children are forks
   ;; taken while siblings are in flight)
   (random/set-seed! 11)
-  (let [root (ctx/create-execution-context)]
+  (let [root (v2/world)]
     (try
-      (binding [rtc/*execution-context* root]
+      (binding [v2/*world* root]
         (check-moves regression-items
                      [(flip-at [:o 3]) (flip-at [:o 17]) (shift-at :b)
                       (flip-at [:o 3]) (shift-at :m) (flip-at [:o 0])]))
-      (finally (ctx/stop-context! root)))))
+      (finally (v2/release-world! root)))))
 
 (deftest a-parallel-model-scores-from-scratch
   (random/set-seed! 12)
-  (let [root (ctx/create-execution-context)]
+  (let [root (v2/world)]
     (try
-      (binding [rtc/*execution-context* root]
+      (binding [v2/*world* root]
         (let [t (from-scratch (regression-parallel) {})]
           (is (= (* 2 (count xs)) (count (filter vector? (keys (:trace/entries t))))))
           (is (nil? (consistent (regression-parallel) t)))))
-      (finally (ctx/stop-context! root)))))
+      (finally (v2/release-world! root)))))
 
 ;; --- incremental: points as one keyed loop --------------------------------------
 
 (defn- keyed-point [m b x y i]
-  (spin
+  (task
    (let [o (sample (dist/flip 0.1) :id [:points i :o])]
      (observe (dist/normal (if o 0.0 (+ (* m x) b)) (if o 100.0 0.5)) y :id [:points i :y])
      o)))
 
 (defn- regression-keyed []
-  (spin
+  (task
    (let [m (sample (dist/normal 0.0 1.0) :id :m)
          b (sample (dist/normal 0.0 1.0) :id :b)
-         os (aw/await (keyed :points (range (count xs)) (fn [i] (keyed-point m b (xs i) (ys i) i))))]
+         os (await-op (keyed :points (range (count xs)) (fn [i] (keyed-point m b (xs i) (ys i) i))))]
      [m b (count (filter true? os))])))
 
 (defn- keyed-flip [i] (flip-at [:points i :o]))
@@ -180,10 +178,10 @@
   ;; from-scratch run with its choices, and an incremental move's ratio
   ;; must equal the one computed over the whole trace.
   (random/set-seed! 13)
-  (let [root (ctx/create-execution-context)]
+  (let [root (v2/world)]
     (try
-      (binding [rtc/*execution-context* root]
-        (let [t0 (:trace (await* (gfi/generate (regression-keyed) {})))]
+      (binding [v2/*world* root]
+        (let [t0 (:trace (await* (gfi/generate (fn [] (regression-keyed)) {})))]
           (try
             (is (= 2 (count (filter :savepoint (vals (:trace/entries t0)))))
                 "anchors only at the root's sites")
@@ -199,35 +197,35 @@
                     t0 (map-indexed vector [(keyed-flip 3) (keyed-flip 17) (shift-at :b)
                                             (keyed-flip 3) (shift-at :m) (keyed-flip 0)]))
             (finally (await* (gfi/close! t0))))))
-      (finally (ctx/stop-context! root)))))
+      (finally (v2/release-world! root)))))
 
 ;; --- a mixture: Gibbs over one key's assignment ---------------------------------------
 
 (defn- mix-point [w mu0 mu1 x i]
-  (spin
+  (task
    (let [z (sample (dist/flip w) :id [:points i :z])]
      (observe (dist/normal (if z mu1 mu0) 1.0) x :id [:points i :x])
      z)))
 
 (defn- mixture [xs]
-  (spin
+  (task
    (let [w (sample (dist/beta 2.0 2.0) :id :w)
          mu0 (sample (dist/normal -2.0 1.0) :id :mu0)
          mu1 (sample (dist/normal 2.0 1.0) :id :mu1)
-         zs (aw/await (keyed :points (range (count xs)) (fn [i] (mix-point w mu0 mu1 (xs i) i))))]
+         zs (await-op (keyed :points (range (count xs)) (fn [i] (mix-point w mu0 mu1 (xs i) i))))]
      (count (filter true? zs)))))
 
 (deftest gibbs-over-an-assignment-is-exact
   ;; with the weight and means fixed, each assignment's posterior is known in
   ;; closed form; sweeps of update-gibbs must reproduce it
   (random/set-seed! 21)
-  (let [root (ctx/create-execution-context)
+  (let [root (v2/world)
         xs [-1.2 0.3 0.9 2.1]
         fixed {:w 0.4 :mu0 -1.0 :mu1 1.5}
         sweeps 800]
     (try
-      (binding [rtc/*execution-context* root]
-        (let [t0 (:trace (await* (gfi/generate (mixture xs) fixed)))
+      (binding [v2/*world* root]
+        (let [t0 (:trace (await* (gfi/generate (fn [] (mixture xs)) fixed)))
               counts (loop [t t0 s 0 it 0 counts (vec (repeat (count xs) 0))]
                        (if (= s sweeps)
                          counts
@@ -244,19 +242,19 @@
           (doseq [[p q] (map vector (map #(/ % (double sweeps)) counts) exact)]
             ;; four standard errors at 800 sweeps
             (is (< (Math/abs (- p q)) (* 4 (Math/sqrt (/ (* q (- 1 q)) sweeps)) 1.2)) (str p " vs " q)))))
-      (finally (ctx/stop-context! root)))))
+      (finally (v2/release-world! root)))))
 
 (deftest a-mixture-chain-stays-consistent
   ;; Gibbs over assignments (one key each) and random-walk moves on the
   ;; weight and means (root sites, replayed): every trace a from-scratch run
   (random/set-seed! 22)
-  (let [root (ctx/create-execution-context)
+  (let [root (v2/world)
         xs [-2.3 -1.8 -2.6 1.9 2.4 -1.1 2.2 -2.0]
         rw (fn [a] {:select (fn [_ _] {:targets #{a} :log-selection (fn [_] 0.0)})
                     :propose (proposal/random-walk 0.3)})]
     (try
-      (binding [rtc/*execution-context* root]
-        (let [t0 (:trace (await* (gfi/generate (mixture xs) {})))]
+      (binding [v2/*world* root]
+        (let [t0 (:trace (await* (gfi/generate (fn [] (mixture xs)) {})))]
           (reduce (fn [[t it] s]
                     (let [[t it] (reduce (fn [[t it] i]
                                            [(:trace (await* (itrace/update-gibbs t [:points i :z] {:iteration it}))) (inc it)])
@@ -266,4 +264,4 @@
                       (is (nil? (consistent (mixture xs) t)) (str "after sweep " s))
                       [t it]))
                   [t0 0] (range 4))))
-      (finally (ctx/stop-context! root)))))
+      (finally (v2/release-world! root)))))

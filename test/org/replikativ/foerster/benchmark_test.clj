@@ -21,11 +21,9 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.effects :refer [sample observe]]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.effects.await :as aw]
-            [org.replikativ.spindel.engine.core :as rtc]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.executor :as executor]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.execution :as executor]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.random :as random]))
 
@@ -36,15 +34,15 @@
 (defonce ^:private serial-executor (executor/thread-pool-executor {:threads 1}))
 
 (defn run-infer
-  "Run `(make-inference)` (a spin-returning inference call) to its measure
-   under a fresh root context, seeded."
+  "Run `(make-inference)` (an inference call: a v2 task, or a CPS operation)
+   to its measure under a fresh root world, seeded."
   [seed make-inference]
   (random/set-seed! (long seed))
-  (let [root (ctx/create-execution-context)]
-    (try (binding [rtc/*execution-context* root]
+  (let [root (v2/world)]
+    (try (binding [v2/*world* root]
            (let [op (make-inference)
-                 r (if (instance? org.replikativ.spindel.spin.core.Spin op)
-                     (deref (future @(spin (aw/await op))) 300000 ::timeout)
+                 r (if (v2/handle? op)
+                     (v2/value op 300000 ::timeout)
                      ;; a CPS operation (fn [resolve reject])
                      (let [p (promise)]
                        (op #(deliver p %) #(deliver p %))
@@ -52,7 +50,7 @@
                          (if (instance? Throwable v) (throw v) v))))]
              (when (= r ::timeout) (throw (ex-info "inference timed out" {})))
              r))
-         (finally (ctx/stop-context! root)))))
+         (finally (v2/release-world! root)))))
 
 (defn weighted-values
   "[[value normalized-weight] …] of a measure's program results."
@@ -88,7 +86,7 @@
 ;; =============================================================================
 
 (defn gaussian-model [observations sigma mu0 sigma0]
-  (spin
+  (task
    (let [mu (sample (dist/normal mu0 sigma0))]
      (loop [os observations]
        (when (seq os)
@@ -100,7 +98,7 @@
 (def gaussian-truth [7.25 (Math/sqrt (/ 1.0 1.2))])
 
 (defn hmm-model [observations init-dist trans-dists obs-dists]
-  (spin
+  (task
    (loop [os observations
           states [(sample init-dist)]]
      (if (empty? os)
@@ -139,7 +137,7 @@
 (defn- fib [n] (loop [a 0 b 1 m 0] (if (= m n) a (recur b (+ a b) (inc m)))))
 
 (defn branching-model []
-  (spin
+  (task
    (let [count-prior (dist/poisson 4)
          r (sample count-prior)
          l (if (< 4 r)
@@ -168,7 +166,7 @@
 (defn conjugate-model
   "x ~ N(0,1), ten observations y=1 ~ N(x,1). Closed-form evidence."
   []
-  (spin
+  (task
    (let [x (sample (dist/normal 0 1))]
      (loop [i 0] (when (< i 10) (observe (dist/normal x 1) 1.0) (recur (inc i))))
      x)))
@@ -181,7 +179,7 @@
 (defn interleaved-model
   "An observe sits between the two latents: a move on z must still see y₁."
   []
-  (spin
+  (task
    (let [x (sample (dist/normal 0 1))]
      (observe (dist/normal x 1) 2.0)
      (let [z (sample (dist/normal 0 1))]
@@ -192,7 +190,7 @@
   "z's prior depends on x: a move on x changes z's density.
    Posterior of x: y = x + e₁ + e₂ with y = 2 → N(2/3, 2/3)."
   []
-  (spin
+  (task
    (let [x (sample (dist/normal 0 1))
          z (sample (dist/normal x 1))]
      (observe (dist/normal z 1) 2.0)
@@ -201,7 +199,7 @@
 (defn switch-model
   "Which latent exists depends on b. p(b | y=5) ∝ ½N(5;0,√2) vs ½N(5;5,√2)."
   []
-  (spin
+  (task
    (let [b (sample (dist/flip 0.5))
          v (if b (sample (dist/normal 0 1)) (sample (dist/normal 5 1)))]
      (observe (dist/normal v 1) 5.0)
@@ -215,7 +213,7 @@
   "Particles reach one or two observes depending on b.
    p(b | …) ∝ ½·N(0.5;0,1) vs ½ — b=true pays the extra observe."
   []
-  (spin
+  (task
    (let [b (sample (dist/flip 0.5))]
      (when b (observe (dist/normal 0 1) 0.5))
      (observe (dist/normal 0 1) 0.1)
@@ -231,15 +229,15 @@
 
 (deftest evidence-is-estimated
   (testing "importance sampling: log mean weight, not log sum"
-    (let [meas (run-infer 1 #(infer/importance-sampling (conjugate-model) 2000 {:executor serial-executor}))]
+    (let [meas (run-infer 1 #(infer/importance-sampling (fn [] (conjugate-model)) 2000 {:executor serial-executor}))]
       (is (< (Math/abs (- (m/log-marginal meas) conjugate-log-evidence)) 0.3)
           (str (m/log-marginal meas) " vs " conjugate-log-evidence))))
   (testing "SMC on savepoints: the same estimate"
-    (let [meas (run-infer 3 #(smc/smc (conjugate-model) 500 {:executor serial-executor}))]
+    (let [meas (run-infer 3 #(smc/smc (fn [] (conjugate-model)) 500 {:executor serial-executor}))]
       (is (< (Math/abs (- (m/log-marginal meas) conjugate-log-evidence)) 0.3)
           (str (m/log-marginal meas) " vs " conjugate-log-evidence))))
   (testing "SMC: the normalizer accumulated across resampling"
-    (let [meas (run-infer 2 #(infer/smc-infer (conjugate-model) 500 {:executor serial-executor}))]
+    (let [meas (run-infer 2 #(infer/smc-infer (fn [] (conjugate-model)) 500 {:executor serial-executor}))]
       (is (< (Math/abs (- (m/log-marginal meas) conjugate-log-evidence)) 0.3)
           (str (m/log-marginal meas) " vs " conjugate-log-evidence)))))
 
@@ -253,14 +251,14 @@
    methods get more, shorter sweeps — a static parameter only moves between
    sweeps."
   (let [o {:executor serial-executor}]
-    {:importance (fn [mf n] (infer/importance-sampling (mf) n o))
-     :smc        (fn [mf n] (infer/smc-infer (mf) (quot n 4) o))
-     :lmh        (fn [mf n] (infer/kernel-infer (mf) (k/single-site-mh-kernel (quot n 4) {:samples :all :burn (quot n 8)}) 4 o))
-     :rmh        (fn [mf n] (infer/kernel-infer (mf) (k/random-walk-mh-kernel (quot n 4) {:step-size 0.5 :samples :all :burn (quot n 8)}) 4 o))
-     :pimh       (fn [mf n] (infer/pimh-infer (mf) 20 (quot n 40) o))
-     :pgibbs     (fn [mf n] (infer/pgibbs-infer (mf) 20 (quot n 40) o))
-     :pgas       (fn [mf n] (infer/pgas-infer (mf) 30 (quot n 60) o))
-     :ipmcmc     (fn [mf n] (infer/ipmcmc-infer (mf) 30 (quot n 100) (assoc o :num-nodes 4)))}))
+    {:importance (fn [mf n] (infer/importance-sampling (fn [] (mf)) n o))
+     :smc        (fn [mf n] (infer/smc-infer (fn [] (mf)) (quot n 4) o))
+     :lmh        (fn [mf n] (infer/kernel-infer (fn [] (mf)) (k/single-site-mh-kernel (quot n 4) {:samples :all :burn (quot n 8)}) 4 o))
+     :rmh        (fn [mf n] (infer/kernel-infer (fn [] (mf)) (k/random-walk-mh-kernel (quot n 4) {:step-size 0.5 :samples :all :burn (quot n 8)}) 4 o))
+     :pimh       (fn [mf n] (infer/pimh-infer (fn [] (mf)) 20 (quot n 40) o))
+     :pgibbs     (fn [mf n] (infer/pgibbs-infer (fn [] (mf)) 20 (quot n 40) o))
+     :pgas       (fn [mf n] (infer/pgas-infer (fn [] (mf)) 30 (quot n 60) o))
+     :ipmcmc     (fn [mf n] (infer/ipmcmc-infer (fn [] (mf)) 30 (quot n 100) (assoc o :num-nodes 4)))}))
 
 (defn check
   "Weighted values of `algo` on `model-fn`. Prints a line per run: the
@@ -345,17 +343,17 @@
 
 (deftest bbvi-learns-the-posterior
   (testing "gaussian: q converges to the conjugate posterior"
-    (let [meas (run-infer 18 #(infer/bbvi-infer (apply gaussian-model gaussian-args) 100 60 {:executor serial-executor}))
+    (let [meas (run-infer 18 #(infer/bbvi-infer (fn [] (apply gaussian-model gaussian-args)) 100 60 {:executor serial-executor}))
           [q] (vals (infer/get-variational-dists meas))
           kl (kl-normal (w-mean-sd identity (weighted-values meas)) gaussian-truth)]
       (is (< (Math/abs (- (:mu q) 7.25)) 0.3) (str "q " q))
       (is (< kl 0.1) (str "weighted samples KL " kl))))
   (testing "with no updates, importance sampling from the priors"
-    (let [meas (run-infer 20 #(infer/bbvi-infer (conjugate-model) 50 0 {:executor serial-executor}))]
+    (let [meas (run-infer 20 #(infer/bbvi-infer (fn [] (conjugate-model)) 50 0 {:executor serial-executor}))]
       (is (= 50 (count (m/get-particles meas))))
       (is (every? #(instance? org.replikativ.foerster.dist.Normal %)
                   (vals (infer/get-variational-dists meas))))))
   (testing "its weighted samples estimate the evidence"
-    (let [meas (run-infer 19 #(infer/bbvi-infer (conjugate-model) 200 40 {:executor serial-executor}))]
+    (let [meas (run-infer 19 #(infer/bbvi-infer (fn [] (conjugate-model)) 200 40 {:executor serial-executor}))]
       (is (< (Math/abs (- (m/log-marginal meas) conjugate-log-evidence)) 0.2)
           (str (m/log-marginal meas))))))

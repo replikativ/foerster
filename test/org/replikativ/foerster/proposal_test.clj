@@ -9,10 +9,10 @@
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- model [proposal]
-  (spin
+  (task
    (let [mu (if proposal
               (sample (dist/normal 0.0 1.0) :id :mu :proposal proposal)
               (sample (dist/normal 0.0 1.0) :id :mu))]
@@ -22,8 +22,8 @@
 (def ^:private log-evidence (dist/logpdf (dist/normal 0.0 (Math/sqrt 1.25)) 1.0))
 
 (deftest a-guide-keeps-the-posterior-and-the-evidence
-  (let [prior (b/run-infer 61 #(infer/importance-sampling (model nil) 2000))
-        guided (b/run-infer 61 #(infer/importance-sampling (model (dist/normal 0.8 0.6)) 2000))]
+  (let [prior (b/run-infer 61 #(infer/importance-sampling (fn [] (model nil)) 2000))
+        guided (b/run-infer 61 #(infer/importance-sampling (fn [] (model (dist/normal 0.8 0.6))) 2000))]
     (doseq [[label measure] [["prior" prior] ["guide" guided]]]
       (testing label
         (let [[mean sd] (b/w-mean-sd identity (b/weighted-values measure))]
@@ -35,7 +35,7 @@
         (str "ESS " (m/effective-sample-size guided) " vs " (m/effective-sample-size prior)))))
 
 (deftest a-markov-chain-over-a-guided-site
-  (let [measure (b/run-infer 62 #(infer/kernel-infer (model (dist/normal 2.0 0.3))
+  (let [measure (b/run-infer 62 #(infer/kernel-infer (fn [] (model (dist/normal 2.0 0.3)))
                                                      (k/single-site-mh-kernel 400 {:samples :all :burn 100})
                                                      4))
         [mean sd] (b/w-mean-sd identity (b/weighted-values measure))]

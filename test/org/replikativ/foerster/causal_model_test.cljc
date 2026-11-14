@@ -1,13 +1,14 @@
 (ns org.replikativ.foerster.causal-model-test
-  (:require #?(:clj [clojure.test :refer [deftest is]]
+  (:require [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer-macros [deftest is async]])
             [org.replikativ.foerster.causal.model :as cm]
             [org.replikativ.foerster.causal.counterfactual :as cf]
             [org.replikativ.foerster.causal.attribution :as attribution]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.core :as ec]))
+            
+            ))
 
 (def dag {:directed [[:z :x] [:z :y] [:x :y]]})
 
@@ -126,7 +127,7 @@
 
 (deftest fitted-model-integrates-with-worlds-attribution-and-repairs
   (let [fitted (cm/fit dag (data 150 4)) incident {:z 0.0 :x 3.0 :y 10.0}
-        a (cm/abduct fitted incident) context (ctx/create-execution-context)
+        a (cm/abduct fitted incident) context (v2/world)
         check (fn [result]
                 (let [[worlds report repairs] result
                       predicted (cm/replay fitted (:noise a) {:x 0.0})]
@@ -136,7 +137,7 @@
                   (is (= :set-x-zero (:candidate (first repairs))))
                   (is (= 1.0 (:success-probability (first repairs))))))
         task (fn [resolve reject]
-               (binding [ec/*execution-context* context]
+               (binding [v2/*world* context]
                  (let [m (cm/model fitted)]
                    ((cf/worlds m a [[:repaired {:x {:do 0.0}}]])
                     (fn [worlds]

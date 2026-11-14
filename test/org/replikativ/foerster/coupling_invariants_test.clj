@@ -11,7 +11,7 @@
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- next-after
   "The uniform drawn right after one draw of `d` on a fresh stream: equal for
@@ -29,17 +29,17 @@
     (testing label
       (is (= (next-after a) (next-after b))))))
 
-(defn- coarse [] (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)
+(defn- coarse [] (task (let [x (sample (dist/normal 0.0 1.0) :id :x)
                              y (sample (dist/normal x 1.0) :id :y)]
                          [x y])))
 
-(defn- fine [] (spin (let [x (sample (dist/normal 0.0 2.0) :id :x)
+(defn- fine [] (task (let [x (sample (dist/normal 0.0 2.0) :id :x)
                            _ (sample (dist/bernoulli 0.5) :id :extra)
                            y (sample (dist/normal (* 0.5 x) 3.0) :id :y)]
                        [x y])))
 
 (defn- simulated [model seed]
-  (itrace/choices (b/run-infer 1 #(gfi/simulate (model) {:seed seed}))))
+  (itrace/choices (b/run-infer 1 #(gfi/simulate (fn [] (model)) {:seed seed}))))
 
 (deftest named-sites-couple-across-representations
   ;; same session seed, same addresses: the Gaussian sites see the same

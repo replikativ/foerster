@@ -10,7 +10,7 @@
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (def ^:private ys [0.4 -0.9 1.3 0.2 -0.5 1.1])
 
@@ -18,7 +18,7 @@
   "A two-state hidden Markov model over `ys`: 64 paths, so enumeration gives
   the evidence exactly."
   []
-  (spin
+  (task
    (loop [t 0 prev false]
      (if (= t (count ys))
        prev
@@ -26,7 +26,7 @@
          (observe (dist/normal (if x 1.0 -1.0) 1.0) (nth ys t) :id [:y t])
          (recur (inc t) x))))))
 
-(defn- status [seed opts] (contract/normalizer-status (b/run-infer seed #(infer/infer (hmm) opts))))
+(defn- status [seed opts] (contract/normalizer-status (b/run-infer seed #(infer/infer (fn [] (hmm)) opts))))
 
 (deftest every-method-states-its-normalizer
   (is (= :exact (status 1 {:method :enumerate})))
@@ -36,11 +36,11 @@
       "a caller's proposals carry the correction obligations")
   (is (= :unavailable (status 5 {:method :mh :iterations 50 :chains 2})))
   (testing "tempered SMC chooses its schedule from its population"
-    (let [r (b/run-infer 6 #(infer/infer (hmm) {:method :tempered :particles 20}))]
+    (let [r (b/run-infer 6 #(infer/infer (fn [] (hmm)) {:method :tempered :particles 20}))]
       (is (= :unverified (contract/normalizer-status r)))
       (is (= :population (get-in r [:inference-contract :adaptation])))))
-  (is (contract/unbiased-evidence? (b/run-infer 7 #(infer/infer (hmm) {:method :smc :particles 20}))))
-  (is (not (contract/unbiased-evidence? (b/run-infer 8 #(infer/infer (hmm) {:method :mh :iterations 50 :chains 2}))))))
+  (is (contract/unbiased-evidence? (b/run-infer 7 #(infer/infer (fn [] (hmm)) {:method :smc :particles 20}))))
+  (is (not (contract/unbiased-evidence? (b/run-infer 8 #(infer/infer (fn [] (hmm)) {:method :mh :iterations 50 :chains 2}))))))
 
 (deftest the-vocabulary-is-closed
   (is (= {:semantics :weighted-population :normalizer {:status :unverified}} (contract/weighted-population)))
@@ -57,10 +57,10 @@
   ;; Ẑ/Z over independent runs of 8 particles with the default adaptive
   ;; resampling: its mean is 1 (the claim behind :unbiased), within 4
   ;; standard errors estimated from the runs themselves
-  (let [z (Math/exp (m/log-marginal (b/run-infer 1 #(infer/infer (hmm) {:method :enumerate}))))
+  (let [z (Math/exp (m/log-marginal (b/run-infer 1 #(infer/infer (fn [] (hmm)) {:method :enumerate}))))
         ratios (vec (for [seed (range 400)]
                       (/ (Math/exp (m/log-marginal (b/run-infer (+ 1000 seed)
-                                                                #(infer/infer (hmm) {:method :smc :particles 8}))))
+                                                                #(infer/infer (fn [] (hmm)) {:method :smc :particles 8}))))
                          z)))
         n (count ratios)
         mean (/ (reduce + ratios) n)

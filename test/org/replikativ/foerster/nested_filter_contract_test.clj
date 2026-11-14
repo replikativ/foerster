@@ -6,9 +6,8 @@
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.inference.smc2 :as smc2]
             [org.replikativ.foerster.runtime.scope :as scope]
-            [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as engine]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- run [operation]
   (let [result (promise)]
@@ -20,15 +19,15 @@
         (throw (ex-info "Filter operation timed out" {}))))))
 
 (defn- with-root [f]
-  (let [root (context/create-execution-context)]
+  (let [root (v2/world)]
     (try
       (binding [engine/*execution-context* root] (f))
-      (finally (context/stop-context! root)))))
+      (finally (v2/release-world! root)))))
 
 (deftest smc2-rejects-a-parameter-prior-after-an-inner-latent
   (with-root
     (fn []
-      (let [model (spin (let [z (sample (d/flip 0.5) :id :z)
+      (let [model (task (let [z (sample (d/flip 0.5) :id :z)
                               theta (sample (d/flip (if z 0.9 0.1)) :id :theta)]
                           (sample (d/flip (if theta 0.8 0.2)) :id :y :stream true)
                           theta))]
@@ -39,7 +38,7 @@
   (with-root
     (fn []
       (let [executed (atom 0)
-            model (spin (swap! executed inc)
+            model (task (swap! executed inc)
                         (sample (d/flip 0.5) :id :theta)
                         (sample (d/flip 0.5) :id :y :stream true))]
         (doseq [[option value type] [[:world-policy :fork ::smc2/unsupported-world-policy]
@@ -58,7 +57,7 @@
 (deftest dependent-parameters-are-allowed-within-the-prior-prefix
   (with-root
     (fn []
-      (let [model (spin (let [a (sample (d/flip 0.5) :id :a)
+      (let [model (task (let [a (sample (d/flip 0.5) :id :a)
                               b (sample (d/flip (if a 0.9 0.1)) :id :b)]
                           (sample (d/flip (if b 0.8 0.2)) :id :y :stream true)
                           {:a a :b b}))
@@ -75,7 +74,7 @@
 (deftest a-stream-step-cannot-consume-two-observations
   (with-root
     (fn []
-      (let [model (spin (let [a (sample (d/normal 0 1) :id :y0 :stream true)
+      (let [model (task (let [a (sample (d/normal 0 1) :id :y0 :stream true)
                               b (sample (d/normal 0 1) :id :y1 :stream true)]
                           [a b]))
             start (run (smc/stream model 2 {:seed 23}))]
@@ -92,7 +91,7 @@
 (deftest proposal-control-flow-cannot-break-the-parameter-prefix
   (with-root
     (fn []
-      (let [model (spin (let [a (sample (d/uniform 0 1) :id :a)
+      (let [model (task (let [a (sample (d/uniform 0 1) :id :a)
                               _ (when (> a 0.5) (sample (d/flip 0.5) :id :z))
                               b (sample (d/uniform 0 1) :id :b)]
                           (sample (d/flip 0.5) :id :y :stream true)
@@ -111,7 +110,7 @@
 (deftest a-stream-barrier-cannot-hide-unreached-parameters
   (with-root
     (fn []
-      (let [model (spin (sample (d/flip 0.5) :id :a)
+      (let [model (task (sample (d/flip 0.5) :id :a)
                         (sample (d/flip 0.5) :id :y :stream true)
                         (sample (d/flip 0.5) :id :b))]
         (with-redefs-fn {#'smc2/prior-draw (fn [& _]

@@ -8,29 +8,29 @@
             [org.replikativ.foerster.runtime.trace :as it]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.moves.transition :as transition]
-            [org.replikativ.spindel.effects.await :as aw]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.spindel.spin.keyed :refer [keyed]]
-            [org.replikativ.spindel.trace :as trace]))
+            [org.replikativ.spindel.v2.trace :as trace]))
 
 (defn- execute [make body]
   (b/run-infer 509
                #(pcps/async
-                 (let [t (pcps/await (gfi/run-policy (make) (it/policy {:init? true}) {:seed 509}))]
+                 (let [t (pcps/await (gfi/run-policy (fn [] (make)) (it/policy {:init? true}) {:seed 509}))]
                    (try (pcps/await (body t))
                         (finally (pcps/await (gfi/close! t))))))))
 
 (defn- branch-child []
-  (spin
+  (task
    (let [x (sample (d/flip 0.5) :id :branch :init true)]
      (when x
-       (aw/await (spin (let [z (sample (d/flip 0.7) :id :nested-z :init true)]
+       (await-op (task (let [z (sample (d/flip 0.7) :id :nested-z :init true)]
                          (observe (d/flip (if z 0.9 0.2)) true :id :nested-y)))))
      x)))
 
 (deftest removal-accounting-includes-nested-spin-deaths
   (let [{:keys [delta absent? full-ratio changed-ratio result source]}
-        (execute #(spin (aw/await (keyed :items [0] (fn [_] (branch-child)))))
+        (execute #(task (await-op (keyed :items [0] (fn [_] (branch-child)))))
                  (fn [old]
                    (pcps/async
                     (let [next (pcps/await (it/reexecute old #{:branch}
@@ -56,7 +56,7 @@
                                  (fn [t] (it/update-gibbs t :branch {:keep-old? true}))))))
 
 (defn- coin []
-  (spin (let [x (sample (d/flip 0.3) :id :x :init true)]
+  (task (let [x (sample (d/flip 0.3) :id :x :init true)]
           (observe (d/flip (if x 0.9 0.2)) true :id :y)
           x)))
 
@@ -68,8 +68,8 @@
     (is (< (Math/abs (- (- (get scores true) (get scores false)) expected)) 1e-10))))
 
 (deftest an-unsupported-resumed-parent-is-refused-without-consuming-source
-  (let [result (execute #(spin (let [xs (aw/await (keyed :items [0]
-                                                         (fn [_] (spin (sample (d/flip 0.5) :id :x :init true)))))]
+  (let [result (execute #(task (let [xs (await-op (keyed :items [0]
+                                                         (fn [_] (task (sample (d/flip 0.5) :id :x :init true)))))]
                                  (when (first xs) (observe (d/flip 0.8) true :id :tail))
                                  xs))
                         (fn [t]
@@ -85,7 +85,7 @@
     (is (:tail? result))))
 
 (deftest rewritten-likelihoods-replace-their-policy-ledger-contributions
-  (let [rows (execute #(spin (aw/await (keyed :coins [0] (fn [_] (coin)))))
+  (let [rows (execute #(task (await-op (keyed :coins [0] (fn [_] (coin)))))
                       (fn [source]
                         (pcps/async
                          (loop [t source i 0 rows []]
@@ -115,10 +115,10 @@
 
 (deftest cached-ordinary-descendants-cannot-silently-ignore-a-requested-update
   (let [result (execute
-                #(spin (sample (d/flip 0.5) :id :prefix :init true)
-                       (aw/await (keyed :outer [0]
+                #(task (sample (d/flip 0.5) :id :prefix :init true)
+                       (await-op (keyed :outer [0]
                                         (fn [_]
-                                          (spin (aw/await (spin (sample (d/flip 0.5) :id :x :init true))))))))
+                                          (task (await-op (task (sample (d/flip 0.5) :id :x :init true))))))))
                 (fn [t] (pcps/async
                          (let [next (:trace (pcps/await (gfi/update t {:x false})))]
                            [(:trace/result t) (:trace/result next) (get (it/choices next) :x)]))))]

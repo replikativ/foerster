@@ -11,9 +11,7 @@
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.causal.attribution :as attr]
             [org.replikativ.foerster.effects :refer [sample observe deterministic]]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.random :as random]))
 
@@ -25,10 +23,10 @@
         (throw (ex-info "CPS operation timed out" {})))
       (if (= :ok (first outcome)) (second outcome) (throw (second outcome))))))
 
-(def ^:private root (context/create-execution-context))
+(def ^:private root (v2/world))
 
 (defmacro ^:private model [& body]
-  `(binding [ec/*execution-context* root] (spin ~@body)))
+  `(binding [v2/*world* root] (task ~@body)))
 
 (defn- close? [a b] (< (Math/abs (- a b)) 1e-9))
 
@@ -46,9 +44,9 @@
 (deftest a-linear-gaussian-twin-is-exact
   ;; X = Ux, Y = 2X + Uy. Seen X = 1, Y = 3 (so Uy = 1); had X been 2, Y = 5.
   (let [[pair] (await-cps (cf/counterfactual
-                           (model (let [x (sample (dist/normal 0.0 1.0) :id :x)
+                           (fn [] (model (let [x (sample (dist/normal 0.0 1.0) :id :x)
                                         y (sample (dist/normal (* 2.0 x) 1.0) :id :y)]
-                                    {:x x :y y}))
+                                    {:x x :y y})))
                            {:evidence {:x 1.0 :y 3.0} :interventions {:x {:do 2.0}}}))]
     (is (= {:x 1.0 :y 3.0} (:factual pair)))
     (is (close? 5.0 (:y (:counterfactual pair))))
@@ -59,10 +57,10 @@
   ;; over Z is uncertain, but Y - X = Z + Uy is known: Y' = 2 + 1.5 = 3.5.
   (random/set-seed! 2)
   (let [pairs (await-cps (cf/counterfactual
-                          (model (let [z (sample (dist/normal 0.0 1.0) :id :z)
+                          (fn [] (model (let [z (sample (dist/normal 0.0 1.0) :id :z)
                                        x (sample (dist/normal z 1.0) :id :x)
                                        y (sample (dist/normal (+ x z) 1.0) :id :y)]
-                                   {:z z :x x :y y}))
+                                   {:z z :x x :y y})))
                           {:evidence {:x 1.0 :y 2.5} :interventions {:x {:do 2.0}} :particles 50}))]
     (is (< 1 (count (distinct (map (comp :z :factual) pairs)))) "Z is sampled, not fixed")
     (is (every? #(close? 3.5 (:y (:counterfactual %))) pairs))
@@ -73,9 +71,9 @@
   ;; Y = [U < .3] with U | Y=true, X=true ~ U(0,1): P(Y' = false) = .7.
   (random/set-seed! 3)
   (let [pairs (await-cps (cf/counterfactual
-                          (model (let [x (sample (dist/flip 0.5) :id :x)
+                          (fn [] (model (let [x (sample (dist/flip 0.5) :id :x)
                                        y (sample (dist/flip (if x 1.0 0.3)) :id :y)]
-                                   {:x x :y y}))
+                                   {:x x :y y})))
                           {:evidence {:x true :y true} :interventions {:x {:do false}} :particles 1500}))
         ws (weights/normalize-log-weights (mapv :weight pairs))
         pn (reduce + (map (fn [p w] (if (:y (:counterfactual p)) 0.0 w)) pairs ws))]
@@ -83,8 +81,8 @@
 
 (deftest a-site-only-the-counterfactual-reaches-is-reported
   (let [[pair] (await-cps (cf/counterfactual
-                           (model (let [b (sample (dist/flip 0.5) :id :b)]
-                                    (if b (sample (dist/normal 0.0 1.0) :id :u) :none)))
+                           (fn [] (model (let [b (sample (dist/flip 0.5) :id :b)]
+                                    (if b (sample (dist/normal 0.0 1.0) :id :u) :none))))
                            {:evidence {:b false} :interventions {:b {:do true}}}))]
     (is (= :none (:factual pair)))
     (is (number? (:counterfactual pair)))
@@ -95,8 +93,8 @@
   ;; rejects with the program's error instead of answering
   (let [boom (fn [x] (when (= 2.0 x) (throw (ex-info "boom" {:x x}))) x)
         outcome (try (await-cps (cf/counterfactual
-                                 (model (let [x (sample (dist/normal 0.0 1.0) :id :x)]
-                                          (boom x)))
+                                 (fn [] (model (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+                                          (boom x))))
                                  {:evidence {:x 1.0} :interventions {:x {:do 2.0}}}))
                      (catch Exception e e))]
     (is (instance? Exception outcome))

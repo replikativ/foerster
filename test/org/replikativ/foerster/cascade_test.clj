@@ -7,12 +7,12 @@
             [org.replikativ.foerster.inference.cascade :as cascade]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.spindel.engine.executor :as executor]))
+            [org.replikativ.foerster.runtime.execution :as executor]))
 
 (deftest the-cascade-estimates-the-evidence
   (doseq [[label opts] [["room to branch" {}] ["a tight cap" {:cap 300}]]]
     (testing label
-      (let [measure (b/run-infer 71 #(cascade/cascade (b/conjugate-model) 300 opts))
+      (let [measure (b/run-infer 71 #(cascade/cascade (fn [] (b/conjugate-model)) 300 opts))
             {:keys [peak]} (:cascade measure)]
         ;; over 8 runs per setting the log error stayed within ±0.25
         (is (< (Math/abs (- (m/log-marginal measure) b/conjugate-log-evidence)) 0.4)
@@ -24,7 +24,7 @@
     (try
       (doseq [[label n opts] [["room to branch" 400 {}] ["a little room" 300 {:cap 400}]]]
         (testing label
-          (let [measure (b/run-infer 72 #(cascade/cascade (apply b/hmm-model b/hmm-args) n
+          (let [measure (b/run-infer 72 #(cascade/cascade (fn [] (apply b/hmm-model b/hmm-args)) n
                                                           (assoc opts :executor exec)))]
             ;; arrival order on the pool is not seeded: over 20 runs per
             ;; setting the error stayed below 0.1
@@ -46,7 +46,7 @@
 (deftest collapsed-copies-keep-the-evidence
   ;; no room at all: most copies fold into multiplicities, and the evidence
   ;; must still come out right
-  (let [measure (b/run-infer 73 #(cascade/cascade (apply b/hmm-model b/hmm-args) 400 {:cap 400}))
+  (let [measure (b/run-infer 73 #(cascade/cascade (fn [] (apply b/hmm-model b/hmm-args)) 400 {:cap 400}))
         {:keys [peak collapsed]} (:cascade measure)]
     (is (<= peak 400))
     (is (pos? collapsed))

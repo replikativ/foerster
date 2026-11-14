@@ -21,7 +21,7 @@
      a)))
 
 (deftest re-exported-effects-are-effects
-  (let [measure (b/run-infer 5 #(infer/infer (dice) {:method :enumerate}))
+  (let [measure (b/run-infer 5 #(infer/infer (fn [] (dice)) {:method :enumerate}))
         ps (filter (comp #(> % ##-Inf) second) (m/get-particles measure))
         ws (weights/normalize-log-weights (mapv second ps))
         mean (reduce + (map (fn [[p _] w] (* w (m/get-value p))) ps ws))]

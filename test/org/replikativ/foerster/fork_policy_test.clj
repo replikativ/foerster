@@ -16,12 +16,10 @@
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.inference.smc2 :as smc2]
             [org.replikativ.spindel.atom :as sa]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.engine.executor :as executor]
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.foerster.runtime.execution :as executor]
             [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.spindel.spin.keyed :refer [keyed]]
             [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.spindel.yggdrasil :as ygg]
@@ -44,13 +42,13 @@
 (defmacro ^:private in-root
   "Run `body` with a fresh caller world bound, stopped afterwards."
   [& body]
-  `(let [root# (context/create-execution-context)]
+  `(let [root# (v2/world)]
      (try
-       (binding [ec/*execution-context* root#] ~@body)
-       (finally (context/stop-context! root#)))))
+       (binding [v2/*world* root#] ~@body)
+       (finally (v2/release-world! root#)))))
 
 (defn- failure [run]
-  (deref (spin (try (await (run)) :unexpected-success
+  (deref (task (try (await-op (run)) :unexpected-success
                     (catch Throwable error error)))
          60000 ::timed-out))
 
@@ -70,13 +68,13 @@
 (deftest compiled-rmh-refuses-world-options
   (in-root
    (doseq [opts [{:world-policy :fork} {:world-opts {}} {:authority :ledger :grant {:tokens 1}}]]
-     (let [error (try (inference/infer (normal-mean [0.5 1.0])
+     (let [error (try (inference/infer (fn [] (normal-mean [0.5 1.0]))
                                        (merge {:method :rmh :compiled? true :iterations 10 :chains 1} opts))
                       nil
                       (catch clojure.lang.ExceptionInfo e e))]
        (is (= ::inference/invalid-world-policy (:type (ex-data error))) (pr-str opts))))
    (testing ":world-policy :fresh is what compiled code does anyway"
-     (is (some? (inference/infer (normal-mean [0.5 1.0])
+     (is (some? (inference/infer (fn [] (normal-mean [0.5 1.0]))
                                  {:method :rmh :compiled? true :iterations 10 :chains 1
                                   :world-policy :fresh}))))))
 
@@ -89,13 +87,13 @@
     (try
       (in-root
        (let [log (sa/atom [:root])
-             model (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+             model (task (let [x (sample (dist/normal 0.0 1.0) :id :x)]
                            (observe (dist/normal x 1.0) 0.5 :id :y)
                            (observe (dist/normal x 1.0) 0.7 :id :z)
                            (swap! log conj :mine)
                            [x @log]))]
          (capturing-scopes [scopes]
-                           (let [posterior @(spin (await (inference/smc-infer
+                           (let [posterior @(task (await-op (inference/smc-infer
                                                           model 400 {:world-policy :fork :batch 16 :executor exec
                                                                      :resample-threshold 1.0 :seed 3})))
                                  values (mapv measure/get-value (measure/get-contexts posterior))
@@ -118,7 +116,7 @@
 (defn- latent-reader
   "A model that reads the caller's `state` and writes its own `log`."
   [state log]
-  (spin
+  (task
    (let [x (sample (dist/normal 0.0 1.0) :id :x)]
      (observe (dist/normal x 1.0) 0.5 :id :y)
      (swap! log conj :mine)
@@ -136,7 +134,7 @@
   ;; since every run forks the inference's one frozen fork of the caller
   (doseq [[method run] sweep-methods]
     (in-root
-     (let [caller ec/*execution-context*
+     (let [caller v2/*world*
            state (sa/atom :before)
            log (sa/atom [:root])
            runs (atom 0)
@@ -145,10 +143,10 @@
                          (with-redefs [smc/smc
                                        (fn [& args]
                                          (when (= 2 (swap! runs inc))
-                                           (binding [ec/*execution-context* caller]
+                                           (binding [v2/*world* caller]
                                              (reset! state :changed)))
                                          (apply smc args))]
-                           (let [posterior @(spin (await (run (latent-reader state log) {:world-policy :fork})))
+                           (let [posterior @(task (await-op (run (latent-reader state log) {:world-policy :fork})))
                                  values (mapv measure/get-value (measure/get-contexts posterior))]
                              (is (> @runs 1) (str method ": several runs"))
                              (is (= :changed @state) (str method ": the caller changed meanwhile"))
@@ -190,11 +188,11 @@
   (doseq [[method run share] [[:pimh #(inference/pimh-infer %1 4 3 %2) 3]
                               [:ipmcmc #(inference/ipmcmc-infer %1 2 2 (assoc %2 :num-nodes 2 :num-csmc-nodes 1)) 3]]]
     (in-root
-     (let [root ec/*execution-context*
+     (let [root v2/*world*
            ledger (atom {(:fork-id root) {:wallet {:tokens 100}}})
            grants (atom {})
-           tokens #(get-in @ledger [(:fork-id ec/*execution-context*) :wallet :tokens])
-           posterior @(spin (await (run (spin (let [at-start (tokens)]
+           tokens #(get-in @ledger [(:fork-id v2/*world*) :wallet :tokens])
+           posterior @(task (await-op (run (task (let [at-start (tokens)]
                                                 (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
                                                 at-start))
                                         {:world-policy :fork :authority (wallet-authority ledger grants)
@@ -210,11 +208,11 @@
    (capturing-scopes [scopes]
                      (let [runs (atom 0)
                            result (failure #(inference/pimh-infer
-                                             (spin
+                                             (fn [] (task
                                               (observe (dist/normal 0.0 1.0) 0.0 :id :evidence)
                                               (when (= 4 (swap! runs inc))
                                                 (throw (ex-info "model failed" {:stage :model})))
-                                              :ok)
+                                              :ok))
                                              3 3 {:world-policy :fork}))]
                        (is (= ::inference/inference-failed (:type (ex-data result))))
                        (is (some? (:world/recovery (ex-data result))))
@@ -249,7 +247,7 @@
   "The paper's queue, served on the caller's `queue`: every job's
   completion depends on what the model wrote for the jobs before it."
   [queue]
-  (spin
+  (task
    (let [speed (sample (dist/categorical {0.8 0.5, 1.4 0.5}) :id :speed)]
      (doseq [{:keys [id reported] :as job} readings]
        (let [jitter (sample (dist/categorical {0.8 0.5, 1.2 0.5}) :id [:jitter id])
@@ -273,7 +271,7 @@
     (in-root
      (let [queue (sa/atom backlog)]
        (capturing-scopes [scopes]
-                         (let [posterior @(spin (await (run (queue-model queue) seed)))
+                         (let [posterior @(task (await-op (run (queue-model queue) seed)))
                                values (map measure/get-value (measure/get-contexts posterior))]
                            ;; seed-to-seed SD over 12 seeds: MH 0.058, Gibbs 0.028
                            (is (< (Math/abs (- p-fast (fast-fraction posterior))) (if (= :mh method) 0.2 0.1))
@@ -295,10 +293,10 @@
   (in-root
    (let [center (sa/atom 3.0)
          log (sa/atom [])
-         posterior @(spin (await (inference/infer (spin (let [[x] (sample (block/block-dist centred {:center @center})
+         posterior @(task (await-op (inference/infer (fn [] (task (let [[x] (sample (block/block-dist centred {:center @center})
                                                                           :id :x :init [0.0])]
                                                           (swap! log conj x)
-                                                          x))
+                                                          x)))
                                                   {:method :nuts :iterations 600 :chains 2 :burn 300
                                                    :world-policy :fork :seed 7})))
          xs (map measure/get-value (measure/get-contexts posterior))]
@@ -308,7 +306,7 @@
 (deftest chains-refuse-authority-for-now
   (in-root
    (is (= ::inference/invalid-world-policy
-          (:type (ex-data (failure #(inference/infer (queue-model (sa/atom backlog))
+          (:type (ex-data (failure #(inference/infer (fn [] (queue-model (sa/atom backlog)))
                                                      {:method :mh :iterations 10 :world-policy :fork
                                                       :authority :ledger :grant {:tokens 1}}))))))))
 
@@ -322,12 +320,12 @@
 (def ^:private keyed-reports [0.9 0.6 1.1])
 
 (defn- keyed-model []
-  (spin
+  (task
    (let [log (sa/atom [])
          speed (sample (dist/categorical {0.8 0.5, 1.4 0.5}) :id :speed)
-         _ (await (keyed :jobs [0 1 2]
+         _ (await-op (keyed :jobs [0 1 2]
                          (fn [i]
-                           (spin (let [jitter (sample (dist/categorical {0.8 0.5, 1.2 0.5}) :id [:jitter i])]
+                           (task (let [jitter (sample (dist/categorical {0.8 0.5, 1.2 0.5}) :id [:jitter i])]
                                    (swap! log conj i)
                                    (observe (dist/normal (/ jitter speed) 0.35) (nth keyed-reports i) :id [:obs i])
                                    jitter)))))]
@@ -342,7 +340,7 @@
 (deftest keyed-models-that-write-state-stay-exact
   (in-root
    (doseq [policy [:fresh :fork]]
-     (let [posterior @(spin (await (inference/infer (keyed-model)
+     (let [posterior @(task (await-op (inference/infer (fn [] (keyed-model))
                                                     {:method :mh :iterations 2500 :chains 4 :burn 100
                                                      :world-policy policy :seed 11})))
            values (map measure/get-value (measure/get-contexts posterior))]
@@ -359,23 +357,23 @@
     (try
       (capturing-scopes [scopes]
                         (let [outcome (future
-                                        (binding [ec/*execution-context* root]
+                                        (binding [v2/*world* root]
                                           (let [task (inference/infer
-                                                      (spin
+                                                      (fn [] (task
                                                        (let [x (sample (dist/normal 0.0 1.0) :id :x)]
                                                          (observe (dist/normal x 1.0) 0.5 :id :y)
                                                          (when (= 5 (swap! runs inc))
                                                            (try
                                                              (deliver entered true)
-                                                             (await (fn [_resolve _reject] nil))
+                                                             (await-op (fn [_resolve _reject] nil))
                                                              (finally (reset! cleaned? true))))
-                                                         x))
+                                                         x)))
                                                       {:method :mh :iterations 50 :chains 1
                                                        :world-policy :fork :executor (:executor root)})]
                                             (reset! task* task)
                                             (try @task (catch Throwable error error)))))]
                           (is (= true (deref entered 5000 ::timed-out)))
-                          (binding [ec/*execution-context* root]
+                          (binding [v2/*world* root]
                             (spin-core/cancel-spin! @task*))
                           (let [result (deref outcome 10000 ::timed-out)]
                             (is (instance? Throwable result))
@@ -390,7 +388,7 @@
                                         :else (do (Thread/sleep 20) (recur (inc i)))))
                                 "the frozen fork and every chain world are discarded"))))
       (finally
-        (context/close-context! root)))))
+        (v2/release-world! root)))))
 
 ;; -----------------------------------------------------------------------------
 ;; Tempered SMC, parallel tempering and inference programs
@@ -406,7 +404,7 @@
   (in-root
    (let [queue (sa/atom backlog)]
      (capturing-scopes [scopes]
-                       (let [posterior @(spin (await (inference/tempered-infer (queue-model queue) 300
+                       (let [posterior @(task (await-op (inference/tempered-infer (fn [] (queue-model queue)) 300
                                                                                {:world-policy :fork :seed 5})))
                              values (map measure/get-value (measure/get-contexts posterior))]
                          (is (< (Math/abs (- p-fast (weighted-fast posterior))) 0.08)
@@ -434,11 +432,11 @@
    (let [center (sa/atom 1.5)
          log (sa/atom [])]
      (capturing-scopes [scopes]
-                       (let [posterior @(spin (await (inference/parallel-tempering-infer
-                                                      (spin (let [[a b] (sample (block/block-dist pt-block {:center @center})
+                       (let [posterior @(task (await-op (inference/parallel-tempering-infer
+                                                      (fn [] (task (let [[a b] (sample (block/block-dist pt-block {:center @center})
                                                                                 :id :theta :init [0.0 0.0])]
                                                               (swap! log conj :mine)
-                                                              {:a a :b b :log @log}))
+                                                              {:a a :b b :log @log})))
                                                       6 {:world-policy :fork :rounds 8 :seed 3})))
                              values (map measure/get-value (measure/get-contexts posterior))
                              mean-a (/ (reduce + (map :a values)) (count values))]
@@ -451,17 +449,17 @@
   (in-root
    (let [queue (sa/atom backlog)]
      (capturing-scopes [scopes]
-                       (let [posterior @(spin (await (ip/run {:seed 42 :world-policy :fork}
+                       (let [posterior @(task (await-op (ip/run {:seed 42 :world-policy :fork}
                                                              (fn [scope]
-                                                               (spin
+                                                               (task
                                                                 ;; importance weights, resampling (copies
                                                                 ;; of canonical worlds), then moves
-                                                                (let [p (await (ip/initialize scope (ip/trace-target (queue-model queue)
+                                                                (let [p (await-op (ip/initialize scope (ip/trace-target (queue-model queue)
                                                                                                                      {:world-policy :fork})
                                                                                               600))
                                                                       p (ip/advance scope p (ip/temperature (:target p) 1.0))
-                                                                      p (await (ip/resample scope p))
-                                                                      p (await (ip/move scope p (kernel/single-site-mh-kernel 2)))]
+                                                                      p (await-op (ip/resample scope p))
+                                                                      p (await-op (ip/move scope p (kernel/single-site-mh-kernel 2)))]
                                                                   (ip/finish scope p)))))))
                              values (map measure/get-value (measure/get-contexts posterior))]
                          (is (< (Math/abs (- p-fast (weighted-fast posterior))) 0.08)
@@ -472,15 +470,15 @@
    (testing "resampling copies particles in their canonical worlds"
      (let [queue (sa/atom backlog)]
        (capturing-scopes [scopes]
-                         (let [posterior @(spin (await (ip/run {:seed 7 :world-policy :fork}
+                         (let [posterior @(task (await-op (ip/run {:seed 7 :world-policy :fork}
                                                                (fn [scope]
-                                                                 (spin
-                                                                  (let [p (await (ip/initialize scope (ip/trace-target (queue-model queue)
+                                                                 (task
+                                                                  (let [p (await-op (ip/initialize scope (ip/trace-target (queue-model queue)
                                                                                                                        {:world-policy :fork})
                                                                                                 40))
                                                                         p (ip/advance scope p (ip/temperature (:target p) 1.0))
-                                                                        p (await (ip/resample scope p))
-                                                                        p (await (ip/move scope p (kernel/single-site-mh-kernel 2)))]
+                                                                        p (await-op (ip/resample scope p))
+                                                                        p (await-op (ip/move scope p (kernel/single-site-mh-kernel 2)))]
                                                                     (ip/finish scope p)))))))]
                            (is (= 40 (count (measure/get-particles posterior))))
                            (is (every? #(= [:in-flight :a :b :c] (mapv :id (:jobs (:queue (measure/get-value %)))))
@@ -489,9 +487,9 @@
                            (is (settled? @scopes))))))
    (testing "a :fork target needs a :fork program"
      (is (thrown-with-msg? Exception #"world-policy :fork"
-                           (deref (spin (await (ip/run {:seed 1}
+                           (deref (task (await-op (ip/run {:seed 1}
                                                        (fn [scope]
-                                                         (spin (ip/finish scope (await (ip/initialize scope (ip/trace-target (queue-model (sa/atom backlog))
+                                                         (task (ip/finish scope (await-op (ip/initialize scope (ip/trace-target (queue-model (sa/atom backlog))
                                                                                                                              {:world-policy :fork})
                                                                                                       4))))))))
                                   10000 ::timed-out))))))
@@ -505,7 +503,7 @@
   (in-root
    (let [queue (sa/atom backlog)
          model (fn []
-                 (spin
+                 (task
                   (let [speed (sample (dist/categorical {0.8 0.5, 1.4 0.5}) :id :speed)]
                     (doseq [{:keys [id reported] :as job} readings]
                       (let [jitter (sample (dist/categorical {0.8 0.5, 1.2 0.5}) :id [:jitter id])
@@ -513,7 +511,7 @@
                         (observe (dist/normal finish 0.35) reported :id [:completion id])))
                     {:speed speed :queue @queue})))]
      (capturing-scopes [scopes]
-                       (let [posterior @(spin (await (inference/infer (model)
+                       (let [posterior @(task (await-op (inference/infer (fn [] (model))
                                                                       {:method :pmmh :particles 60 :iterations 600 :burn 50
                                                                        :params #{:speed}
                                                                        :propose (fn [{:keys [speed]}]
@@ -530,7 +528,7 @@
 (deftest smc2-still-refuses-fork
   (in-root
    (is (= ::smc2/unsupported-world-policy
-          (:type (ex-data (try ((smc2/smc2 (spin nil) {:params #{:theta} :world-policy :fork})
+          (:type (ex-data (try ((smc2/smc2 (fn [] (task nil)) {:params #{:theta} :world-policy :fork})
                                 identity identity)
                                nil
                                (catch clojure.lang.ExceptionInfo e e))))))))
@@ -546,7 +544,7 @@
       {:grade :affine})
      (let [ran? (atom false)]
        (capturing-scopes [scopes]
-                         (let [result (failure #(run (spin (reset! ran? true)
+                         (let [result (failure #(run (task (reset! ran? true)
                                                            (sample (dist/normal 0.0 1.0) :id :x))))]
                            (is (= ::inference/inference-failed (:type (ex-data result))) (str method))
                            (is (some #(= ::ygg/copy-forbidden (:type (ex-data %)))

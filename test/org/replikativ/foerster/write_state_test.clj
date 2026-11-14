@@ -10,11 +10,9 @@
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.atom :as sa]
             [org.replikativ.spindel.core :as sp]
-            [org.replikativ.spindel.effects.await :as aw]
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
             [org.replikativ.spindel.effects.track :refer [track]]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.spindel.spin.keyed :refer [keyed]]))
 
 (defn- await* [op]
@@ -27,10 +25,10 @@
         (throw (ex-info "timed out" {}))))))
 
 (defmacro ^:private in-root [& body]
-  `(let [root# (context/create-execution-context)]
+  `(let [root# (v2/world)]
      (try
-       (binding [ec/*execution-context* root#] ~@body)
-       (finally (context/stop-context! root#)))))
+       (binding [v2/*world* root#] ~@body)
+       (finally (v2/release-world! root#)))))
 
 (defn- choices [t]
   (into {} (keep (fn [e] (when (and (= itrace/choose-site (:site e)) (not (:observed? (:note e))))
@@ -42,15 +40,15 @@
   (`gfi/update`, i.e. `itrace/reexecute`), and assess the moved choices from
   scratch; `opts` are the runs' options."
   [model init address v opts]
-  (spin
-   (let [t (:trace (aw/await (gfi/generate (model) init opts)))
-         {t' :trace} (aw/await (gfi/update t {address v}))
-         fresh (aw/await (gfi/assess (model) (choices t') opts))
+  (task
+   (let [t (:trace (await-op (gfi/generate (fn [] (model)) init opts)))
+         {t' :trace} (await-op (gfi/update t {address v}))
+         fresh (await-op (gfi/assess (fn [] (model)) (choices t') opts))
          out {:wrote? (itrace/wrote-state? t)
               :path (if-let [from (::itrace/restart t')] [:replay from] :keyed-update)
               :result (:trace/result t') :log-joint (itrace/log-joint t')
               :fresh-result (:result fresh) :fresh-log-joint (:weight fresh)}]
-     (aw/await (gfi/close! t'))
+     (await-op (gfi/close! t'))
      out)))
 
 (defn- move! [model init address v]
@@ -70,12 +68,12 @@
   append still in place would leave three values."
   [prefix?]
   (fn []
-    (spin
+    (task
      (let [log (sa/atom [])
            m (if prefix? (sample (dist/normal 0.0 1.0) :id :m) 0.0)]
-       (aw/await (keyed :jobs [:a :b]
+       (await-op (keyed :jobs [:a :b]
                         (fn [k]
-                          (spin
+                          (task
                            (let [x (sample (dist/normal m 1.0) :id [:x k])]
                              (swap! log conj x)
                              (observe (dist/normal x 0.1) 1.0 :id [:y k])
@@ -86,12 +84,12 @@
   "Keys write their own slot and read it back. (Reading a sibling's slot is
   a race: keyed children run in no fixed order.)"
   []
-  (spin
+  (task
    (let [slots (sa/atom {})
          m (sample (dist/normal 0.0 1.0) :id :m)]
-     (aw/await (keyed :jobs [:a :b]
+     (await-op (keyed :jobs [:a :b]
                       (fn [k]
-                        (spin
+                        (task
                          (let [x (sample (dist/normal m 1.0) :id [:x k])]
                            (swap! slots assoc k x)
                            (observe (dist/normal (get @slots k) 0.1)
@@ -102,22 +100,22 @@
 (defn- summary
   "A site-free sub-run sums an atom the model appended to."
   []
-  (spin
+  (task
    (let [log (sa/atom [])
          a (sample (dist/normal 0.0 1.0) :id :a)
          _ (swap! log conj a)
          b (sample (dist/normal 0.0 1.0) :id :b)
          _ (swap! log conj b)
-         total (aw/await (spin (reduce + @log)))]
+         total (await-op (task (reduce + @log)))]
      (observe (dist/normal total 0.1) 1.5 :id :y)
      {:log @log :total total})))
 
 (defn- pure-keys []
-  (spin
+  (task
    (let [m (sample (dist/normal 0.0 1.0) :id :m)
-         xs (aw/await (keyed :jobs [0 1 2]
+         xs (await-op (keyed :jobs [0 1 2]
                              (fn [i]
-                               (spin (let [x (sample (dist/normal m 1.0) :id [:x i])]
+                               (task (let [x (sample (dist/normal m 1.0) :id [:x i])]
                                        (observe (dist/normal x 0.5) (* 0.5 i) :id [:y i])
                                        x)))))]
      (vec xs))))
@@ -128,8 +126,8 @@
 
 (deftest detects-written-state
   (in-root
-   (let [pure (:trace (await* (gfi/generate (pure-keys) {})))
-         writer (:trace (await* (gfi/generate (summary) {})))]
+   (let [pure (:trace (await* (gfi/generate (fn [] (pure-keys)) {})))
+         writer (:trace (await* (gfi/generate (fn [] (summary)) {})))]
      (try
        (is (not (itrace/wrote-state? pure)))
        (is (itrace/wrote-state? writer))
@@ -182,11 +180,11 @@
   (in-root
    (let [offset (sa/atom 0.5)
          model (fn []
-                 (spin
+                 (task
                   (let [m (sample (dist/normal 0.0 1.0) :id :m)
-                        xs (aw/await (keyed :jobs [0 1 2]
+                        xs (await-op (keyed :jobs [0 1 2]
                                             (fn [i]
-                                              (spin (let [x (sample (dist/normal (+ m @offset) 1.0) :id [:x i])]
+                                              (task (let [x (sample (dist/normal (+ m @offset) 1.0) :id [:x i])]
                                                       (observe (dist/normal x 0.5) (* 0.5 i) :id [:y i])
                                                       x)))))]
                     (vec xs))))
@@ -217,13 +215,13 @@
 (deftest a-signal-the-model-writes-and-tracks-is-refused-by-the-trace
   (in-root
    (let [model (fn []
-                 (spin
+                 (task
                   (let [log (sp/signal [])
                         a (sample (dist/normal 0.0 1.0) :id :a)
                         _ (swap! log conj a)
-                        total (aw/await (spin (reduce + (:new (track log)))))]
+                        total (await-op (task (reduce + (:new (track log)))))]
                     (observe (dist/normal total 0.1) 1.5 :id :y)
                     total)))
-         e (try (await* (gfi/generate (model) {:a 0.3})) nil
+         e (try (await* (gfi/generate (fn [] (model)) {:a 0.3})) nil
                 (catch Exception e e))]
      (is (some? e) "if this starts passing, Spindel no longer re-runs a reader on its own write"))))

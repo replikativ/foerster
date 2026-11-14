@@ -9,7 +9,7 @@
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.engine.executor :as sched]))
+            [org.replikativ.foerster.runtime.execution :as sched]))
 
 (def ^:private logistic
   (a/model [xs ns ys]
@@ -28,7 +28,7 @@
   (let [{:keys [addresses log-density]} (apply c/compile-model logistic data)]
     (is (= [:a :b] addresses))
     (doseq [[av bv] [[0.3 -0.2] [1.1 -0.6] [-0.5 0.4]]]
-      (let [{:keys [weight]} (b/run-infer 1 #(gfi/assess (apply logistic data) {:a av :b bv}))]
+      (let [{:keys [weight]} (b/run-infer 1 #(gfi/assess (fn [] (apply logistic data)) {:a av :b bv}))]
         (is (< (Math/abs (- weight (log-density (double-array [av bv])))) 1e-9))))))
 
 (def ^:private normal-mean
@@ -53,7 +53,7 @@
 (deftest infer-rmh-compiled
   (let [ys [0.8 1.4 0.3 1.9 1.1 0.6 1.5 0.9]
         exact (/ (reduce + ys) (inc (count ys)))
-        run #(b/run-infer 3 (fn [] (infer/infer (normal-mean ys) {:method :rmh :compiled? true :iterations 8000
+        run #(b/run-infer 3 (fn [] (infer/infer (fn [] (normal-mean ys)) {:method :rmh :compiled? true :iterations 8000
                                                                   :burn 500 :chains 2 :step-size 0.6 :seed [1 2]})))
         measure (run)
         mus (map m/get-value (m/get-contexts measure))]
@@ -75,9 +75,8 @@
 (defn- counting-executor
   "An executor that runs its tasks on `inner`, counting them in `n`."
   [inner n]
-  (reify sched/PExecutor
-    (execute! [_ f] (swap! n inc) (sched/execute! inner f))
-    (execute-after! [_ ms f] (swap! n inc) (sched/execute-after! inner ms f))))
+  (reify java.util.concurrent.Executor
+    (execute [_ r] (swap! n inc) (.execute ^java.util.concurrent.Executor inner r))))
 
 (deftest compiled-chains-run-on-the-executor
   ;; no thread of their own: the chains are tasks of :executor, the same
@@ -85,7 +84,7 @@
   (let [ys [0.8 1.4 0.3 1.9]
         run (fn [executor]
               (with-redefs [clojure.core/future-call (fn [_] (throw (ex-info "a chain on a future" {})))]
-                (b/run-infer 4 (fn [] (infer/infer (normal-mean ys) {:method :rmh :compiled? true :iterations 300
+                (b/run-infer 4 (fn [] (infer/infer (fn [] (normal-mean ys)) {:method :rmh :compiled? true :iterations 300
                                                                      :chains 3 :step-size 0.6 :seed [3 4]
                                                                      :executor executor})))))
         tasks (atom 0)

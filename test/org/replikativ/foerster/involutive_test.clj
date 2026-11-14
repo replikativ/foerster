@@ -6,9 +6,7 @@
             [org.replikativ.foerster.moves.involutive :as inv]
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.effects :refer [sample observe]]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.random :as random]))
 
@@ -20,7 +18,7 @@
         (throw (ex-info "CPS operation timed out" {})))
       (if (= :ok (first outcome)) (second outcome) (throw (second outcome))))))
 
-(def ^:private root (context/create-execution-context))
+(def ^:private root (v2/world))
 
 (defn- chain
   "Run `n` moves from a simulated trace of `model`; the values of site `a`
@@ -39,8 +37,8 @@
 (deftest a-random-walk-is-an-involution
   ;; x ~ N(0,1), 2 ~ N(x,1)  =>  x | y ~ N(1, 1/2).  (x, u) -> (x+u, -u).
   (random/set-seed! 4)
-  (let [model (binding [ec/*execution-context* root]
-                (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+  (let [model (binding [v2/*world* root]
+                (task (let [x (sample (dist/normal 0.0 1.0) :id :x)]
                         (observe (dist/normal x 1.0) 2.0 :id :y)
                         x)))
         q (dist/normal 0.0 0.8)
@@ -53,8 +51,8 @@
 
 (defn- gamma-poisson []
   ;; λ ~ Gamma(2, 1), 5 ~ Poisson(λ)  =>  λ | y ~ Gamma(7, 2): mean 3.5
-  (binding [ec/*execution-context* root]
-    (spin (let [l (sample (dist/gamma 2.0 1.0) :id :l)]
+  (binding [v2/*world* root]
+    (task (let [l (sample (dist/gamma 2.0 1.0) :id :l)]
             (observe (dist/poisson l) 5 :id :y)
             l))))
 

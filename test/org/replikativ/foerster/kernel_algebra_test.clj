@@ -10,10 +10,10 @@
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.moves.nuts :as nuts]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- model []
-  (spin
+  (task
    (let [z (sample (dist/bernoulli 0.3) :id :z)
          mu (sample (dist/normal (* 2.0 z) 1.0) :id :mu)]
      (observe (dist/normal mu 0.5) 1.5 :id :y)
@@ -27,7 +27,7 @@
     {:p-z p1 :mean-mu (+ (* p1 (/ 8.0 5)) (* (- 1 p1) (/ 6.0 5)))}))
 
 (defn- posterior [kernel seed]
-  (let [wv (b/weighted-values (b/run-infer seed #(infer/kernel-infer (model) kernel 4)))]
+  (let [wv (b/weighted-values (b/run-infer seed #(infer/kernel-infer (fn [] (model)) kernel 4)))]
     {:p-z (b/w-mean first wv) :mean-mu (b/w-mean second wv)}))
 
 (deftest composed-kernels-reach-the-posterior
@@ -57,7 +57,7 @@
         made (fn [iterations]
                (let [n (atom 0)]
                  (with-redefs [nuts/within-gibbs (fn [opts] (swap! n inc) (within-gibbs opts))]
-                   (b/run-infer 72 #(infer/kernel-infer (model) (k/cycle iterations [(k/within-gibbs (k/nuts-kernel 1 {:burn 10}))
+                   (b/run-infer 72 #(infer/kernel-infer (fn [] (model)) (k/cycle iterations [(k/within-gibbs (k/nuts-kernel 1 {:burn 10}))
                                                                                      (k/single-site-mh-kernel 1)])
                                                         2)))
                  @n))]

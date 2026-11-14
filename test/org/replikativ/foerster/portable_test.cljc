@@ -12,23 +12,21 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]])
-  #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]])
+  #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :as v2 :refer [task]])))
 
 (defn- run-spin
   "Run `task` (a spin) in a fresh context; `check` gets its result."
   [task-fn check done]
-  (let [context (ctx/create-execution-context)
+  (let [context (v2/world)
         finish (fn [outcome] (check outcome) (done))]
-    (binding [ec/*execution-context* context]
+    (binding [v2/*world* context]
       ((task-fn) finish finish))))
 
 (defn- conjugate-model []
   ;; μ ~ N(0, 1), y ~ N(μ, 1), y = 1: posterior mean 0.5
-  (spin
+  (task
    (let [mu (sample (dist/normal 0.0 1.0) :id :mu)]
      (observe (dist/normal mu 1.0) 1.0 :id :y)
      mu)))
@@ -39,10 +37,10 @@
 
 (deftest smc-on-a-conjugate-model
   #?(:clj (let [p (promise)]
-            (run-spin #(infer/smc-infer (conjugate-model) 200) #(deliver p %) (fn []))
+            (run-spin #(infer/smc-infer (fn [] (conjugate-model)) 200) #(deliver p %) (fn []))
             (check-posterior (deref p 30000 ::timeout)))
      :cljs (async done
-                  (run-spin #(infer/smc-infer (conjugate-model) 200) check-posterior done))))
+                  (run-spin #(infer/smc-infer (fn [] (conjugate-model)) 200) check-posterior done))))
 
 (deftest measures-are-portable
   (let [measure (m/empirical [[(m/sample-particle :a {}) (Math/log 1.0)]
@@ -52,7 +50,7 @@
     (is (< (Math/abs (- (m/effective-sample-size measure) 1.6)) 1e-9))))
 
 (defn- causal-model []
-  (spin
+  (task
    (let [x (sample (dist/normal 0 1) :id :x)
          y (sample (dist/normal (* 2 x) 1) :id :y)]
      {:x x :y y})))
@@ -76,11 +74,11 @@
 (defn- custom-inference []
   (ip/run {:seed 731}
           (fn [scope]
-            (spin
-             (let [p (await (ip/initialize scope (ip/trace-target (conjugate-model)) 64))
+            (task
+             (let [p (await-op (ip/initialize scope (ip/trace-target (conjugate-model)) 64))
                    p (ip/advance scope p (ip/temperature (:target p) 1.0))
-                   p (await (ip/resample scope p))
-                   p (await (ip/move scope p (k/single-site-mh-kernel 2)))]
+                   p (await-op (ip/resample scope p))
+                   p (await-op (ip/move scope p (k/single-site-mh-kernel 2)))]
                (ip/finish scope p))))))
 
 (deftest programmable-populations-are-portable

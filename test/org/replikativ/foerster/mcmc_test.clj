@@ -11,11 +11,8 @@
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as measure]
             [org.replikativ.foerster.effects :refer [sample observe]]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.effects.await :as aw]
-            [org.replikativ.spindel.engine.core :as rtc]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.random :as random]))
 
@@ -24,23 +21,23 @@
    context plus the run's value and log-weight."
   [model-fn iterations step-size seed]
   (random/set-seed! (long seed))
-  (let [root (ctx/create-execution-context)]
-    (try (binding [rtc/*execution-context* root]
-           (let [meas @(spin (aw/await (infer/kernel-infer (model-fn)
+  (let [root (v2/world)]
+    (try (binding [v2/*world* root]
+           (let [meas @(task (await-op (infer/kernel-infer (fn [] (model-fn))
                                                            (k/random-walk-mh-kernel iterations {:step-size step-size})
                                                            1 {})))
                  [c lw] (first (measure/get-particles meas))
-                 mh (rtp/get-state c [:inference :mcmc])]
+                 mh (v2/get-in-world c [:inference :mcmc])]
              {:ctx c :value (measure/get-value c) :log-weight lw
               :mh (assoc mh :acceptance-rate
                          (/ (double (:acceptance-count mh 0))
                             (max 1 (:moves mh 0))))}))
-         (finally (ctx/stop-context! root)))))
+         (finally (v2/release-world! root)))))
 
 (def visited (atom []))
 
 (defn- three-site-model []
-  (spin
+  (task
    (let [a (sample (dist/uniform -5.0 5.0))
          b (sample (dist/uniform -5.0 5.0))
          c (sample (dist/uniform -5.0 5.0))]
@@ -53,7 +50,7 @@
 (deftest replay-keeps-the-trace-the-size-of-the-model
   (reset! visited [])
   (let [{:keys [ctx mh]} (run-chain three-site-model 30 0.4 7)
-        trace (rtp/get-state ctx [:inference :trace])
+        trace (v2/get-in-world ctx [:inference :trace])
         vs @visited
         step-size 0.4]
     (is (= 6 (count trace)) "three samples and three observes, however many replays")
@@ -74,7 +71,7 @@
 
 (defn- conjugate-model []
   ;; prior N(0,1), one observation y = 2 with σ = 1 → posterior N(1, 1/2)
-  (spin
+  (task
    (let [mu (sample (dist/normal 0.0 1.0))]
      (observe (dist/normal mu 1.0) 2.0)
      mu)))
@@ -93,7 +90,7 @@
 (defn- bounded-model []
   ;; prior U(0,1); the likelihood pulls toward 0.95, so an unguarded random
   ;; walk would drift past 1.0
-  (spin
+  (task
    (let [p (sample (dist/uniform 0.0 1.0))]
      (observe (dist/normal p 0.1) 0.95)
      p)))
@@ -110,13 +107,13 @@
   ;; of 80 steps on the conjugate model.
   (let [run1 (fn [seed]
                (random/set-seed! (long seed))
-               (let [root (ctx/create-execution-context)]
-                 (try (binding [rtc/*execution-context* root]
-                        (let [meas @(spin (aw/await (infer/kernel-infer (conjugate-model)
+               (let [root (v2/world)]
+                 (try (binding [v2/*world* root]
+                        (let [meas @(task (await-op (infer/kernel-infer (fn [] (conjugate-model))
                                                                         (k/single-site-mh-kernel 80)
                                                                         1 {})))]
                           (measure/get-value (first (first (measure/get-particles meas))))))
-                      (finally (ctx/stop-context! root)))))
+                      (finally (v2/release-world! root)))))
         finals (mapv run1 (range 1 61))
         n (count finals)
         mean (/ (reduce + finals) n)

@@ -1,14 +1,12 @@
 (ns org.replikativ.foerster.trace-test
   "The inference layer over savepoint traces, through its own API."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.trace :as trace]
+            [org.replikativ.spindel.v2.trace :as trace]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.effects :refer [sample observe factor]]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.dist :as dist]))
 
 (defn- await-cps [operation]
@@ -20,16 +18,16 @@
       (if (= :ok (first outcome)) (second outcome) (throw (second outcome))))))
 
 (defmacro ^:private with-session [[root session] & body]
-  `(let [~root (context/create-execution-context)
+  `(let [~root (v2/world)
          ~session (sp/open! ~root {:seed (random/fresh-seed) :fork-opts {:systems :none} :retain-released? false})]
      (try
        ~@body
        (finally
-         (await-cps (sp/close! ~session))
-         (context/close-context! ~root)))))
+         (await-cps ((sp/close! ~session) identity identity))
+         (v2/release-world! ~root)))))
 
 (defn- model []
-  (spin
+  (task
    (let [x (sample (dist/normal 0.0 1.0) :id :x)
          z (sample (dist/normal x 1.0) :id :z)]
      (observe (dist/normal z 1.0) 3.0 :id :y)
@@ -42,7 +40,7 @@
 (deftest assess-is-the-hand-computed-log-joint
   (with-session [root session]
     (let [t (await-cps (trace/run session
-                                  (binding [ec/*execution-context* root] (model))
+                                  (binding [v2/*world* root] (model))
                                   (itrace/policy {:constraints {:x 0.5 :z 2.0}})))
           expected (+ (log-normal 0.5 0.0 1.0)
                       (log-normal 2.0 0.5 1.0)
@@ -57,7 +55,7 @@
 (deftest forward-simulation-weighs-by-the-likelihood
   (with-session [root session]
     (let [t (await-cps (trace/run session
-                                  (binding [ec/*execution-context* root] (model))
+                                  (binding [v2/*world* root] (model))
                                   (itrace/policy)))
           [_ z] (:trace/result t)]
       (is (= [:x :z] (itrace/latent-addresses t)))
@@ -73,7 +71,7 @@
                 (with-session [root session]
                   (let [constraints {:z 3.0}
                         initial (await-cps (trace/run session
-                                                      (binding [ec/*execution-context* root] (model))
+                                                      (binding [v2/*world* root] (model))
                                                       (itrace/policy {:constraints constraints})))
                         {final :trace} (await-cps (itrace/mh-chain initial 60
                                                                    {:constraints constraints}))]
@@ -87,7 +85,7 @@
 (deftest a-block-moves-together
   (with-session [root session]
     (let [initial (await-cps (trace/run session
-                                        (binding [ec/*execution-context* root] (model))
+                                        (binding [v2/*world* root] (model))
                                         (itrace/policy)))
           both (fn [_ _] {:targets #{:x :z} :log-selection (constantly 0.0)})
           moved (atom nil)]
@@ -103,7 +101,7 @@
 (deftest a-malformed-proposal-is-an-error-not-a-null-pointer
   (with-session [root session]
     (let [initial (await-cps (trace/run session
-                                        (binding [ec/*execution-context* root] (model))
+                                        (binding [v2/*world* root] (model))
                                         (itrace/policy)))
           outcome (try (await-cps (itrace/mh-step initial {:propose (fn [_ _] {:value 1.0})}))
                        (catch Throwable error error))]
@@ -115,7 +113,7 @@
   ;; released from inside its own terminal handler).
   (with-session [root session]
     (let [initial (await-cps (trace/run session
-                                        (binding [ec/*execution-context* root] (model))
+                                        (binding [v2/*world* root] (model))
                                         (itrace/policy)))
           sites (count (:trace/order initial))
           {:keys [accepted]} (await-cps (itrace/mh-chain initial 150 nil))

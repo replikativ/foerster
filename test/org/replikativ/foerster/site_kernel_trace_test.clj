@@ -7,10 +7,10 @@
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- chain-model [n]
-  (spin
+  (task
    (loop [i 0 x 0.0]
      (if (= i n)
        x
@@ -24,7 +24,7 @@
                   (fn [{:keys [address dist trace]}]
                     (swap! seen conj [address (count @trace)])
                     (let [v (dist/draw dist)] {:value v :log-q (dist/logpdf dist v)})))]
-    (b/run-infer 111 #(infer/smc-infer (chain-model 25) 3 {:proposal checking}))
+    (b/run-infer 111 #(infer/smc-infer (fn [] (chain-model 25)) 3 {:proposal checking}))
     (is (= (* 3 25) (count @seen)))
     (is (= (set (range 0 50 2)) (set (map second @seen)))
         "site i sees its i latent and i observed predecessors")))

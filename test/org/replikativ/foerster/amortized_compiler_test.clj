@@ -7,17 +7,16 @@
             [org.replikativ.foerster.dist :as d]
             [org.replikativ.foerster.effects :refer [sample observe]]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as engine]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn ordinary-simulator []
-  (spin (let [z (sample (d/normal 0 1)) x (sample (d/normal z 1))]
+  (task (let [z (sample (d/normal 0 1)) x (sample (d/normal z 1))]
           {:latent z :reading x})))
 
 (defn- run [factory]
-  (binding [engine/*execution-context* (context/create-execution-context)] @(factory)))
+  (binding [engine/*execution-context* (v2/world)] @(factory)))
 
 (deftest existing-defn-needs-no-manual-schema-or-mask
   (let [task (c/compile #'ordinary-simulator)
@@ -79,10 +78,10 @@
                                 x (observe (d/normal z 1) 100.0 :id :x)] {:z z :x x}))
         task (c/compile model {:causal? true})
         backend {:id :oracle :sample (fn [_ request {:keys [draws]}]
-                                       (spin (vec (repeat draws [2.0 (second (:values request))]))))}
-        worlds (run #(spin (let [artifact (a/artifact task backend {})
-                                 posterior (await (a/infer artifact {:x 4.0} {:draws 3 :targets [:z]}))]
-                             (await (a/worlds artifact posterior {:x 4.0} [[:changed {:z {:do 0.0}}]])))))]
+                                       (task (vec (repeat draws [2.0 (second (:values request))]))))}
+        worlds (run #(task (let [artifact (a/artifact task backend {})
+                                 posterior (await-op (a/infer artifact {:x 4.0} {:draws 3 :targets [:z]}))]
+                             (await-op (a/worlds artifact posterior {:x 4.0} [[:changed {:z {:do 0.0}}]])))))]
     (is (= 3 (count worlds)))
     (is (every? #(= {:z 0.0 :x 2.0} (get-in % [:worlds :changed])) worlds))))
 
@@ -91,10 +90,10 @@
                                 x (sample (d/normal z 1) :id :x)
                                 y (sample (d/normal (+ (* 2 x) z) 1) :id :y)] {:z z :x x :y y}))
         task (c/compile model {:causal? true})
-        backend {:id :oracle :sample (fn [_ _ {:keys [draws]}] (spin (vec (repeat draws [2.0 4.0 7.0]))))}
-        [posterior worlds] (run #(spin (let [artifact (a/artifact task backend {})
-                                             posterior (await (a/infer artifact {:y 7.0} {:draws 2 :targets [:z]}))
-                                             worlds (await (a/worlds artifact posterior {:y 7.0} [[:changed {:z {:do 0.0}}]]))]
+        backend {:id :oracle :sample (fn [_ _ {:keys [draws]}] (task (vec (repeat draws [2.0 4.0 7.0]))))}
+        [posterior worlds] (run #(task (let [artifact (a/artifact task backend {})
+                                             posterior (await-op (a/infer artifact {:y 7.0} {:draws 2 :targets [:z]}))
+                                             worlds (await-op (a/worlds artifact posterior {:y 7.0} [[:changed {:z {:do 0.0}}]]))]
                                          [posterior worlds])))]
     (is (= {:z 2.0} (m/get-value (ffirst (m/get-particles posterior)))))
     (is (every? #(= {:z 0.0 :x 2.0 :y 1.0} (get-in % [:worlds :changed])) worlds))))
@@ -102,4 +101,4 @@
 (deftest trace-less-predictive-replay-does-not-silently-draw-the-prior
   (let [posterior (m/empirical [[(m/sample-particle {:z 100.0} nil) 0.0]])]
     (is (thrown? Exception
-                 (run #(inference/predictive (ordinary-simulator) posterior 1))))))
+                 (run #(inference/predictive (fn [] (ordinary-simulator)) posterior 1))))))

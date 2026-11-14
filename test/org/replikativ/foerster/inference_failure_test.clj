@@ -6,13 +6,13 @@
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [org.replikativ.foerster.core :as infer]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.core :as rtc]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            
+            ))
 
 (defn clean-context-fixture [f]
-  (binding [rtc/*execution-context* nil]
+  (binding [v2/*world* nil]
     (f)))
 
 (use-fixtures :each clean-context-fixture)
@@ -22,20 +22,20 @@
             the failure to the caller within a bounded time — not hang
             forever waiting for completion notifications that will
             never arrive."
-    (let [context (ctx/create-execution-context)]
+    (let [context (v2/world)]
       (try
-        (binding [rtc/*execution-context* context]
+        (binding [v2/*world* context]
           (let [;; A model whose spin body throws — every particle fails
             ;; identically. This mirrors the production failure mode
             ;; (a broken model where `sample` runs outside spin context
             ;; and throws on every particle).
-                failing-model (spin
+                failing-model (task
                                (throw (ex-info "model went boom"
                                                {:reason :regression-test})))
 
-                outer (spin
+                outer (task
                        (try
-                         (let [m (await (infer/smc-infer failing-model 3))]
+                         (let [m (await-op (infer/smc-infer failing-model 3))]
                         ;; Should never reach here — the inference must
                         ;; throw the InferenceFailure rather than return
                         ;; a measure when every particle errored.
@@ -60,4 +60,4 @@
                   "thrown error message identifies it as an inference failure")
               (is (re-find #"boom" (str (:cause-message result)))
                   "the original model error is preserved as the cause"))))
-        (finally (ctx/stop-context! context))))))
+        (finally (v2/release-world! context))))))

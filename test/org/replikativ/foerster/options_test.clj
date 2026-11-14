@@ -4,13 +4,11 @@
   (:require [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.moves.kernel :as k]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
-(def ^:private world (context/create-execution-context))
+(def ^:private world (v2/world))
 
-(defn- model [] (binding [ec/*execution-context* world] (spin :done)))
+(defn- model [] (binding [v2/*world* world] (task :done)))
 
 (defn- refusal [f]
   (try (f) nil
