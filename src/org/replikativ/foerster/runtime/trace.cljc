@@ -27,13 +27,11 @@
   site."
   (:require [is.simm.partial-cps.async :as pcps]
             [org.replikativ.foerster.runtime.trace-owner :as owner]
-            [org.replikativ.spindel.engine.impl.simple :as engine]
-            [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.v2.core :as v2]
+            [org.replikativ.spindel.v2.trace :as trace]
+            [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.foerster.model.mechanism :as mech]
-            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.dist :as dist]
@@ -49,7 +47,7 @@
 ;; =============================================================================
 
 (defn- add-weight! [world w]
-  (rtp/swap-state! world [:inference :log-weight] (fn [x] (+ (or x 0.0) w))))
+  (v2/update-in-world! world [:inference :log-weight] (fn [x] (+ (or x 0.0) w))))
 
 (defn- finite? [x]
   (and (number? x)
@@ -73,7 +71,7 @@
 (defn- intervention-for [opts sp]
   (let [world (:savepoint/world sp)
         pairs (::intervention-pairs opts)
-        interventions (rtp/get-state world [:inference :interventions])]
+        interventions (v2/get-in-world world [:inference :interventions])]
     (when (or (seq pairs) (seq interventions))
       (let [d (sel/describe sp)
             match (fn [[selects? transform]] (when (selects? d) transform))]
@@ -85,7 +83,7 @@
   [world]
   (into {} (keep (fn [[address entry]]
                    (when (= :inference/choose (:site entry)) [address (:value entry)])))
-        (:trace/entries (rtp/get-state world [:savepoint/trace]))))
+        (:trace/entries (v2/get-in-world world [:savepoint/trace]))))
 
 (declare decide-choose)
 
@@ -133,8 +131,8 @@
   [sp]
   (let [world (:savepoint/world sp)]
     (if (barrier-site? sp)
-      (rtp/swap-state! world [:inference :barriers] (fnil inc 0))
-      (or (rtp/get-state world [:inference :barriers]) 0))))
+      (get-in (v2/update-in-world! world [:inference :barriers] (fnil inc 0)) [:inference :barriers])
+      (or (v2/get-in-world world [:inference :barriers]) 0))))
 
 (defn policy-options
   "The options a `policy` was made from, or nil for another function."
@@ -520,16 +518,12 @@
 
 (defn anchor?
   "Whether a site is worth an anchor: only a site a move can start from. An
-  observe or a factor is never replayed from, and an anchor is a forked
-  world. Once a keyed region has been entered, sites take no anchors:
-  children can still be in flight, and old downstream checkpoints would be
-  invalidated by later key updates. Independent keys use reexecute; a broader
-  change needs a valid upstream anchor. This also covers nested child spins.
-  Pass as :anchor? to trace/run and trace/replay."
+  observe or a factor is never replayed from, and an anchor keeps the world
+  as it was at its site until it is disposed. Pass as :anchor? to trace/run
+  and trace/replay."
   [sp]
   (and (= choose-site (:savepoint/site sp))
-       (not (:observed? (:savepoint/payload sp)))
-       (empty? (rtp/get-state (:savepoint/world sp) [:keyed/spins]))))
+       (not (:observed? (:savepoint/payload sp)))))
 
 (def ^:private canonical-start
   "`foerster.inference.smc/start-site`, the savepoint a canonical model publishes
@@ -540,7 +534,7 @@
   "Whether `trace` runs in canonical worlds (`:world-policy :fork`): forks
   of a caller's world whose state the model may read and write."
   [trace]
-  (boolean (some-> (:trace/world trace) (rtp/get-state [:inference :canonical?]))))
+  (boolean (some-> (:trace/world trace) (v2/get-in-world [:inference :canonical?]))))
 
 (defn canonical-anchor?
   "`anchor?` for a run in canonical worlds: also the start site, so a move
@@ -549,72 +543,19 @@
   [sp]
   (or (= canonical-start (:savepoint/site sp)) (anchor? sp)))
 
-;; -----------------------------------------------------------------------------
-;; World state a run wrote
-;; -----------------------------------------------------------------------------
-;;
-;; Incremental reuse — a keyed `trace/update`, which re-runs a key in a fork
-;; of the world the trace ENDED in, and a replay that adopts finished
-;; computations from the replayed world (its reuse source) — is sound only
-;; for code that depends on its arguments and choices. A model that writes
-;; world state breaks both: a re-run key finds its own earlier writes, and
-;; those of siblings and of later code, still in place (an append is applied
-;; twice), and an adopted computation that read an atom keeps a result the
-;; changed run would not compute (Spindel records tracked signals as
-;; dependencies, not atom reads). Reads of state nothing writes during the
-;; run (the frozen caller state of `:world-policy :fork`) are safe.
-;;
-;; So reuse is used only for runs that wrote no world state: no Spindel atom
-;; holds another value than where the run started, and the run created none.
-;; A run's base is the cells of its root when the model started
-;; (`[:inference :base-cells]`, set by `mark-canonical!` for a fork of the
-;; caller's world; a fresh world starts with none). Signals are not compared:
-;; a model that writes a signal it tracks re-runs reactively, which Spindel
-;; does not support inside a traced computation.
-
 (defn mark-canonical!
   "Mark `world`, a fork of the caller's world in which a model is about to
-  run (`:world-policy :fork`), as canonical and record its cells as the
-  base `wrote-state?` compares a run's cells with."
+  run (`:world-policy :fork`), as canonical."
   [world]
-  (rtp/swap-state! world [:inference :base-cells] (constantly (or (rtp/get-state world [:atoms]) {})))
-  (rtp/swap-state! world [:inference :canonical?] (constantly true)))
-
-(defn wrote-state?
-  "Whether the run that produced `trace` wrote world state (see above): a
-  Spindel atom whose value is not the identical value it had at the run's
-  base, or one the run created. A trace without a world counts as having
-  written."
-  [trace]
-  (if-let [world (:trace/world trace)]
-    (let [base (or (rtp/get-state world [:inference :base-cells]) {})
-          cells (or (rtp/get-state world [:atoms]) {})]
-      (not (and (= (count base) (count cells))
-                (every? (fn [[id entry]]
-                          (when-let [b (get base id)]
-                            (identical? (:value entry) (:value b))))
-                        cells))))
-    true))
+  (v2/assoc-in-world! world [:inference :canonical?] true))
 
 (defn replay-sound
-  "`trace/replay` of `trace` from `address`, adopting finished computations
-  from `trace`'s world only when that is sound: neither `trace`'s run nor the
-  replay wrote world state (`wrote-state?`). A replay that adopted and then
-  wrote state is given back and run again without adoption. `reuse?` false
-  never adopts."
-  ([trace address policy opts] (replay-sound trace address policy opts true))
-  ([trace address policy opts reuse?]
-   (let [plain #(trace/replay (dissoc trace :trace/world) address policy opts)]
-     (if-not (and reuse? (:trace/world trace) (not (wrote-state? trace)))
-       (plain)
-       (fn [resolve reject]
-         ((trace/replay trace address policy opts)
-          (fn [t']
-            (if (and (:trace/world t') (wrote-state? t'))
-              (do (owner/reclaim! [t'] [trace])
-                  ((plain) resolve reject))
-              (resolve t')))
-          reject))))))
+  "`trace/replay` of `trace` from `address`. On engine v2 a replay is an
+  instance of the anchor (the world as it was at the site), so it adopts
+  nothing from the replayed world and is sound whatever the run wrote;
+  `reuse?` is accepted and ignored."
+  ([trace address policy opts] (trace/replay trace address policy opts))
+  ([trace address policy opts _reuse?] (trace/replay trace address policy opts)))
 
 (defn latent?
   "Whether a trace entry is a sample site inference may move: not observed,
@@ -642,29 +583,6 @@
   [trace]
   (count (:addresses (latent-index trace))))
 
-(defn- patch-latent
-  "`index` (of the trace `new` was updated from) for `new`, given the
-  addresses the update `changed`: O(changed)."
-  [index new changed]
-  (reduce (fn [{:keys [addresses position] :as idx} a]
-            (let [e (get-in new [:trace/entries a])
-                  now? (and e (latent? e))
-                  at (get position a)]
-              (cond
-                (and now? (nil? at))
-                {:addresses (conj addresses a) :position (assoc position a (count addresses))}
-
-                (and (not now?) at)
-                ;; move the last address into the hole
-                (let [last-i (dec (count addresses))
-                      last-a (nth addresses last-i)]
-                  {:addresses (pop (assoc addresses at last-a))
-                   :position (cond-> (dissoc position a)
-                               (not= a last-a) (assoc last-a at))})
-
-                :else idx)))
-          index changed))
-
 (defn choices
   "{address value} of the sample sites of `trace`."
   [trace]
@@ -682,7 +600,7 @@
 (defn log-weight
   "The importance weight the world of `trace` accumulated."
   [trace]
-  (or (rtp/get-state (:trace/world trace) [:inference :log-weight]) 0.0))
+  (or (v2/get-in-world (:trace/world trace) [:inference :log-weight]) 0.0))
 
 ;; =============================================================================
 ;; Metropolis-Hastings: replay plus accept
@@ -824,143 +742,47 @@
         v (dist/draw dist)]
     {:value v :log-proposal (dist/draw-logpdf dist v)}))
 
-(defn- subtree [world ids]
-  (loop [todo (vec ids) seen #{}]
-    (if-let [id (peek todo)]
-      (if (contains? seen id)
-        (recur (pop todo) seen)
-        (recur (into (pop todo) (engine/live-children (rtp/get-state world [:nodes id])))
-               (conj seen id)))
-      seen)))
-
-(defn- keyed-layout [t]
-  (let [world (:trace/world t)
-        trees (into {} (map (fn [id] [id (subtree world [id])]))
-                    (keys (rtp/get-state world [:keyed/spins])))
-        ;; Prefer the nearest key. Re-running an outer key alone can adopt an
-        ;; unchanged inner key and never visit the requested inner site.
-        owners (reduce (fn [owners [id nodes]]
-                         (reduce (fn [m child] (if (contains? m child) m (assoc m child id))) owners nodes))
-                       {} (sort-by (fn [[id nodes]] [(count nodes) (pr-str id)]) trees))
-        collections (into {} (mapcat (fn [[collection state]]
-                                       (map (fn [child] [(spin-core/spin-id child) collection])
-                                            (vals (:children state)))))
-                          (rtp/get-state world [:keyed]))]
-    {:owners owners :trees trees :collections collections}))
-
 (defn- replay-origin [t targets]
   (let [first-target (if (= 1 (count targets)) (first targets) (trace/earliest t targets))
         pending? (fn [address] (when-let [anchor (get-in t [:trace/entries address :savepoint])]
-                                 (sp/pending? anchor)))]
+                                 (sp/anchor? anchor)))]
     (if (pending? first-target) first-target
         (last (filter pending? (take-while #(not= first-target %) (:trace/order t)))))))
 
 (defn copy-complete
-  "Fork a settled end-world without re-running its effects. The caller owns
-  shared anchors and must keep every live population reachable until release."
-  [t opts]
+  "Fork a settled end-world without re-running its effects: a host fork of
+  the world the trace ended in, owned by its session. The caller owns shared
+  anchors and must keep every live population reachable until release."
+  [t _opts]
   (pcps/async
    (when (or (not (contains? t :trace/result)) (:trace/pending t) (:trace/error t))
      (throw (ex-info "Only complete successful traces can be copied"
                      {:type ::incomplete-copy})))
-   (let [copy (pcps/await (trace/update t [] (policy {:keep? true}) opts))]
-     (assoc copy ::latent (latent-index t)))))
-
-(defn- policy-contribution [entry]
-  (let [{:keys [log-prob log-proposal observed? constrained? factor? symmetric?]} (:note entry)]
-    (cond
-      (or observed? constrained? factor?) log-prob
-      (and (number? log-proposal) (not symmetric?)) (- log-prob log-proposal)
-      :else 0.0)))
-
-(defn- update-ledger! [old next changed]
-  ;; trace/update starts at the end-world, not a prefix checkpoint. Replace
-  ;; rewritten policy contributions instead of accumulating them twice.
-  ;; This is bookkeeping, not an evidence certificate for a Markov state.
-  (let [sum (fn [t addresses]
-              (transduce (map #(policy-contribution (get-in t [:trace/entries %]))) + 0.0 addresses))
-        weight (+ (log-weight old) (- (sum old changed)) (sum next changed))
-        weight (if (#?(:clj Double/isNaN :cljs js/isNaN) weight)
-                 (sum next (keys (:trace/entries next))) weight)]
-    (rtp/swap-state! (:trace/world next) [:inference :log-weight] (constantly weight))))
+   (let [s (:trace/session t)
+         w (v2/fork! (:trace/world t))]
+     (swap! (:worlds s) conj w)
+     (assoc t :trace/world w ::latent (latent-index t)))))
 
 (defn reexecute
-  "Rewrite selected sites through one execution interface. Complete independent
-  keyed regions re-run their owning keys; other moves replay from the latest
-  valid preceding anchor. Incremental parent-side inference effects and keyed
-  streaming frontiers are refused unless safe prefix replay is available.
-  Result metadata ::changed / ::restart describes the score delta to compare.
-
-  Incremental reuse (a keyed update; a replay adopting the replayed world's
-  finished computations) is used only when the run wrote no world state
-  (`wrote-state?`), under either world policy. A move on a run that wrote
-  state replays from the latest anchor before its sites (the world as it was
-  at that site) without adoption; in canonical worlds a keyed model
-  re-executes from its start site (`canonical-anchor?`). A keyed update or
-  adopting replay whose own run writes state is given back and replayed
-  without reuse."
+  "Rewrite selected sites: replay from the latest anchor at or before the
+  earliest target (on engine v2 a move is always a replay; keyed
+  incremental updates are gone). Result metadata ::restart is the replayed
+  address."
   [t targets move opts]
   (pcps/async
    (when-let [missing (seq (remove #(contains? (:trace/entries t) %) targets))]
      (throw (ex-info "A rewrite targets absent sites" {:type ::unknown-target :addresses (vec missing)})))
-   (let [world (:trace/world t)
-         {:keys [owners trees collections]} (keyed-layout t)
-         ids (mapv #(get owners (get-in t [:trace/entries % :spin])) targets)
-         keyed? (and (seq ids) (every? some? ids))
-         _ (when (and (seq owners) (or (:until opts) (:trace/pending t)))
-             (throw (ex-info "Incremental keyed moves require complete traces"
-                             {:type ::incremental-frontier})))
-         groups (when keyed? (set (map collections ids)))
-         overlap? (when keyed?
-                    (some (fn [id] (some #(and (not= id %) (contains? (get trees %) id)) ids)) ids))
-         selected (when keyed? (subtree world ids))
-         region (when (and (= 1 (count groups)) (not (contains? groups nil)))
-                  (into #{} (mapcat (fn [[id group]] (when (contains? groups group) (get trees id)))) collections))
-         touched (when keyed? (into #{} (keep (fn [[a e]] (when (contains? selected (:spin e)) a)))
-                                    (:trace/entries t)))
-         suffix (when keyed? (drop-while #(not (contains? touched %)) (:trace/order t)))
-         ;; Only siblings of the SAME keyed collection are independent here.
-         ;; A resumed parent can drop a whole later keyed collection, whose
-         ;; dead sites the released runtime would otherwise retain.
-         canonical (canonical? t)
-         stateful (wrote-state? t)
-         local? (and keyed? region (not overlap?) (not stateful)
-                     (not-any? #(not (contains? region (get-in t [:trace/entries % :spin]))) suffix))
-         replay (fn []
-                  (let [from (replay-origin t targets)]
-                    (when-not from
-                      (throw (if (and keyed? stateful)
-                               (ex-info (str "This keyed model writes world state, so a key cannot be re-run "
-                                             "in the world its run ended in, and no anchor precedes its keys: "
-                                             "run it with :world-policy :fork (moves then re-run it from its "
-                                             "start), or sample a site before its keyed region")
-                                        {:type ::stateful-keyed-move :targets (vec targets)})
-                               (ex-info "No safe replay anchor precedes the requested sites; use self-contained keyed regions or an anchored prefix"
-                                        {:type ::no-replay-origin :targets (vec targets)}))))
-                    (fn [deliver fail]
-                      ;; A replay beginning before a key must visit that key,
-                      ;; even when its captured inputs are unchanged.
-                      ((replay-sound t from move (assoc opts :anchor? (or (:anchor? opts)
-                                                                          (if canonical canonical-anchor? anchor?)))
-                                     (= #{from} (set targets)))
-                       #(deliver (assoc % ::restart from)) fail))))]
-     (if-not local?
-       (pcps/await (replay))
-       (let [next (pcps/await (trace/update t (vec (distinct ids)) move (select-keys opts [:seed])))
-             allowed (subtree (:trace/world next) ids)
-             updated (set (:trace/updated next))
-             unvisited? (some #(and (contains? (:trace/entries next) %) (not (contains? updated %))) targets)
-             outside? (some #(not (contains? allowed (get-in next [:trace/entries % :spin]))) updated)]
-         (if (and (or outside? unvisited? (wrote-state? next)) (not (:trace/error next)))
-           (do (owner/reclaim! [next] [t])
-               (pcps/await (replay)))
-           (let [changed (changed-addresses t next)]
-             (update-ledger! t next changed)
-             (assoc next ::changed changed ::latent (patch-latent (latent-index t) next changed)))))))))
+   (let [from (replay-origin t targets)
+         canonical (canonical? t)]
+     (when-not from
+       (throw (ex-info "No replay anchor precedes the requested sites"
+                       {:type ::no-replay-origin :targets (vec targets)})))
+     (assoc (pcps/await (trace/replay t from move (assoc opts :anchor? (or (:anchor? opts)
+                                                                         (if canonical canonical-anchor? anchor?)))))
+            ::restart from))))
 
 (defn mh-step
-  "One MH move using keyed re-execution for complete independent regions and
-  anchored replay otherwise. :select / :propose / :constraints / :temperature
+  "One MH move: anchored replay from the earliest target. :select / :propose / :constraints / :temperature
   retain their usual meaning. :keep-old? and :shared-anchors? are ownership
   policies; :until denotes an anchored replay frontier."
   ([t] (mh-step t nil))
@@ -1075,7 +897,6 @@
                                                #(weights/sample-categorical (weights/normalize-log-weights increments)))
               [value chosen] (nth options selected)
               live (cond-> [chosen] keep-old? (conj t))]
-          (rtp/swap-state! (:trace/world chosen) [:engine/reuse-source] (constantly nil))
           (owner/reclaim! (mapv second options) live)
           {:trace chosen :value value :log-weights (zipmap (map first options) increments)
            :accepted? true :moves 1 :accepted-moves 1})
@@ -1103,7 +924,7 @@
    (fn [resolve reject]
      (let [span (* n iteration-stride)
            first-iteration (or first-iteration
-                               (- (rtp/swap-state! (:trace/world trace) [:inference ::chain-moves] #(+ (or % 0) span))
+                               (- (get-in (v2/update-in-world! (:trace/world trace) [:inference ::chain-moves] #(+ (or % 0) span)) [:inference ::chain-moves])
                                   span))]
        (letfn [(step [current i moves accepted]
                  (if (= i n)
@@ -1153,15 +974,15 @@
   appended, as in a forward run (the site kernels of `kernel-infer`); a
   replay that rewrites entries in place must use `legacy-trace`."
   [world]
-  (let [trace (rtp/get-state world [:savepoint/trace])
+  (let [trace (v2/get-in-world world [:savepoint/trace])
         order (vec (:trace/order trace))
-        {:keys [n last-address legacy]} (rtp/get-state world [:inference ::legacy-cache])
+        {:keys [n last-address legacy]} (v2/get-in-world world [:inference ::legacy-cache])
         extends? (and n (<= n (count order))
                       (or (zero? n) (= last-address (nth order (dec n)))))
         legacy (if extends?
                  (into legacy (legacy-entries trace) (subvec order n))
                  (legacy-trace trace))]
-    (rtp/swap-state! world [:inference ::legacy-cache]
+    (v2/update-in-world! world [:inference ::legacy-cache]
                      (constantly {:n (count order) :last-address (peek order) :legacy legacy}))
     legacy))
 
