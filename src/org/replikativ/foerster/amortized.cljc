@@ -292,7 +292,7 @@
   to the checks declared by that validator, not every possible observation."
   [fitted validator]
   (pcps/async
-   (let [report (pcps/await (async/op-of (validator fitted)))]
+   (let [report (pcps/await (async/op-of (async/with-world (v2/current-world) #(validator fitted))))]
      (when-not (and (= :posterior (:scope report)) (boolean? (:passed? report)))
        (fail "Posterior validator must declare its scope and boolean :passed?" {}))
      (artifact (:task fitted) (:backend fitted) (:payload fitted) report))))
@@ -306,18 +306,22 @@
   (when-not (fn? (:train backend)) (fail "Backend has no training capability" {}))
   (when-not (nat-int? validation-simulations) (fail "Validation simulation count must be nonnegative" {}))
   (pcps/async
-   (let [rows (or examples (pcps/await (async/op-of (org.replikativ.foerster.amortized/examples task simulations {:seed seed}))))
+   (let [caller (v2/current-world)
+         rows (or examples (pcps/await (async/op-of (org.replikativ.foerster.amortized/examples task simulations {:seed seed}))))
          encoded (mapv #(encode-row task %) rows)
          held-out (or validation-examples
                       (when (and (nil? examples) (pos? validation-simulations))
                         (pcps/await (async/op-of (org.replikativ.foerster.amortized/examples task validation-simulations
                                                                            {:seed (+ seed simulations)})))))]
      (when-not (seq encoded) (fail "Training examples cannot be empty" {}))
-     (let [payload (pcps/await (async/op-of ((:train backend) task encoded
-                                            (assoc (dissoc options :examples :simulations :validation-examples :validation-simulations :posterior-validator)
-                                                   :validation-rows (mapv #(encode-row task %) held-out)))))
+     (let [payload (pcps/await (async/op-of (async/with-world caller
+                                              #((:train backend) task encoded
+                                                                 (assoc (dissoc options :examples :simulations :validation-examples :validation-simulations :posterior-validator)
+                                                                        :validation-rows (mapv (fn [row] (encode-row task row)) held-out))))))
            fitted (artifact task backend payload)]
-       (if posterior-validator (pcps/await (async/op-of (validate fitted posterior-validator))) fitted)))))
+       (if posterior-validator
+         (pcps/await (async/with-world caller #(validate fitted posterior-validator)))
+         fitted)))))
 
 (defn resume
   "Continue training a live or thawed artifact. Reuses its simulator count and
@@ -347,7 +351,7 @@
     (when-not (and (pos-int? draws) (seq targets) (set/subset? (set targets) (set all-targets)))
       (fail "Request a positive draw count and declared targets" {:draws draws :targets targets}))
     (pcps/async
-     (let [rows (pcps/await (async/op-of ((:sample backend) payload request {:draws draws :seed seed})))]
+     (let [rows (pcps/await (async/op-of (async/with-world (v2/current-world) #((:sample backend) payload request {:draws draws :seed seed}))))]
        (when-not (= draws (count rows)) (fail "Backend returned the wrong draw count" {:expected draws :actual (count rows)}))
        (->ApproximateMeasure
         (mapv (fn [row]

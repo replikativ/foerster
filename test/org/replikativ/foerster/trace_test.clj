@@ -118,7 +118,7 @@
                                         (itrace/policy)))
           sites (count (:trace/order initial))
           {:keys [accepted]} (await-cps (itrace/mh-chain initial 150 nil))
-          handles #(count (:handles @(:scope session)))]
+          handles #(count @(:worlds session))]
       (is (< 10 accepted 140) "both outcomes happened")
       (loop [tries 0]
         (when (and (< tries 100) (> (handles) (+ sites 2)))

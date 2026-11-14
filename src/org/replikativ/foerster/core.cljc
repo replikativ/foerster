@@ -301,9 +301,9 @@
   "Run `model` under the inference method `(:method opts)` — one call shape
   for every method, as Anglican's `doquery`:
 
-    (infer/infer (model) {:method :smc :particles 1000})
-    (infer/infer (model) {:method :mh :iterations 4000 :chains 4 :burn 1000})
-    (infer/infer (model) {:method :pmmh :particles 100 :iterations 2000
+    (infer/infer model {:method :smc :particles 1000})
+    (infer/infer model {:method :mh :iterations 4000 :chains 4 :burn 1000})
+    (infer/infer model {:method :pmmh :particles 100 :iterations 2000
                           :params #{:drift}})
 
   Methods and their sizes:

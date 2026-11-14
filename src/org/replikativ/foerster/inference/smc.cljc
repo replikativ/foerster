@@ -669,12 +669,11 @@
                      (fn [policy] (decide-site! sp slot nil policy))
                      fail!)
 
+                    ;; the savepoint is its own anchor: resumed, it stays
+                    ;; forkable until disposed (as `v2.trace` records)
                     (and anchor? (anchor? sp))
-                    ((async/now sp/fork sp)
-                     (fn [anchor]
-                       (swap! registry assoc (trace/anchor-id anchor) anchor)
-                       (decide-site! sp slot anchor))
-                     fail!)
+                    (do (swap! registry assoc (trace/anchor-id sp) sp)
+                        (decide-site! sp slot sp))
 
                     :else (decide-site! sp slot nil)))
                 (catch #?(:clj Throwable :cljs :default) e (fail! e))))
@@ -980,9 +979,11 @@
                                               placed)]
                          ;; a copied source continues in its copies; the
                          ;; others end here
-                         (doseq [sp (concat (map :sp (vals parked)) (vals streaming))
-                                 :when (sp/pending? sp)]
-                           (sp/abandon sp))
+                         (doseq [sp (concat (map :sp (vals parked)) (vals streaming))]
+                           (when (sp/pending? sp) (sp/abandon sp))
+                           ;; the worlds go back at once; anchors in them keep
+                           ;; only their basis
+                           (sp/release-world! session (:savepoint/world sp)))
                          (let [continue!
                                (fn [parked']
                                  (when anchor? (gc! parked' streaming'))
@@ -1007,9 +1008,11 @@
                                                             lag))))
                                  {}
                                  (concat (map :sp (vals parked)) (vals streaming)))]
+                ;; an anchor is a resumed latent savepoint: disposing it
+                ;; frees its basis
                 (doseq [[id a] @registry
-                        :when (and (not (contains? live id)) (sp/pending? a))]
-                  (sp/abandon a))
+                        :when (not (contains? live id))]
+                  (sp/dispose a))
                 (reset! registry live)
                 (swap! state update-in [:rejuvenation :max-anchors] (fnil max 0) (count live))))
 
@@ -1087,6 +1090,8 @@
                                    ;; and does not keep the displaced world
                                    ;; alive as the source of reused spins
                                    (sp/install-handlers! w @handler-table)
+                                   (when (sp/pending? sp) (sp/abandon sp))
+                                   (sp/release-world! session world0)
                                    (done {:sp (:trace/pending t) :value (:trace/pending-value t)}))))]
                   (letfn [(step [j t]
                             (if (= j steps)

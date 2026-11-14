@@ -13,7 +13,7 @@
   for small discrete models, and the reference other methods are checked
   against.
 
-    (infer/infer (model) {:method :enumerate})
+    (infer/infer model {:method :enumerate})
 
   A latent site with infinite or continuous support is refused
   (`::infinite-support`); `:max-branches` (default 100000) bounds the work."

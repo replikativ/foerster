@@ -46,13 +46,25 @@
 
 (defn external-of
   "The `v2/external` operation completing with CPS operation `op`, started
-  on the host executor: never inside the world whose body awaits it."
+  on the host executor: never inside the world whose body awaits it. That
+  world is bound (`v2/*world*`) while `op` starts, so a driver may take it
+  as its caller's world (`with-world`)."
   [op]
   (fn [complete!]
-    (hs/execute! (hs/executor)
-                 (fn [] (try (op complete! (fn [e] (complete! e true)))
-                             (catch #?(:clj Throwable :cljs :default) e (complete! e true)))))
+    (let [w (v2/current-world)]
+      (hs/execute! (hs/executor)
+                   (fn [] (binding [v2/*world* w]
+                            (try (op complete! (fn [e] (complete! e true)))
+                                 (catch #?(:clj Throwable :cljs :default) e (complete! e true)))))))
     nil))
+
+(defn with-world
+  "`(f)` with `v2/*world*` bound to `w`: a driver calls a user function that
+  may create tasks (a backend, a validator) in its caller's world `w`,
+  taken where the driver started, also after it awaited (as host code no
+  world is bound)."
+  [w f]
+  (binding [v2/*world* w] (f)))
 
 #?(:clj
    (defmacro await-op

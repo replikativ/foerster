@@ -57,7 +57,7 @@
 (defn maximize-evidence
   "Fit a model's parameters by maximum marginal likelihood (empirical Bayes;
   what Gen's `train!` does for a model's parameters): `model-fn` maps a
-  parameter map {name value} to a spin, and the parameters climb the
+  parameter map {name value} to a task, and the parameters climb the
   evidence log Ẑ(θ) that `infer-opts` (a particle method of `infer/infer`)
   estimates. The gradient is central differences of step `:h`, both sides
   run with the same seed (common random numbers), so their difference is
@@ -76,12 +76,12 @@
        (if (> t steps)
          {:params theta :history history}
          (let [opts (assoc infer-opts :seed (+ (* 1000003 base-seed) t))
-               lz (m/log-marginal (pcps/await (async/op-of (infer/infer (model-fn theta) opts))))
+               lz (m/log-marginal (pcps/await (infer/infer-op #(model-fn theta) opts)))
                grad (loop [[k & more] names g {}]
                       (if-not k
                         g
-                        (let [up (m/log-marginal (pcps/await (async/op-of (infer/infer (model-fn (update theta k + h)) opts))))
-                              down (m/log-marginal (pcps/await (async/op-of (infer/infer (model-fn (update theta k - h)) opts))))]
+                        (let [up (m/log-marginal (pcps/await (infer/infer-op #(model-fn (update theta k + h)) opts)))
+                              down (m/log-marginal (pcps/await (infer/infer-op #(model-fn (update theta k - h)) opts)))]
                           (recur more (assoc g k (/ (- up down) (* 2.0 h)))))))
                ;; Adam (Kingma & Ba 2015), ascending
                m (into {} (map (fn [k] [k (+ (* 0.9 (m k)) (* 0.1 (grad k)))]) names))
