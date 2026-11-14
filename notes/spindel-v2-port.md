@@ -99,6 +99,21 @@ pairs the wrong choices). Effect indices shift when a branch adds choices; v2's 
 `replay` instantiates the anchor publication with the new value; `update` uses `rerun!`;
 `release!` abandons the anchors the other trace does not share.
 
+### Review (gpt-6.1-sol medium, 2026-11-14) and proposed decisions
+
+The review (`spindel-v2-land/.internal/reviews/sb-design-sol.md`) found that the mapping is not yet
+equivalent; these need spec decisions (§8.2) before S-b:
+
+| # | Finding | Proposal |
+|---|---|---|
+| D1 | `copy` = instantiate k + release source would cancel the source (finalizers run) and, by S4, release the activated copies with their owner | new transition: consume a pending publication into k instances without unwinding the source run; the instances are owned by the session's owner scope, not the publication world |
+| D2 | `trace/update` = `rerun!` does not fit: choices live in tasks, tasks cannot rerun | `update` becomes replay from the earliest changed address (instantiate its anchor); work before the site is reused (S5 adoption). Measure on the benchmarks; savepoints in computations only if replay is too slow |
+| D3 | `[site ordinal]` addresses collide across task runs and shift when an earlier occurrence of the same site is skipped | address = enclosing frame (the creation keys of the entity chain, explicit scope ids) + site + ordinal within that frame; count the publishing effect before freezing |
+| D4 | anchors: a resumed publication's basis is never disposed; `Publication` holds its world strongly | `dispose!` on a publication drops its basis; the publication holds only what instantiate needs |
+| D5 | `close!` cannot wait for cleanup: T21 only requests release | `close!` returns a completion after the session's worlds are released and quiescent; needs the planned world join, interim: a quiescence wait in the session layer |
+| D6 | instances see the publication-time state, not writes made while parked | writes for a particle go into its instance before `activate!` (S3 allows it); foerster's "write into the pending world, then fork" call sites change accordingly |
+| D7 | grants / budget splitting / refusal without consumption, spend-key per occurrence | session-layer ledger (host data), not engine; spend-key = [world, publication occurrence] |
+
 ## Open
 
 - `world.scope` authority/grant/balance (canonical.cljc, sandbox): which part foerster still needs
