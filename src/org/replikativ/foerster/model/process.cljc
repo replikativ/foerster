@@ -9,8 +9,8 @@
   Nonparametric models are written with it, as a stick per index or a
   mean per cluster:
 
-    (let [mean-of (process/mem (fn [k] (spin (sample (dist/normal 0 10) :id [:mean k]))))]
-      (spin … (await (mean-of 3)) …))
+    (let [mean-of (process/mem (fn [k] (task (sample (dist/normal 0 10) :id [:mean k]))))]
+      (task … (await-op (mean-of 3)) …))
 
   Name the sample sites inside a memoized function by its arguments, as
   above: a value is drawn once, at the first call.
@@ -23,14 +23,12 @@
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample]]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.engine.core :as rtc]
-            [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.spin.cps :refer [spin]])
-  #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]])
+  #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]])))
 
-(defn- world [] rtc/*execution-context*)
+(defn- world [] (v2/current-world))
 
 (defn mem
   "`f` (a function returning a spin or a value) memoized per world: each
@@ -40,22 +38,22 @@
   [f]
   (let [id #?(:clj (Object.) :cljs (js-obj))]
     (fn [& args]
-      (spin
+      (task
        (let [key [::mem id (vec args)]
              ;; boxed, so a memoized nil is told from a missing value
-             cached (rtp/get-state (world) [:inference :mem key])]
+             cached (v2/get-in-world (world) [:inference :mem key])]
          (if cached
            (first cached)
            (let [out (apply f args)
-                 v (if (satisfies? spin-core/PSpin out) (await out) out)]
-             (rtp/swap-state! (world) [:inference :mem key] (constantly [v]))
+                 v (if (v2/handle? out) (await-op out) out)]
+             (v2/update-in-world! (world) [:inference :mem key] (constantly [v]))
              v)))))))
 
 (defn crp-tables
   "The customers at each table of the process `name` in the current world:
   a vector, table k at index k."
   [name]
-  (or (rtp/get-state (world) [:inference :crp name]) []))
+  (or (v2/get-in-world (world) [:inference :crp name]) []))
 
 (defn crp-draw
   "Seat a customer in the Chinese restaurant process `name` with
@@ -63,9 +61,9 @@
   table k with probability ∝ its customers, a new table (index = the number
   of tables) ∝ α. `:id` names the sample site."
   [name alpha & {:keys [id]}]
-  (spin
+  (task
    (let [tables (crp-tables name)
          k (sample (dist/discrete (conj tables alpha)) :id id)]
-     (rtp/swap-state! (world) [:inference :crp name]
+     (v2/update-in-world! (world) [:inference :crp name]
                       (fn [ts] (let [ts (or ts [])] (if (= k (count ts)) (conj ts 1) (update ts k inc)))))
      k)))

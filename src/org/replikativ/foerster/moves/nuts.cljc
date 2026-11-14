@@ -38,7 +38,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.spindel.trace :as trace]))
+            [org.replikativ.spindel.v2.trace :as trace]))
 
 ;; =============================================================================
 ;; Vectors — double arrays inside a transition. Every operation allocates its

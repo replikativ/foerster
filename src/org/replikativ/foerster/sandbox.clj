@@ -27,12 +27,9 @@
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.inference.optimize :as opt]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.effects.savepoint :as savepoint]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.spin.sync :as sync]
+            [org.replikativ.spindel.v2.savepoint :as savepoint]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
             [clojure.string :as str]
             [clojure.walk :as walk]))
 
@@ -216,14 +213,14 @@
 (defn- run [model opts host next-seed]
   (let [native (try (core/infer model (checked opts host next-seed))
                     (catch Exception e (throw (sanitized e))))]
-    (spin (try (posterior (await native))
+    (task (try (posterior (await-op native))
                (catch Exception e (throw (sanitized e)))))))
 
-(defrecord Job [spin context terminal done])
+(defrecord Job [task terminal done])
 
 (defn- finish!
   "The job's one terminal transition; false if it already had one. A
-  finished job keeps only its outcome in `jobs`, not its spin or context."
+  finished job keeps only its outcome in `jobs`, not its task."
   [^Job job jobs id outcome]
   (when (compare-and-set! (:terminal job) nil outcome)
     (deliver (:done job) outcome)
@@ -235,11 +232,13 @@
   until forgotten."
   [model opts {:keys [on-start] :as host} next-seed jobs]
   (let [s (run model opts host next-seed)
-        job (->Job s ec/*execution-context* (atom nil) (promise))
+        job (->Job s (atom nil) (promise))
         id (random-uuid)]
     (swap! jobs assoc id job)
-    (sync/spawn! s {:on-success #(finish! job jobs id {:status :done :value %})
-                    :on-error #(finish! job jobs id {:status :failed :error (ex-message %)})})
+    (v2/observe! s (fn [v err?]
+                     (if err?
+                       (finish! job jobs id {:status :failed :error (ex-message v)})
+                       (finish! job jobs id {:status :done :value v}))))
     (when on-start (on-start job))
     {:job/id id}))
 
@@ -262,13 +261,11 @@
       :cancelled (throw (ex-info "Inference was cancelled" {:type ::cancelled})))))
 
 (defn- cancel
-  "Stop the job, in the context it was started in; a finished job stays
-  as it finished."
+  "Stop the job; a finished job stays as it finished."
   [job jobs id]
-  (let [s (:spin job) context (:context job)]
+  (let [t (:task job)]
     (when (finish! job jobs id {:status :cancelled})
-      (binding [ec/*execution-context* context]
-        (spin-core/cancel-spin! s))))
+      (v2/cancel-task! t)))
   nil)
 
 (defn cancel-job!

@@ -26,7 +26,7 @@
             [org.replikativ.foerster.population.theta :as pop]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.spindel.effects.savepoint :as sp]))
+            [org.replikativ.spindel.v2.savepoint :as sp]))
 
 (def ^:private target-acceptance 0.234)
 

@@ -30,9 +30,9 @@
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.trace :as trace]))
+            [org.replikativ.spindel.v2.savepoint :as sp]
+            [org.replikativ.spindel.v2.core :as v2]
+            [org.replikativ.spindel.v2.trace :as trace]))
 
 (def ^:private finite-ctors
   "Constructors of `foerster.dist` with finite support."
@@ -106,9 +106,9 @@
   enumerates."
   [plan s]
   (when (= itrace/choose-site (:savepoint/site s))
-    (get (:enumerate plan) (:loc (:savepoint/payload s)))))
+    (get (:enumerate plan) (:site (:savepoint/payload s)))))
 
-(defn- weight-of [world] (or (rtp/get-state world [:inference :log-weight]) 0.0))
+(defn- weight-of [world] (or (v2/get-in-world world [:inference :log-weight]) 0.0))
 
 (defn- decide!
   "Decide `s` under `policy`, recording it in its world's trace."
@@ -150,7 +150,7 @@
                            (= itrace/deterministic-site site)
                            (sp/resume x (:value (decide! policy x)))
 
-                           (contains? group (:loc (:savepoint/payload x)))
+                           (contains? group (:site (:savepoint/payload x)))
                            (let [{:keys [value]} (decide! policy x)]
                              (if (= ##-Inf (weight-of (:savepoint/world x)))
                                (end! i x)
@@ -169,7 +169,7 @@
         ((sp/fork s {:handlers (table i)})
          (fn [child]
            (try
-             (rtp/swap-state! (:savepoint/world child) [:inference :log-weight] (constantly 0.0))
+             (v2/update-in-world! (:savepoint/world child) [:inference :log-weight] (constantly 0.0))
              ;; a constraint adds log p(z = k)
              (let [{:keys [value]} (decide! (itrace/policy (assoc (itrace/policy-options policy)
                                                                   :constraints {address (nth values i)}))

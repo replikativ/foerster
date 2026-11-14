@@ -18,11 +18,10 @@
   (:require [org.replikativ.foerster.runtime.scope :as scope]
             [org.replikativ.foerster.runtime.cursor :as cursor]
             [org.replikativ.foerster.moves.transport :as transport]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.executor :as ex]
-            [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.trace :as trace]
+            [org.replikativ.spindel.v2.savepoint :as sp]
+            [org.replikativ.foerster.runtime.execution :as execution]
+            [org.replikativ.spindel.v2.core :as v2]
+            [org.replikativ.spindel.v2.trace :as trace]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.analysis.derive :as derive]
             [org.replikativ.foerster.measure :as m]
@@ -45,8 +44,8 @@
   forked."
   ::start)
 
-(defn- slot-of [world] (rtp/get-state world [:inference :slot]))
-(defn- weight-of [world] (or (rtp/get-state world [:inference :log-weight]) 0.0))
+(defn- slot-of [world] (v2/get-in-world world [:inference :slot]))
+(defn- weight-of [world] (or (v2/get-in-world world [:inference :log-weight]) 0.0))
 
 (defn sample-of
   "The measure's particle for a world that returned `result`. A particle of a
@@ -57,9 +56,9 @@
   the stream's length."
   ([world result] (sample-of world result false))
   ([world result waiting?]
-   (let [t (rtp/get-state world [:savepoint/trace])]
+   (let [t (v2/get-in-world world [:savepoint/trace])]
      (cond-> (m/sample-particle result (if waiting? (itrace/legacy-trace-view t) (itrace/legacy-trace t)))
-       (rtp/get-state world [:inference :canonical?]) (assoc :world-id (:fork-id world))))))
+       (v2/get-in-world world [:inference :canonical?]) (assoc :world-id (:fork-id world))))))
 
 (defn- decide!
   "Decide `sp` under `policy` and record it in its world's trace, with
@@ -138,10 +137,10 @@
   "The `:until` of a replay that stops at the particle's k-th barrier."
   [k]
   (fn [s] (and (itrace/barrier-site? s)
-               (= k (rtp/get-state (:savepoint/world s) [:inference :barriers])))))
+               (= k (v2/get-in-world (:savepoint/world s) [:inference :barriers])))))
 
 (defn- particle-trace [session world]
-  (assoc (rtp/get-state world [:savepoint/trace]) :trace/world world :trace/session session))
+  (assoc (v2/get-in-world world [:savepoint/trace]) :trace/world world :trace/session session))
 
 (defn- constrained-values
   "{address value} of the constrained entries of `trace` (stream data, the
@@ -159,7 +158,7 @@
   [pairs fail!]
   (let [pairs (vec pairs)]
     (when (seq pairs)
-      (ex/spread! (:executor (:savepoint/world (ffirst pairs))) (count pairs)
+      (execution/spread! nil (count pairs)
                   (fn [i] (try (let [[sp value] (nth pairs i)] (sp/resume sp value))
                                (catch #?(:clj Throwable :cljs :default) e (fail! e))))))))
 
@@ -324,8 +323,8 @@
         with-run (fn [path k use]
                    (fn [resolve reject]
                      (let [session (sp/open! (if executor
-                                               (ctx/create-execution-context :executor executor)
-                                               (ctx/create-execution-context))
+                                               (v2/world {:executor executor})
+                                               (v2/world))
                                              {:purpose :smc-retained
                                               :seed (sp/derive-seed seed ::retained (or k 0))
                                               :fork-opts {:systems :none}
@@ -344,7 +343,7 @@
          (fn [t ok fail]
            (if (:trace/error t)
              (fail (:trace/error t))
-             (ok (or (rtp/get-state (:trace/world t) [:inference :barriers]) 0)))))
+             (ok (or (v2/get-in-world (:trace/world t) [:inference :barriers]) 0)))))
        (fn [barriers]
          (letfn [(stage [k path paths]
                    (if (zero? k)
@@ -543,8 +542,8 @@
         root (cond
                adopt (:root adopt)
                root root
-               executor (ctx/create-execution-context :executor executor)
-               :else (ctx/create-execution-context))
+               executor (v2/world {:executor executor})
+               :else (v2/world))
         ;; one draw from the process generator per run: the session's seed
         ;; keys every world's streams and every barrier's draws, so runs in
         ;; parallel (IPMCMC's nodes) do not depend on how they interleave
@@ -648,7 +647,7 @@
               ;; `:retain`: each waiting particle keeps the sites of its last
               ;; `window` steps, and the measure the last `window` barriers
               (doseq [sp (vals streaming)]
-                (rtp/swap-state! (:savepoint/world sp) [:savepoint/trace] #(windowed window %)))
+                (v2/update-in-world! (:savepoint/world sp) [:savepoint/trace] #(windowed window %)))
               (swap! state update :history
                      (fn [h] (if (> (count h) window) (into [] (drop (- (count h) window)) h) h))))
 
@@ -699,7 +698,7 @@
             ;; expectation whatever decided its membership, so the estimate
             ;; stays unbiased with arrival order depending on the state.
             ;; -----------------------------------------------------------------
-            (stage-of [world] (or (rtp/get-state world [:inference :barriers]) 0))
+            (stage-of [world] (or (v2/get-in-world world [:inference :barriers]) 0))
 
             (join-batch! [sp slot value]
               (let [k (stage-of (:savepoint/world sp))]
@@ -748,8 +747,8 @@
                      (fn [children]
                        (doseq [[{:keys [slot]} child] (map vector entries children)
                                :let [w (:savepoint/world child)]]
-                         (rtp/swap-state! w [:inference :slot] (constantly slot))
-                         (rtp/swap-state! w [:inference :log-weight] (constantly mean)))
+                         (v2/update-in-world! w [:inference :slot] (constantly slot))
+                         (v2/update-in-world! w [:inference :log-weight] (constantly mean)))
                        (doseq [{:keys [sp]} entries :when (sp/pending? sp)]
                          (sp/abandon sp))
                        (resume-all! (map (fn [child a] [child (:value (nth entries a))]) children ancestors) fail!))
@@ -773,7 +772,7 @@
                (fn [children]
                  (when-not copy? (sp/abandon first-sp))
                  (doseq [[slot child] (map-indexed vector children)]
-                   (rtp/swap-state! (:savepoint/world child) [:inference :slot] (constantly slot))
+                   (v2/update-in-world! (:savepoint/world child) [:inference :slot] (constantly slot))
                    (if (= start-site (:savepoint/site child))
                      (sp/resume child nil)
                      (run-site! child))))
@@ -804,7 +803,7 @@
             (smcp3-particle! [slot {:keys [sp value] :as entry} done]
               (try
                 (let [world0 (:savepoint/world sp)
-                      k (rtp/get-state world0 [:inference :barriers])
+                      k (v2/get-in-world world0 [:inference :barriers])
                       w0 (weight-of world0)
                       t0 (assoc (particle-trace session world0) :trace/pending sp :trace/pending-value value)
                       {:keys [updates log-q reverse log-jacobian]}
@@ -814,7 +813,7 @@
                        "An SMCP3 forward kernel")]
                   (if (empty? updates)
                     ;; staying is a move too: its densities still weigh
-                    (do (rtp/swap-state! world0 [:inference :log-weight]
+                    (do (v2/update-in-world! world0 [:inference :log-weight]
                                          (constantly (+ w0 (transport/correction 0.0 (or log-q 0.0)
                                                                                  ((:backward smcp3) (itrace/choices t0) reverse)
                                                                                  log-jacobian))))
@@ -848,15 +847,14 @@
                              ;; K proposed a state the program cannot reach:
                              ;; the particle stays, with no weight
                              (do (trace/release! t1 t0)
-                                 (rtp/swap-state! world0 [:inference :log-weight] (constantly ##-Inf))
+                                 (v2/update-in-world! world0 [:inference :log-weight] (constantly ##-Inf))
                                  (done entry))
                              (let [increment (transport/correction (itrace/mh-log-ratio t0 t1 (constantly 0.0) from)
                                                                    log-q ((:backward smcp3) (itrace/choices t1) reverse)
                                                                    log-jacobian)
                                    w1 (:trace/world t1)]
-                               (rtp/swap-state! w1 [:inference :slot] (constantly slot))
-                               (rtp/swap-state! w1 [:inference :log-weight] (constantly (+ w0 increment)))
-                               (rtp/swap-state! w1 [:engine/reuse-source] (constantly nil))
+                               (v2/update-in-world! w1 [:inference :slot] (constantly slot))
+                               (v2/update-in-world! w1 [:inference :log-weight] (constantly (+ w0 increment)))
                                (sp/install-handlers! w1 @handler-table)
                                (swap! registry merge (anchors-of t1 k lag))
                                ;; the particle continues in t1's world
@@ -916,7 +914,7 @@
                                                      (done! i ##-Inf))
                                      sp/abandoned-site (fn [_] nil)}})
                        (fn [child]
-                         (rtp/swap-state! (:savepoint/world child) [:inference :log-weight] (constantly 0.0))
+                         (v2/update-in-world! (:savepoint/world child) [:inference :log-weight] (constantly 0.0))
                          (sp/resume child value))
                        (fn [e] (when (compare-and-set! failed? false true) (reject e)))))))))
 
@@ -970,8 +968,8 @@
                              placed (map (fn [slot child]
                                            (let [a (nth ancestors slot)
                                                  w (:savepoint/world child)]
-                                             (rtp/swap-state! w [:inference :slot] (constantly slot))
-                                             (rtp/swap-state! w [:inference :log-weight] (constantly reset-weight))
+                                             (v2/update-in-world! w [:inference :slot] (constantly slot))
+                                             (v2/update-in-world! w [:inference :log-weight] (constantly reset-weight))
                                              [slot child (get parked a)]))
                                          forked-slots children)
                              parked' (into {} (keep (fn [[slot child p]]
@@ -1004,7 +1002,7 @@
               (let [live (reduce (fn [acc sp]
                                    (let [w (:savepoint/world sp)]
                                      (merge acc (anchors-of (particle-trace session w)
-                                                            (or (rtp/get-state w [:inference :barriers]) 0)
+                                                            (or (v2/get-in-world w [:inference :barriers]) 0)
                                                             lag))))
                                  {}
                                  (concat (map :sp (vals parked)) (vals streaming)))]
@@ -1033,7 +1031,7 @@
             (move-retained! [slot {:keys [sp value] :as entry} done]
               (try
                 (let [world0 (:savepoint/world sp)
-                      k (rtp/get-state world0 [:inference :barriers])
+                      k (v2/get-in-world world0 [:inference :barriers])
                       ;; the path after this barrier's move: the next stage's,
                       ;; or after the last barrier the retained trajectory
                       after (get @stages (inc k) retained)
@@ -1054,9 +1052,8 @@
                            (fail! (ex-info "The retained trajectory cannot be replayed to its moved state"
                                            {:type ::retained-path :barrier k}))
                            (let [w1 (:trace/world t1)]
-                             (rtp/swap-state! w1 [:inference :slot] (constantly slot))
-                             (rtp/swap-state! w1 [:inference :log-weight] (constantly w0))
-                             (rtp/swap-state! w1 [:engine/reuse-source] (constantly nil))
+                             (v2/update-in-world! w1 [:inference :slot] (constantly slot))
+                             (v2/update-in-world! w1 [:inference :log-weight] (constantly w0))
                              (sp/install-handlers! w1 @handler-table)
                              (swap! registry merge (anchors-of t1 k lag))
                              (when (sp/pending? sp) (sp/abandon sp))
@@ -1069,7 +1066,7 @@
             (move-particle! [slot {:keys [sp value]} done]
               (try
                 (let [world0 (:savepoint/world sp)
-                      k (rtp/get-state world0 [:inference :barriers])
+                      k (v2/get-in-world world0 [:inference :barriers])
                       w0 (weight-of world0)
                       t0 (assoc (particle-trace session world0) :trace/pending sp :trace/pending-value value)
                       ;; stops at this particle's own k-th barrier
@@ -1084,11 +1081,10 @@
                                    ;; the moved particle continues in the
                                    ;; replay's world: it is the slot's now, with
                                    ;; the slot's weight
-                                   (rtp/swap-state! w [:inference :slot] (constantly slot))
-                                   (rtp/swap-state! w [:inference :log-weight] (constantly w0))
+                                   (v2/update-in-world! w [:inference :slot] (constantly slot))
+                                   (v2/update-in-world! w [:inference :log-weight] (constantly w0))
                                    ;; and does not keep the displaced world
                                    ;; alive as the source of reused spins
-                                   (rtp/swap-state! w [:engine/reuse-source] (constantly nil))
                                    (sp/install-handlers! w @handler-table)
                                    (done {:sp (:trace/pending t) :value (:trace/pending-value t)}))))]
                   (letfn [(step [j t]
@@ -1163,7 +1159,7 @@
             ((all-forked (mapv streaming slots))
              (fn [children]
                (doseq [[slot child] (map vector slots children)]
-                 (rtp/swap-state! (:savepoint/world child) [:inference :slot] (constantly slot))
+                 (v2/update-in-world! (:savepoint/world child) [:inference :slot] (constantly slot))
                  (sp/install-handlers! (:savepoint/world child) @handler-table))
                (swap! state assoc
                       :streaming (zipmap slots children)
@@ -1284,7 +1280,7 @@
   runs with `stream` instead."
   [model n & [opts]]
   (fn [resolve reject]
-    (let [[resolve reject] (sp/in-callers-world resolve reject)]
+    (let [[resolve reject] [resolve reject]]
       (run-particles model n opts
                      {:on-done resolve
                       :on-error reject}))))
@@ -1297,7 +1293,7 @@
   it."
   [start]
   (fn [resolve reject]
-    (let [waiting (atom (sp/in-callers-world resolve reject))
+    (let [waiting (atom [resolve reject])
           ;; {:controller c} once made; {:deferred thunk} a step that came first
           cell (atom {})
           controller #(:controller @cell)
@@ -1312,7 +1308,7 @@
                                   (not done?)
                                   (assoc :push (fn [y]
                                                  (fn [res' rej']
-                                                   (reset! waiting (sp/in-callers-world res' rej'))
+                                                   (reset! waiting [res' rej'])
                                                    ((:supply! (controller)) y)))
                                          :fork (when (:fork (controller))
                                                  (fn []

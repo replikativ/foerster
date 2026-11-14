@@ -23,10 +23,9 @@
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.trace :as trace]))
+            [org.replikativ.spindel.v2.savepoint :as sp]
+            [org.replikativ.spindel.v2.core :as v2]
+            [org.replikativ.spindel.v2.trace :as trace]))
 
 (defn- forks
   "Fork `s` `k` times; resolves the children."
@@ -83,7 +82,7 @@
   Resolves an EmpiricalMeasure of `Sample`s, one per complete branch."
   [model & [{:keys [max-branches policy executor seed root scope copy?] :or {max-branches 100000}}]]
   (fn [resolve reject]
-    (let [[resolve reject] (sp/in-callers-world resolve reject)
+    (let [[resolve reject] [resolve reject]
           policy (or policy (itrace/policy))
           options (if (contains? (meta policy) :org.replikativ.foerster.runtime.trace/options)
                     (itrace/policy-options policy)
@@ -95,8 +94,8 @@
               (throw (ex-info "Enumeration sums the posterior: not with a predictive policy (:simulate-observed?)"
                               {:type ::predictive-policy})))
           root (cond root root
-                     executor (ctx/create-execution-context :executor executor)
-                     :else (ctx/create-execution-context))
+                     executor (v2/world {:executor executor})
+                     :else (v2/world))
           session (sp/open! root (cond-> {:purpose :enumerate
                                           :seed (or seed (random/fresh-seed))
                                           :fork-opts {:systems :none}
@@ -127,7 +126,7 @@
           ;; it is dropped before it runs on (where it might build a law that
           ;; is only invalid where it is impossible)
           continue! (fn [s value]
-                      (if (= ##-Inf (or (rtp/get-state (:savepoint/world s) [:inference :log-weight]) 0.0))
+                      (if (= ##-Inf (or (v2/get-in-world (:savepoint/world s) [:inference :log-weight]) 0.0))
                         (do (sp/abandon s)
                             (sp/release-world! session (:savepoint/world s))
                             (ended!))
@@ -187,7 +186,7 @@
          {sp/any-site run-site!
           sp/result-site
           (fn [{world :savepoint/world result :savepoint/payload}]
-            (let [w (or (rtp/get-state world [:inference :log-weight]) 0.0)]
+            (let [w (or (v2/get-in-world world [:inference :log-weight]) 0.0)]
               (when (> w ##-Inf)
                 (swap! state update :done conj [(smc/sample-of world result) w]))
               (sp/release-world! session world)

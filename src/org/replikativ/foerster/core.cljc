@@ -37,8 +37,8 @@
             [org.replikativ.foerster.runtime.canonical :as canonical :refer [frozen-source with-frozen-caller]]
             #?(:clj [org.replikativ.foerster.analysis :as analysis])
             #?(:clj [org.replikativ.foerster.inference.compiled :as compiled])
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.effects.await :refer [await]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :as effects]
 ))
@@ -127,7 +127,7 @@
   Returns a spin resolving the EmpiricalMeasure.
 
     (sp/with-context world @(smc-infer (model) 1000))   ; at the REPL
-    (spin (query (await (smc-infer (model) 1000)) identity))"
+    (task (query (await-op (smc-infer (model) 1000)) identity))"
   [model-task num-particles & [opts]]
   (check-options! opts (conj (into particle-options smc-options) :batch))
   (particles model-task num-particles opts))
@@ -381,7 +381,7 @@
   the inner inference found, weighted (Anglican's `conditional`). The outer
   program samples from it, or observes against it:
 
-    (let [guess (await (infer/conditional (inner-model x) {:method :enumerate}))]
+    (let [guess (await-op (infer/conditional (inner-model x) {:method :enumerate}))]
       (sample guess :id :their-guess))
 
   The inner inference runs in fresh worlds of its own. Under exact
@@ -392,8 +392,8 @@
   not remove fixed inner error, and memoization does not make it exact. The
   returned distribution carries :inference/nesting provenance metadata."
   [model opts]
-  (spin
-   (let [measure (await (infer model opts))
+  (task
+   (let [measure (await-op (infer model opts))
          ps (m/get-particles measure)
          ws (weights/normalize (mapv second ps))
          by-value (reduce (fn [acc [[particle _] w]]

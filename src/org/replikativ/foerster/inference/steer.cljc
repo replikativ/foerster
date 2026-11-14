@@ -14,9 +14,9 @@
   factor is 0 and SMC is best-of-N weighted by the reward.
 
     (infer/smc-infer (steer/model {:init s0
-                                   :step (fn [state] (spin …))   ; the next state
-                                   :value (fn [state] (spin …))  ; log ψ
-                                   :reward (fn [state] (spin …)) ; log potential
+                                   :step (fn [state] (task …))   ; the next state
+                                   :value (fn [state] (task …))  ; log ψ
+                                   :reward (fn [state] (task …)) ; log potential
                                    :done? (fn [state] …)})
                      16 {:resampling :stratified})
 
@@ -29,11 +29,11 @@
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.effects :refer [factor deterministic]]
             [org.replikativ.foerster.inference.smc :as smc]
-            [org.replikativ.spindel.effects.savepoint :refer [savepoint]]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.spin.cps :refer [spin]])
-  #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
+            [org.replikativ.spindel.v2.savepoint :refer [savepoint]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]])
+  #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]])))
 
 (defrecord Weighted [state log-weight])
 
@@ -46,7 +46,7 @@
 (defn- value-of
   "`x` or, when it is a spin, a spin resolving its value."
   [x]
-  (if (satisfies? spin-core/PSpin x) x (spin x)))
+  (if (v2/handle? x) x (task x)))
 
 (defn model
   "A program for SMC that steers `:step` by `:value` and `:reward` (see the
@@ -70,17 +70,17 @@
   `smc/start-site`: the steps are random without a sample site, so every
   particle must take them itself rather than share a prefix."
   [{:keys [init step done? value reward max-steps record] :or {max-steps 100 record identity}}]
-  (spin
+  (task
    (savepoint smc/start-site nil)
    (loop [t 0 state init psi 0.0]
-     (let [out (await (value-of (step state)))
+     (let [out (await-op (value-of (step state)))
            w (if (instance? Weighted out) (:log-weight out) 0.0)
            state' (if (instance? Weighted out) (:state out) out)
            _ (deterministic (record state') :id [:steer/state t])
            end? (or (done? state') (>= (inc t) max-steps))
-           psi' (if (and value (not end?)) (await (value-of (value state'))) 0.0)]
+           psi' (if (and value (not end?)) (await-op (value-of (value state'))) 0.0)]
        (if end?
-         (let [r (if reward (await (value-of (reward state'))) 0.0)]
+         (let [r (if reward (await-op (value-of (reward state'))) 0.0)]
            (deterministic r :id :steer/reward)
            ;; untwist: the final target is the reward, whatever ψ said
            (factor (+ w (- r psi)))

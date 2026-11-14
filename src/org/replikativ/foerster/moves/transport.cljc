@@ -7,7 +7,7 @@
             [org.replikativ.foerster.runtime.trace :as it]
             [org.replikativ.foerster.moves.pair :as pair]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.trace :as trace])
+            [org.replikativ.spindel.v2.trace :as trace])
   #?(:cljs (:require-macros [is.simm.partial-cps.async :as pcps])))
 
 (defrecord Kernel [source destination forward backward])

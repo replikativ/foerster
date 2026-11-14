@@ -10,8 +10,8 @@
             [org.replikativ.foerster.inference.worlds :refer [check-options! particle-options particles]]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.runtime.canonical :refer [with-frozen-caller]]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.effects.await :refer [await]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
             [clojure.set :as set]))
 
 (defn- variational-draw
@@ -122,7 +122,7 @@
 
 (defn- bbvi
   [model-task num-particles num-iterations opts]
-  (spin
+  (task
    (let [base-lr (or (:base-lr opts) 1.0)
          robbins-monro (or (:robbins-monro opts) 0.0)
          adagrad (get opts :adagrad true)
@@ -130,7 +130,7 @@
          accumulators (atom {})]
      (loop [iteration 0]
        (let [qs @q-dists
-             measure (await (particles model-task num-particles
+             measure (await-op (particles model-task num-particles
                                        (assoc opts
                                               :resample-threshold 0.0
                                               :policy (itrace/policy {:draw (variational-draw q-dists)}))))]

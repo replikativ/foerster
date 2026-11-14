@@ -24,12 +24,12 @@
   being rejected, where the general path's block moves adapt scales in
   unconstrained coordinates. The chains are tasks of the run's executor."
   (:require [clojure.walk :as walk]
-            [org.replikativ.spindel.engine.executor :as sched]
+            [org.replikativ.foerster.runtime.execution :as execution]
             [org.replikativ.foerster.analysis :as analysis]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.effects.savepoint :as sp]))
+            [org.replikativ.spindel.v2.savepoint :as sp]))
 
 (defn- symbolic-address? [a]
   (some symbol? (tree-seq coll? seq a)))
@@ -154,7 +154,7 @@
                                                   0.0])
                                       out)]
                             (recur (inc i) lp out))))))
-            own-executor (when-not executor (sched/thread-pool-executor {:threads 2}))
+            own-executor (when-not executor (java.util.concurrent.Executors/newFixedThreadPool 2))
             executor (or executor own-executor)
             results (object-array chains)
             failed (atom false)
@@ -163,7 +163,7 @@
             pending (atom (inc chains))
             done! (fn []
                     (when (zero? (swap! pending dec))
-                      (when own-executor (.close ^java.lang.AutoCloseable own-executor))
+                      (when own-executor (.shutdown ^java.util.concurrent.ExecutorService own-executor))
                       (when-not @failed
                         (let [chains (vec results)]
                           (resolve (assoc (m/markov-measure (into [] cat chains))
@@ -173,7 +173,7 @@
                     ;; yet started are skipped
                     (when (compare-and-set! failed false true) (reject t)))]
         (try
-          (sched/spread! executor chains
+          (execution/spread! executor chains
                          (fn [i]
                            (try
                              (when-not @failed

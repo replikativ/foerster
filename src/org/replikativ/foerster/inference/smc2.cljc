@@ -33,8 +33,8 @@
             [org.replikativ.foerster.contract :as contract]
             [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.foerster.dist :as dist]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.engine.protocols :as rtp]))
+            [org.replikativ.spindel.v2.savepoint :as sp]
+            [org.replikativ.spindel.v2.core :as v2]))
 
 (defn- then [operation f]
   (fn [resolve reject]
@@ -88,7 +88,7 @@
     (fn [savepoint old-entry]
       (when (and (= itrace/choose-site (:savepoint/site savepoint))
                  (not (contains? params (:savepoint/address savepoint))))
-        (let [entries (:trace/entries (rtp/get-state (:savepoint/world savepoint) [:savepoint/trace]))
+        (let [entries (:trace/entries (v2/get-in-world (:savepoint/world savepoint) [:savepoint/trace]))
               missing (remove #(= itrace/choose-site (:site (get entries %))) params)]
           (when (seq missing)
             (throw (ex-info "SMC² parameters must precede every inner sample site"

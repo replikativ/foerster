@@ -8,8 +8,10 @@
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.foerster.model.mechanism :as mechanism]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.spin.cps :refer [spin]])
-  #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]])
+  #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]])))
 
 (defn- finite? [x] (and (number? x) (< ##-Inf x ##Inf)))
 (defn- mean [xs] (/ (reduce + 0.0 xs) (count xs)))
@@ -116,7 +118,7 @@
   "An ordinary foerster model spin: one sample site per node, node IDs as
   addresses. Use with inference, cf/query, attribution and trace policies."
   [fitted]
-  (spin
+  (task
    (loop [remaining (:order fitted) values {}]
      (if (seq remaining)
        (let [v (first remaining)

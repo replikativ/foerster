@@ -14,10 +14,9 @@
             [org.replikativ.foerster.inference.worlds :refer [check-options! particle-options smc-options
                                                               on-savepoints? on-savepoints particles]]
             [org.replikativ.foerster.runtime.canonical :refer [share balance-op frozen-source with-frozen-caller]]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.spin.combinators :as comb]
-            [org.replikativ.spindel.effects.await :refer [await]]
+            [org.replikativ.spindel.v2.savepoint :as sp]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
             [replikativ.logging :as log]))
 
 (defn- particle-sweep [model n opts]
@@ -164,7 +163,7 @@
                                                    (assoc opts :seed (sp/derive-seed (:seed opts) ::core/node i))))
                                       retained-traces))]
     ;; Use parallel combinator to run all sweeps concurrently
-    (apply comb/parallel sweep-spins)))
+    (let [hs (vec sweep-spins)] (task (v2/await-all hs)))))
 
 (declare ipmcmc)
 
@@ -221,7 +220,7 @@
 
 (defn- ipmcmc
   [model-task num-particles num-iterations opts]
-  (spin
+  (task
    (let [num-nodes (or (:num-nodes opts) 8)
          num-csmc-nodes (or (:num-csmc-nodes opts) (quot num-nodes 2))
          num-smc-nodes (- num-nodes num-csmc-nodes)
@@ -234,8 +233,8 @@
          ;; caller's world with an authority, each takes an even share of
          ;; what is left, decided before any of them starts
          node-grant (fn [opts]
-                      (spin (when (and (frozen-source opts) (:authority opts))
-                              (share (await (balance-op (:authority opts) (frozen-source opts))) num-nodes))))
+                      (task (when (and (frozen-source opts) (:authority opts))
+                              (share (await-op (balance-op (:authority opts) (frozen-source opts))) num-nodes))))
          sweep-opts (fn [iteration grant]
                       (cond-> (assoc node-opts :seed (sp/derive-seed seed ::core/sweep iteration))
                         grant (assoc ::core/grant grant)))]
@@ -243,9 +242,9 @@
      (assert (< num-csmc-nodes num-nodes) ":num-csmc-nodes must be < :num-nodes")
      (loop [iteration 0
             ;; iteration 0 runs plain SMC on every node
-            measures (await (run-parallel-sweeps model-task num-particles
+            measures (await-op (run-parallel-sweeps model-task num-particles
                                                  (vec (repeat num-nodes nil))
-                                                 (sweep-opts :initial (await (node-grant opts)))))
+                                                 (sweep-opts :initial (await-op (node-grant opts)))))
             all-samples []]
        (if (>= iteration num-iterations)
          (m/markov-measure all-samples)
@@ -280,8 +279,8 @@
                      [csmc-indices zeta-sums samples retained-traces])))]
            (log/trace :ichains/gibbs-update {:iteration iteration :csmc-indices csmc-indices})
            (recur (inc iteration)
-                  (await (run-parallel-sweeps model-task num-particles retained-traces
-                                              (sweep-opts iteration (await (node-grant opts)))))
+                  (await-op (run-parallel-sweeps model-task num-particles retained-traces
+                                              (sweep-opts iteration (await-op (node-grant opts)))))
                   (into all-samples samples))))))))
 
 (defn pgas-infer

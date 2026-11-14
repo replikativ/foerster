@@ -36,8 +36,7 @@
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.moves.transition :as transition]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.engine.protocols :as rtp]))
+            [org.replikativ.spindel.v2.savepoint :as sp]))
 
 (defn- log-likelihood
   "Σ untempered log-likelihood of `t`'s observations and factors."
@@ -120,8 +119,7 @@
                  (fn [{t' :trace accepted? :accepted?}]
                    ;; the accepted world need not keep the one it replayed
                    ;; from alive as a source of reused spins
-                   (when accepted?
-                     (rtp/swap-state! (:trace/world t') [:engine/reuse-source] (constantly nil)))
+                   (when accepted?)
                    (single-site t' step (inc j) n states (if accepted? (conj seen t') seen)
                                 (if accepted? (inc accepted) accepted) (inc total)))
                  reject)))
@@ -134,8 +132,7 @@
                                            :key [key step] :keep-old? true})
                  (fn [{t' :trace n-accepted :accepted}]
                    (let [moved? (pos? n-accepted)]
-                     (when moved?
-                       (rtp/swap-state! (:trace/world t') [:engine/reuse-source] (constantly nil)))
+                     (when moved?)
                      (block-moves t' step more states (if moved? (conj seen t') seen)
                                   (if moved? (inc accepted) accepted) (inc total))))
                  reject)))
@@ -160,7 +157,6 @@
                     (when accepted?
                       ;; the accepted world need not keep the one it replayed
                       ;; from alive as a source of reused spins
-                      (rtp/swap-state! (:trace/world t') [:engine/reuse-source] (constantly nil))
                       (vswap! seen conj t')))]
         (letfn [(go [t s states]
                     (if (= s steps)
