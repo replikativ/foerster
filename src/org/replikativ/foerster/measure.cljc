@@ -5,7 +5,7 @@
   This is the foundation for compositional inference algorithms."
   (:require [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.contract :as contract]
-            [org.replikativ.spindel.engine.protocols :as rtp]))
+            [org.replikativ.spindel.v2.core :as v2]))
 
 ;; =============================================================================
 ;; PMeasure Protocol
@@ -196,7 +196,7 @@
   [context]
   (if (instance? Sample context)
     (:result context)
-    (rtp/get-state context [:inference :result])))
+    (v2/get-in-world context [:inference :result])))
 
 (defn world-descriptors
   "The world descriptors of `measure`'s particles that ran in canonical worlds
@@ -205,7 +205,7 @@
   [measure]
   (into [] (keep #(if (instance? Sample %)
                     (:world-descriptor %)
-                    (rtp/get-state % [:inference :world-descriptor])))
+                    (v2/get-in-world % [:inference :world-descriptor])))
         (get-contexts measure)))
 
 (defn get-trace
@@ -213,7 +213,7 @@
   [context]
   (if (instance? Sample context)
     (:trace context)
-    (rtp/get-state context [:inference :trace])))
+    (v2/get-in-world context [:inference :trace])))
 
 (defn site-value
   "The value a particle's site `address` took: a sample, an observation or a

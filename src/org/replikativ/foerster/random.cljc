@@ -25,9 +25,8 @@
   numbers on the JVM and in JavaScript."
   (:require #?(:cljs [clojure.string :as str])
             [clojure.walk :as walk]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.engine.core :as rtc]
-            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.v2.core :as v2]
+            [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.spindel.engine.hash :as h]))
 
 ;; -----------------------------------------------------------------------------
@@ -135,15 +134,15 @@
   fork carries its parent's entry until it draws: a seed of its own makes a
   new generator."
   []
-  (when-let [world rtc/*execution-context*]
+  (when-let [world (v2/current-world)]
     (when-let [seed (sp/seed world)]
-      (let [{s :seed g :generator} (rtp/get-state world [:random/free])]
+      (let [{s :seed g :generator} (v2/get-in-world world [:random/free])]
         (if (= s seed)
           g
-          (do (rtp/swap-state! world [:random/free]
+          (do (v2/update-in-world! world [:random/free]
                                (fn [{s :seed :as cur}]
                                  (if (= s seed) cur {:seed seed :generator (generator [seed ::free])})))
-              (:generator (rtp/get-state world [:random/free]))))))))
+              (:generator (v2/get-in-world world [:random/free]))))))))
 
 (defn current
   "The generator draws come from now: the keyed stream bound, else the
