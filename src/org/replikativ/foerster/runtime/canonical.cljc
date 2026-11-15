@@ -10,6 +10,7 @@
   budget splitting) are not available on engine v2 yet: `:authority` and
   `:grant` are refused."
   (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.runtime.async :as async :refer [await-op]])
@@ -45,27 +46,41 @@
   (:org.replikativ.foerster.core/source opts))
 
 (defn with-frozen-caller
-  "Under `:world-policy :fork`, `(body opts')` with `opts'` naming one frozen
-  fork of the caller's world, made once for the whole inference: every run
-  forks its own world from it, so all of them see the caller's state as it
-  was when inference started, whatever the caller does meanwhile. The fork
-  is released after `body` ends, however it ends. `body` returns a v2 handle
-  or a CPS operation; this returns a CPS operation. Under `:fresh`, or
-  inside such an inference already, `(body opts)`. The caller's world is
-  the current one when this is called, possibly inside a body; it is forked
-  when the operation starts, as host code (engine v2 forks a world between
-  slices), and so is `body` called."
+  "The entry of every public inference method: `(body opts')`, run when the
+  operation starts, with `opts'` naming the inference's lifetime
+  (`foerster.runtime.lifetime`): cancelling the task awaiting the
+  operation releases every root world the inference created, and the
+  lifetime is finished when `body` ends, however it ends.
+
+  Under `:world-policy :fork`, `opts'` also names one frozen fork of the
+  caller's world, made once for the whole inference: every run forks its
+  own world from it, so all of them see the caller's state as it was when
+  inference started, whatever the caller does meanwhile. The fork is
+  released after `body` ends. The caller's world is the current one when
+  this is called, possibly inside a body; it is forked when the operation
+  starts, as host code (engine v2 forks a world between slices).
+
+  Inside an inference already (`opts` name a lifetime), `(body opts)`:
+  the methods a driver runs share its lifetime and frozen fork. `body`
+  returns a v2 handle or a CPS operation; this returns a CPS operation."
   [opts body]
   (no-authority! opts)
-  (if (or (not= :fork (:world-policy opts :fresh)) (frozen-source opts))
+  (if (lt/of opts)
     (body opts)
-    (let [caller (v2/current-world)]
+    (let [caller (v2/current-world)
+          fork? (and (= :fork (:world-policy opts :fresh)) (not (frozen-source opts)))]
       (pcps/async
-       (let [source (v2/fork! caller)]
-         (itrace/mark-canonical! source)
+       (let [l (lt/create)
+             _ (async/on-cancel! #(lt/cancel! l))
+             opts (lt/with opts l)
+             source (when fork? (lt/fork opts caller))]
+         (when source (itrace/mark-canonical! source))
          (try
-           (pcps/await (async/op-of (body (assoc opts :org.replikativ.foerster.core/source source))))
-           (finally (v2/release-world! source))))))))
+           (pcps/await (async/op-of (body (cond-> opts
+                                            source (assoc :org.replikativ.foerster.core/source source)))))
+           (finally
+             (lt/finish! l)
+             (when source (v2/release-world! source)))))))))
 
 (defn run-options
   "`opts` for a driver whose runs are `foerster.runtime.gfi` runs: inside

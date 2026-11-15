@@ -3,6 +3,7 @@
   before execution starts; close joins acquisitions and attempts every release."
   (:refer-clojure :exclude [await])
   (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.runtime.async :as async :refer [await-op]])
   #?(:cljs (:require-macros [is.simm.partial-cps.async :as pcps])))
@@ -92,6 +93,9 @@
          cleanup (try (pcps/await (async/op-of (close! scope))) nil
                       (catch #?(:clj Throwable :cljs :default) e e))]
      (cond
+       ;; a cancelled inference stops: its cleanup failing over released
+       ;; worlds does not turn that into a cleanup failure
+       (and (= :err (first outcome)) (lt/stopping? (second outcome))) (throw (second outcome))
        (and (= :err (first outcome)) cleanup)
        (throw (ex-info "Inference failed and cleanup also failed"
                        {:type ::cleanup-failed :cleanup cleanup} (second outcome)))

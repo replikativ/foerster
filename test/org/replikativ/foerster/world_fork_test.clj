@@ -157,10 +157,9 @@
                       (is (= {:stage :model} (ex-data (ex-cause result))))
                       (is (all-released? @forks))))))
 
-(deftest ^:engine-v2-gap cancelling-inference-unwinds-its-particles
-  ;; the public task is cancelled, but its driver (a CPS operation behind
-  ;; v2/external) is not told: the particles keep running in their worlds
-  ;; and the session is not closed. external-of returns no cancel fn yet.
+(deftest cancelling-inference-unwinds-its-particles
+  ;; cancelling the public task releases the inference's worlds: a particle
+  ;; blocked in its model is cancelled there and runs its finally
   (doseq [policy [:fresh :fork]]
     (in-root
      (let [entered (promise)

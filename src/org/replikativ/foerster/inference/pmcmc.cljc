@@ -44,7 +44,8 @@
   [model-task num-particles num-iterations & [opts]]
   (check-options! opts (into particle-options smc-options))
   (if (on-savepoints? opts)
-    (on-savepoints (smc/pimh model-task num-particles num-iterations opts))
+    ;; through the inference's entry: its lifetime reaches every sweep
+    (with-frozen-caller opts #(on-savepoints (smc/pimh model-task num-particles num-iterations %)))
     (with-frozen-caller opts
       (fn [opts]
         (chains/pimh
@@ -66,7 +67,8 @@
   [model-task num-particles num-iterations & [opts]]
   (check-options! opts (into particle-options #{:anchors :rejuvenate}))
   (if (on-savepoints? opts)
-    (on-savepoints (smc/pgibbs model-task num-particles num-iterations opts))
+    ;; through the inference's entry: its lifetime reaches every sweep
+    (with-frozen-caller opts #(on-savepoints (smc/pgibbs model-task num-particles num-iterations %)))
     (with-frozen-caller opts
       (fn [opts]
         (chains/pgibbs
@@ -299,7 +301,8 @@
   [model-task num-particles num-iterations & [opts]]
   (check-options! opts particle-options)
   (if (on-savepoints? opts)
-    (on-savepoints (smc/pgas model-task num-particles num-iterations opts))
+    ;; through the inference's entry: its lifetime reaches every sweep
+    (with-frozen-caller opts #(on-savepoints (smc/pgas model-task num-particles num-iterations %)))
     (with-frozen-caller opts
       (fn [opts]
         (chains/pgibbs (particle-sweep model-task num-particles (assoc opts :ancestor-sampling? true))

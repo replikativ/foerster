@@ -16,6 +16,7 @@
   Worlds are forks of savepoints, so particles are frozen, coherent worlds
   (see docs/forking.md) and inherit whatever world state the program holds."
   (:require [org.replikativ.foerster.runtime.async :as async]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.foerster.runtime.scope :as scope]
             [org.replikativ.foerster.runtime.cursor :as cursor]
             [org.replikativ.foerster.moves.transport :as transport]
@@ -314,7 +315,7 @@
   to, and after the last barrier on `retained` itself. Keeping the retained
   particle unmoved instead leaves the conditional target off (an exact
   enumeration of one sweep: 2·10⁻⁴ to 3·10⁻³ in total variation)."
-  [model retained policy rejuvenate anchor? lag seed executor]
+  [model retained policy rejuvenate anchor? lag seed executor opts]
   (let [moves (:moves rejuvenate 1)
         move (rejuvenation-move rejuvenate)
         particle-policy (or policy (itrace/policy))
@@ -323,9 +324,7 @@
         ;; has what it needs: (use trace ok fail)
         with-run (fn [path k use]
                    (fn [resolve reject]
-                     (let [session (sp/open! (if executor
-                                               (v2/world {:executor executor})
-                                               (v2/world))
+                     (let [session (sp/open! (lt/world opts (when executor {:executor executor}))
                                              {:purpose :smc-retained
                                               :seed (sp/derive-seed seed ::retained (or k 0))
                                               :fork-opts {:systems :none}
@@ -543,8 +542,7 @@
         root (cond
                adopt (:root adopt)
                root root
-               executor (v2/world {:executor executor})
-               :else (v2/world))
+               :else (lt/world opts (when executor {:executor executor})))
         ;; one draw from the process generator per run: the session's seed
         ;; keys every world's streams and every barrier's draws, so runs in
         ;; parallel (IPMCMC's nodes) do not depend on how they interleave
@@ -912,7 +910,10 @@
                                      sp/error-site (fn [{w :savepoint/world}]
                                                      (sp/release-world! session w)
                                                      (done! i ##-Inf))
-                                     sp/abandoned-site (fn [_] nil)}})
+                                     ;; given back by its owner: the inference stops
+                                     sp/abandoned-site (fn [e] (when (lt/released-end? e)
+                                                                 (when (compare-and-set! failed? false true)
+                                                                   (reject (:savepoint/payload e)))))}})
                        (fn [child]
                          (v2/update-in-world! (:savepoint/world child) [:inference :log-weight] (constantly 0.0))
                          (sp/resume child value))
@@ -1157,7 +1158,10 @@
                       (finish! on-done (m/empirical (vec (repeat n [(sample-of world result) 0.0]))))))
                   sp/error-site
                   (fn [{error :savepoint/payload}] (fail! error))
-                  sp/abandoned-site (fn [_] nil)})
+                  ;; a particle abandoned by this controller ends quietly; a
+                  ;; world given back by its owner (the inference cancelled)
+                  ;; stops it
+                  sp/abandoned-site (fn [e] (when (lt/released-end? e) (fail! (:savepoint/payload e))))})
         (if adopt
           ;; a copy of another population at a stream barrier: every waiting
           ;; particle's world is forked and continues under this controller
@@ -1181,7 +1185,7 @@
               ;; for tests that enumerate the two halves of a sweep apart
               ((if-let [paths (::retained-paths opts)]
                  (fn [resolve _] (resolve paths))
-                 (retained-stages model retained policy rejuvenate anchor? lag seed executor))
+                 (retained-stages model retained policy rejuvenate anchor? lag seed executor opts))
                (fn [paths]
                  (try
                    (reset! stages paths)

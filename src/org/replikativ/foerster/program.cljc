@@ -5,6 +5,7 @@
   result does not automatically certify an unbiased likelihood estimator."
   (:refer-clojure :exclude [await])
   (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.foerster.weights :as w]
             [org.replikativ.foerster.runtime.scope :as scope]
             [org.replikativ.foerster.measure :as m]
@@ -132,15 +133,16 @@
 
 (defrecord TraceRepresentation [model executor world-policy]
   PRepresentation
-  (initialize-particles [_ resources target n {:keys [seed canonical-source world-opts]}]
+  (initialize-particles [_ resources target n {:keys [seed canonical-source world-opts] :as context}]
     (when (and (= :fork world-policy) (not canonical-source))
       (throw (ex-info "A :world-policy :fork target runs in a program run with :world-policy :fork"
                       {:type ::unsupported-world-policy})))
     (sequential (range n)
                 (fn [i]
                   (let [operation (:operation (gfi/run-policy* model (it/policy {:temperature (:position target)})
-                                                               (cond-> {:inference-scope resources
-                                                                        :seed (sp/derive-seed seed ::initialize i)}
+                                                               (cond-> (lt/carry {:inference-scope resources
+                                                                                  :seed (sp/derive-seed seed ::initialize i)}
+                                                                                 context)
                                                                  executor (assoc :executor executor)
                                                                  (= :fork world-policy)
                                                                  (assoc :canonical-source canonical-source
@@ -230,11 +232,13 @@
      (fn [copts]
        (scope/run (fn [resources]
                     (pcps/async
-                     (let [context {:resources resources :seed (or (:seed opts) (random/fresh-seed))
+                     (let [context (lt/carry
+                                    {:resources resources :seed (or (:seed opts) (random/fresh-seed))
                                     :owner (random-uuid) :population-counter (atom -1)
                                     :population-ids (atom #{}) :live-populations (atom {}) :retired (atom [])
                                     :canonical-source (canonical/frozen-source copts)
                                     :world-opts (:world-opts opts)}
+                                    copts)
                            result (pcps/await (async/op-of (body context)))]
                        (when-not (satisfies? m/PMeasure result)
                          (throw (ex-info "Finish the population before returning from inference"

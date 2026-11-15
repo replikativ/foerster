@@ -25,6 +25,7 @@
   the other back with `spindel.trace/release!`."
   (:refer-clojure :exclude [update await])
   (:require [org.replikativ.foerster.runtime.scope :as scope]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.spindel.select :as sel]
@@ -58,7 +59,7 @@
   runs whole, from a start site its moves can re-execute it from
   (`itrace/canonical-anchor?`)."
   [model policy source {:keys [inference-scope] :as opts}]
-  (let [root (v2/fork! source)
+  (let [root (lt/fork opts source)
         _ (itrace/mark-canonical! root)
         allocate #(sp/open! root (merge {:seed (random/fresh-seed)}
                                         (dissoc opts :executor :inference-scope :world-opts :canonical-source
@@ -90,7 +91,7 @@
 
 (defn- run-fresh*
   [model policy {:keys [executor inference-scope] :as opts}]
-  (let [root (if executor (v2/world {:executor executor}) (v2/world))
+  (let [root (lt/world opts (when executor {:executor executor}))
         allocate #(sp/open! root (merge {:seed (random/fresh-seed)}
                                         (dissoc opts :executor :inference-scope :purpose :fork-opts :retain-released?)))
         session (if inference-scope

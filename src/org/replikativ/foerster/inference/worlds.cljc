@@ -13,7 +13,8 @@
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.inference.enumerate :as enumerate]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.foerster.runtime.canonical :refer [frozen-source]]
+            [org.replikativ.foerster.runtime.canonical :refer [frozen-source with-frozen-caller]]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.runtime.async :as async :refer [await-op]])
@@ -52,7 +53,7 @@
   "Refuse options `allowed` does not name, and canonical-world options under
   `:world-policy :fresh`: an option that would be ignored is a mistake."
   [opts allowed]
-  (when-let [unknown (seq (remove allowed (keys opts)))]
+  (when-let [unknown (seq (remove #(or (allowed %) (= ::lt/lifetime %)) (keys opts)))]
     (throw (ex-info (str "Unknown inference options: " (vec unknown))
                     {:type ::core/unknown-options
                      :unknown (vec unknown)
@@ -91,8 +92,10 @@
    (try
      (pcps/await (async/op-of operation))
      (catch #?(:clj Throwable :cljs :default) e
-       (throw (ex-info "Inference failed during particle execution"
-                       {:type ::core/inference-failed} e))))))
+       (throw (if (lt/stopping? e)
+                e
+                (ex-info "Inference failed during particle execution"
+                         {:type ::core/inference-failed} e)))))))
 
 ;; -----------------------------------------------------------------------------
 ;; Canonical particle worlds (`:world-policy :fork`)
@@ -126,7 +129,7 @@
                     {:type ::core/unsupported-authority})))
   (let [source (or (frozen-source opts) (v2/current-world))]
     (pcps/async
-     (let [root (v2/fork! source)]
+     (let [root (lt/fork opts source)]
        (itrace/mark-canonical! root)
        (try
        (pcps/await (async/op-of (run (fn []
@@ -136,7 +139,7 @@
                               (v2/await (model))))
                       root nil)))
          (catch #?(:clj Throwable :cljs :default) e
-           (throw (if (v2/cancelled? e)
+           (throw (if (lt/stopping? e)
                     e
                     (ex-info "Inference failed during particle execution"
                              {:type ::core/inference-failed} e))))
@@ -156,11 +159,13 @@
   "Savepoint SMC of `model-task` with `n` particles in the worlds `opts`'
   `:world-policy` names."
   [model-task n opts]
-  (case (world-policy opts)
-    :fresh (on-savepoints (smc/smc model-task n opts))
-    :fork (in-canonical-worlds model-task opts
-                               (fn [model root scope]
-                                 (smc/smc model n (canonical-options opts root scope))))))
+  (with-frozen-caller opts
+    (fn [opts]
+      (case (world-policy opts)
+        :fresh (on-savepoints (smc/smc model-task n opts))
+        :fork (in-canonical-worlds model-task opts
+                                   (fn [model root scope]
+                                     (smc/smc model n (canonical-options opts root scope))))))))
 
 (def enumeration-options
   #{:max-branches :policy :executor :seed :world-policy :world-opts :authority :grant})
@@ -173,8 +178,10 @@
   measure is delivered; its outcomes carry their worlds' descriptors."
   [model-task opts]
   (check-options! opts enumeration-options)
-  (case (world-policy opts)
-    :fresh (on-savepoints (enumerate/enumerate model-task (dissoc opts :world-policy)))
-    :fork (in-canonical-worlds model-task opts
-                               (fn [model root scope]
-                                 (enumerate/enumerate model (canonical-options opts root scope))))))
+  (with-frozen-caller opts
+    (fn [opts]
+      (case (world-policy opts)
+        :fresh (on-savepoints (enumerate/enumerate model-task (dissoc opts :world-policy)))
+        :fork (in-canonical-worlds model-task opts
+                                   (fn [model root scope]
+                                     (enumerate/enumerate model (canonical-options opts root scope))))))))

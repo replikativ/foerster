@@ -44,19 +44,46 @@
                       (catch #?(:clj Throwable :cljs :default) e [false e]))]
       (if ok (resolve v) (reject v)))))
 
+(def ^:dynamic *on-cancel*
+  "While `external-of` starts an operation: registers a fn run when the task
+  awaiting it is cancelled (`on-cancel!`)."
+  nil)
+
+(defn on-cancel!
+  "Registers `f` to run (once, as host code) when the task awaiting the
+  operation being started is cancelled; at once when it already was. Only
+  while an operation starts under `external-of`, before its first await;
+  elsewhere it does nothing."
+  [f]
+  (when-let [register *on-cancel*] (register f)))
+
 (defn external-of
   "The `v2/external` operation completing with CPS operation `op`, started
   on the host executor: never inside the world whose body awaits it. That
   world is bound (`v2/*world*`) while `op` starts, so a driver may take it
-  as its caller's world (`with-world`)."
+  as its caller's world (`with-world`). Cancelling the awaiting task runs
+  what `op` registered with `on-cancel!`; the operation still completes
+  (its value dropped), so the task's resource joins when the driver has
+  unwound."
   [op]
   (fn [complete!]
-    (let [w (v2/current-world)]
+    (let [w (v2/current-world)
+          cell (atom {:cancelled? false :hooks []})
+          run! (fn [fs] (when (seq fs)
+                          (hs/execute! (hs/executor)
+                                       (fn [] (doseq [f fs]
+                                                (try (f) (catch #?(:clj Throwable :cljs :default) _ nil)))))))
+          register (fn [f]
+                     (let [[before _] (swap-vals! cell #(if (:cancelled? %) % (update % :hooks conj f)))]
+                       (when (:cancelled? before) (run! [f]))))]
       (hs/execute! (hs/executor)
-                   (fn [] (binding [v2/*world* w]
+                   (fn [] (binding [v2/*world* w *on-cancel* register]
                             (try (op complete! (fn [e] (complete! e true)))
-                                 (catch #?(:clj Throwable :cljs :default) e (complete! e true)))))))
-    nil))
+                                 (catch #?(:clj Throwable :cljs :default) e (complete! e true))))))
+      (fn cancel []
+        (let [[before _] (swap-vals! cell assoc :cancelled? true :hooks [])]
+          (when-not (:cancelled? before) (run! (:hooks before))))
+        nil))))
 
 (defn with-world
   "`(f)` with `v2/*world*` bound to `w`: a driver calls a user function that

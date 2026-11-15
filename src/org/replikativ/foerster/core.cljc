@@ -36,6 +36,7 @@
             [org.replikativ.foerster.inference.parallel-tempering :as parallel-tempering]
             [org.replikativ.foerster.inference.tempering :as tempering]
             [org.replikativ.foerster.runtime.canonical :as canonical :refer [frozen-source with-frozen-caller]]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             #?(:clj [org.replikativ.foerster.analysis :as analysis])
             #?(:clj [org.replikativ.foerster.inference.compiled :as compiled])
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
@@ -291,10 +292,13 @@
            [m args] (or (analysis/applied model)
                         (throw (ex-info ":compiled? needs a model made by foerster.analysis/model"
                                         {:type ::not-an-analysis-model})))]
-       (on-savepoints (compiled/rmh (apply compiled/compile-model m args)
-                                    (cond-> {:iterations iterations :burn (or burn 0) :chains (or chains 4)
-                                             :seed (:seed opts) :executor (:executor opts)}
-                                      step-size (assoc :step-size step-size)))))
+       (with-frozen-caller (dissoc opts :world-policy)
+         (fn [o]
+           (on-savepoints (compiled/rmh (apply compiled/compile-model m args)
+                                        (cond-> (lt/carry {:iterations iterations :burn (or burn 0) :chains (or chains 4)
+                                                           :seed (:seed opts) :executor (:executor opts)}
+                                                          o)
+                                          step-size (assoc :step-size step-size)))))))
      :cljs (throw (ex-info ":compiled? runs on the JVM" {:type ::compiled-on-cljs}))))
 
 (defn infer-op

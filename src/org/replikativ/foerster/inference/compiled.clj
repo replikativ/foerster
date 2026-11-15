@@ -24,6 +24,7 @@
   being rejected, where the general path's block moves adapt scales in
   unconstrained coordinates. The chains are tasks of the run's executor."
   (:require [clojure.walk :as walk]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.foerster.runtime.execution :as execution]
             [org.replikativ.foerster.analysis :as analysis]
             [org.replikativ.foerster.dist :as dist]
@@ -130,7 +131,7 @@
   CPS operation, an EmpiricalMeasure of the model's results with
   `:chain-lengths`; a sample's trace holds its latent values only."
   [{:keys [addresses log-density draw result]}
-   {:keys [iterations burn step-size chains seed executor] :or {burn 0 chains 4 step-size 0.1}}]
+   {:keys [iterations burn step-size chains seed executor] :or {burn 0 chains 4 step-size 0.1} :as opts}]
   (fn [resolve reject]
     (try
       (let [k (count addresses)
@@ -142,7 +143,10 @@
                       (loop [i 0 lp (double (log-density x)) out (transient [])]
                         (if (= i iterations)
                           (persistent! out)
-                          (let [j (int (* k (random/uniform01)))
+                          ;; no worlds to release: a cancelled inference
+                          ;; stops its chains here
+                          (let [_ (when (zero? (bit-and i 1023)) (lt/check! opts))
+                                j (int (* k (random/uniform01)))
                                 old (aget x j)
                                 _ (aset x j (+ old (* step-size (dist/draw (dist/normal 0.0 1.0)))))
                                 lp' (double (log-density x))

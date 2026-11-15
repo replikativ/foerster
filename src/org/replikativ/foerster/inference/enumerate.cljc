@@ -18,6 +18,7 @@
   A latent site with infinite or continuous support is refused
   (`::infinite-support`); `:max-branches` (default 100000) bounds the work."
   (:require [org.replikativ.foerster.runtime.async :as async]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.contract :as contract]
@@ -81,7 +82,7 @@
                    (`foerster.core`), as `smc/smc` takes them
 
   Resolves an EmpiricalMeasure of `Sample`s, one per complete branch."
-  [model & [{:keys [max-branches policy executor seed root scope copy?] :or {max-branches 100000}}]]
+  [model & [{:keys [max-branches policy executor seed root scope copy?] :or {max-branches 100000} :as opts}]]
   (fn [resolve reject]
     (let [[resolve reject] [resolve reject]
           policy (or policy (itrace/policy))
@@ -94,9 +95,7 @@
               ;; the result would be a sample, not an exact sum
               (throw (ex-info "Enumeration sums the posterior: not with a predictive policy (:simulate-observed?)"
                               {:type ::predictive-policy})))
-          root (cond root root
-                     executor (v2/world {:executor executor})
-                     :else (v2/world))
+          root (or root (lt/world opts (when executor {:executor executor})))
           session (sp/open! root (cond-> {:purpose :enumerate
                                           :seed (or seed (random/fresh-seed))
                                           :fork-opts {:systems :none}
@@ -193,6 +192,7 @@
               (sp/release-world! session world)
               (ended!)))
           sp/error-site (fn [{error :savepoint/payload}] (fail! error))
-          sp/abandoned-site (fn [_] nil)})
+          ;; given back by its owner: the inference was cancelled
+          sp/abandoned-site (fn [e] (when (lt/released-end? e) (fail! (:savepoint/payload e))))})
         (sp/start! session model)
         (catch #?(:clj Throwable :cljs :default) e (fail! e))))))

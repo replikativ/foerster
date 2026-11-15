@@ -22,6 +22,7 @@
   simulation of the program (`foerster.runtime.gfi/simulate`). Correlated PMMH, which
   needs SMC driven by explicit noise, is not provided."
   (:require [org.replikativ.foerster.runtime.execution :as execution]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.foerster.runtime.scope :as scope]
             [org.replikativ.foerster.runtime.cursor :as cursor]
             [org.replikativ.foerster.weights :as weights]
@@ -45,7 +46,7 @@
 (defn- prior-draw
   "θ from the program's own prior: a simulation's values at `params`."
   [model params opts & [parameter-prefix?]]
-  (then (gfi/simulate model (select-keys opts [:executor :inference-scope :canonical-source :world-opts]))
+  (then (gfi/simulate model (select-keys opts [:executor :inference-scope :canonical-source :world-opts ::lt/lifetime]))
         (fn [t resolve reject]
           (let [choices (itrace/choices t)
                 missing (remove #(contains? choices %) params)

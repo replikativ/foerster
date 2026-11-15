@@ -3,6 +3,7 @@
   weighted population operations do not pass through this interpreter."
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.foerster.runtime.execution :as execution]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [is.simm.partial-cps.async :as pcps]
             [org.replikativ.foerster.moves.transition-context :as tc]
             [org.replikativ.foerster.moves.kernel :as k]
@@ -270,8 +271,8 @@
   "A chain's root and session: a host fork of `source` (the inference's
   frozen fork of the caller's world, `:world-policy :fork`). Closing the
   session releases the worlds it made; the root is released with it."
-  [source seed]
-  (let [root (v2/fork! source)]
+  [opts source seed]
+  (let [root (lt/fork opts source)]
     (itrace/mark-canonical! root)
     [root (sp/open! root {:seed seed})]))
 
@@ -309,7 +310,7 @@
   With `source` (`:world-policy :fork`) the chain's world is a fork of it
   and the model runs from a start site, the anchor a move re-executes it
   from when no later one precedes its sites."
-  [model-task kernel executor seed source _world-opts]
+  [model-task kernel executor seed source opts]
   (do
     (pcps/async
      (let [;; per chain: a block Gibbs description closes over its own state
@@ -319,8 +320,8 @@
                (throw (ex-info ":burn leaves no draws: it must be below :iterations"
                                {:type :org.replikativ.foerster.core/burn-exceeds-iterations :burn (:burn kernel) :iterations iterations})))
            [root session] (if source
-                            (canonical-session source seed)
-                            (let [root (v2/world {:executor executor})]
+                            (canonical-session opts source seed)
+                            (let [root (lt/world opts {:executor executor})]
                               [root (sp/open! root {:seed seed})]))
            model-task (if source
                         ;; every chain runs the whole model, from a site a
@@ -413,7 +414,7 @@
                        (vec (repeatedly num-chains random/fresh-seed)))
                chain-tasks (mapv #(run-markov-chain model-task kernel executor %
                                                      (:org.replikativ.foerster.core/source opts)
-                                                     (:world-opts opts))
+                                                     opts)
                                  seeds)
                chains (pcps/await (execution/parallel nil (count chain-tasks)
                                                       (fn [i res rej] ((nth chain-tasks i) res rej))))]

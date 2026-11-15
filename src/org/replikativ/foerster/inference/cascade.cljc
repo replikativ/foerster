@@ -24,6 +24,7 @@
   means depend on arrival order, so runs on a multi-threaded executor are not
   reproducible from their seed."
   (:require [org.replikativ.foerster.runtime.async :as async]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
@@ -79,7 +80,7 @@
       (let [[resolve reject] [resolve reject]
             seed (or (:seed opts) (random/fresh-seed))
             policy (or policy (itrace/policy))
-            root (if executor (v2/world {:executor executor}) (v2/world))
+            root (lt/world opts (when executor {:executor executor}))
             session (sp/open! root {:purpose :cascade
                                     :seed seed
                                     :fork-opts {:systems :none}
@@ -229,7 +230,8 @@
                   ;; a program without savepoints: one deterministic run
                   (finish! resolve (m/empirical [[(m/sample-particle result {}) 0.0]]))))
               sp/error-site (fn [{error :savepoint/payload}] (fail! error))
-              sp/abandoned-site (fn [_] nil)})
+              ;; given back by its owner: the inference was cancelled
+              sp/abandoned-site (fn [e] (when (lt/released-end? e) (fail! (:savepoint/payload e))))})
             (sp/start! session model)
             (catch #?(:clj Throwable :cljs :default) e
               (log/error :cascade/start-failed {:error e})

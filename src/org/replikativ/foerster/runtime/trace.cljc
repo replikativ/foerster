@@ -27,6 +27,7 @@
   site."
   (:require [is.simm.partial-cps.async :as pcps]
             [org.replikativ.foerster.runtime.trace-owner :as owner]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.spindel.v2.core :as v2]
             [org.replikativ.spindel.v2.trace :as trace]
             [org.replikativ.spindel.v2.savepoint :as sp]
@@ -562,13 +563,23 @@
   [world]
   (v2/assoc-in-world! world [:inference :canonical?] true))
 
+(defn- stopping-replay
+  "`op` (a replay) rejecting when its trace ended in an error that means the
+  inference was cancelled: a move must not take that for a rejected
+  proposal and go on."
+  [op]
+  (fn [resolve reject]
+    (op (fn [t] (let [e (:trace/error t)]
+                  (if (and e (lt/stopping? e)) (reject e) (resolve t))))
+        reject)))
+
 (defn replay-sound
   "`trace/replay` of `trace` from `address`. On engine v2 a replay is an
   instance of the anchor (the world as it was at the site), so it adopts
   nothing from the replayed world and is sound whatever the run wrote;
   `reuse?` is accepted and ignored."
-  ([trace address policy opts] (trace/replay trace address policy opts))
-  ([trace address policy opts _reuse?] (trace/replay trace address policy opts)))
+  ([trace address policy opts] (stopping-replay (trace/replay trace address policy opts)))
+  ([trace address policy opts _reuse?] (stopping-replay (trace/replay trace address policy opts))))
 
 (defn latent?
   "Whether a trace entry is a sample site inference may move: not observed,
@@ -792,8 +803,9 @@
      (when-not from
        (throw (ex-info "No replay anchor precedes the requested sites"
                        {:type ::no-replay-origin :targets (vec targets)})))
-     (assoc (pcps/await (trace/replay t from move (assoc opts :anchor? (or (:anchor? opts)
-                                                                         (if canonical canonical-anchor? anchor?)))))
+     (assoc (pcps/await (stopping-replay
+                         (trace/replay t from move (assoc opts :anchor? (or (:anchor? opts)
+                                                                          (if canonical canonical-anchor? anchor?))))))
             ::restart from))))
 
 (defn mh-step

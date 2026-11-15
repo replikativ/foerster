@@ -22,6 +22,7 @@
   resample-move instead (`foerster.inference.smc`, `:anchors` on the static
   parameters)."
   (:require [org.replikativ.foerster.runtime.scope :as scope]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.contract :as contract]
             [org.replikativ.foerster.dist :as dist]
@@ -237,7 +238,7 @@
   `m/log-marginal` estimates the evidence; `:temperatures` holds the
   schedule and `:rejuvenation` the moves made and accepted."
   [model n & [{:keys [ess-target moves kernel scale waste-free max-steps executor seed canonical-source world-opts]
-               :or {ess-target 0.5 scale 2.38 max-steps 1000}}]]
+               :or {ess-target 0.5 scale 2.38 max-steps 1000} :as opts}]]
   (when-not (and (number? ess-target) (< 0.0 ess-target 1.0))
     (throw (ex-info ":ess-target must lie in (0, 1)" {:type ::invalid-ess-target :ess-target ess-target})))
   (when-not (or (nil? moves) (nat-int? moves))
@@ -255,7 +256,7 @@
              runs (atom -1)
              run! (fn []
                     (let [r (gfi/run-policy* model (itrace/policy {:temperature 0.0})
-                                             (cond-> {:inference-scope resources :seed (sp/derive-seed seed ::run (swap! runs inc))}
+                                             (cond-> (lt/carry {:inference-scope resources :seed (sp/derive-seed seed ::run (swap! runs inc))} opts)
                                                executor (assoc :executor executor)
                                                canonical-source (assoc :canonical-source canonical-source
                                                                        :world-opts world-opts)))]
