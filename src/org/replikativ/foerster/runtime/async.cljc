@@ -79,4 +79,6 @@
   "A task (in the current world: a body's, or the bound `v2/*world*`)
   resolving the CPS operation `op`, which runs as host code."
   [op]
-  (task (await-op op)))
+  ;; `await-op` spelled out: ClojureScript cannot expand this namespace's own
+  ;; macro here
+  (task (if (v2/handle? op) (v2/await op) (v2/external (external-of op)))))

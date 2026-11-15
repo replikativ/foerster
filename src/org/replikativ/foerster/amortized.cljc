@@ -13,9 +13,9 @@
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as trace]
-            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.spindel.v2.core :as v2]
             [org.replikativ.foerster.runtime.async :as async :refer [await-op]])
-  #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+  #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :as v2]
             [org.replikativ.foerster.runtime.async :as async :refer [await-op]])))
 
 (defn- finite? [x] (and (number? x) (< ##-Inf x ##Inf)))
