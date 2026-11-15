@@ -23,6 +23,8 @@
         ;; (0.1.201 retired a world mid-drain: do not use it.)
         ;; engine v2 (0.2), during the port: a local checkout of engine-v2
         org.replikativ/spindel {:local/root "../spindel-v2-dep"}
+        ;; seeds: generator states from content hashes (`foerster.random`)
+        org.replikativ/hasch {:mvn/version "0.4.104"}
         org.replikativ/logging {:mvn/version "0.1.3"}}
 
  :aliases

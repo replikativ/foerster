@@ -4,7 +4,7 @@
   seed and what is drawn."
   (:require [org.replikativ.foerster.runtime.async :as async]
             [clojure.string :as str]
-            [org.replikativ.spindel.engine.hash :as hash]
+            [hasch.fast :as hf]
             [clojure.walk :as walk]
             [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :refer [run-infer weighted-values]]
@@ -162,7 +162,7 @@
                                (str (long v)) v))
                      seed)
           _ (is (= canonical (#'org.replikativ.foerster.random/canonical seed)))
-          uuid (hash/content-hash
+          uuid (hf/sha256-uuid
                 [:org.replikativ.foerster.random/stream
                  canonical])
           hex (str/replace (str uuid) "-" "")

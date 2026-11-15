@@ -27,7 +27,7 @@
             [clojure.walk :as walk]
             [org.replikativ.spindel.v2.core :as v2]
             [org.replikativ.spindel.v2.savepoint :as sp]
-            [org.replikativ.spindel.engine.hash :as h]))
+            [hasch.fast :as hf]))
 
 ;; -----------------------------------------------------------------------------
 ;; xoshiro128** (Blackman & Vigna) on unsigned 32-bit words
@@ -82,7 +82,7 @@
 (defn- state-of
   "A generator state from any value: its content hash, as four words."
   [x]
-  (let [uuid (h/content-hash [::stream (canonical x)])
+  (let [uuid (hf/sha256-uuid [::stream (canonical x)])
         words #?(:clj (let [hi (.getMostSignificantBits ^java.util.UUID uuid)
                             lo (.getLeastSignificantBits ^java.util.UUID uuid)]
                         [(u32 (unsigned-bit-shift-right hi 32)) (u32 hi)
