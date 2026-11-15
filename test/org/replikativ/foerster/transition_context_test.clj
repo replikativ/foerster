@@ -26,8 +26,8 @@
         context {:temperature 1.0 :constraints {:y 1} :policy-options {:interventions {:z 0}}
                  :until :frontier :keep-old? true :shared-anchors? true}
         visits (atom [])
-        current {:trace/world (atom 0)}]
-    (with-redefs [rtp/swap-state! (fn [world _ f] (swap! world f))
+        current {:trace/world (atom {})}]
+    (with-redefs [v2/update-in-world! (fn [w path f & args] (apply swap! w update-in path f args))
                   it/mh-step (fn [t _] (fn [resolve _] (resolve {:trace t :accepted? false})))
                   nuts/within-gibbs (fn [_]
                                       (swap! made inc)
@@ -49,9 +49,9 @@
         (is (= 1010 (count @visits)))))))
 
 (deftest nested-mixtures-preserve-component-counters-and-context
-  (let [seen (atom []) current {:trace/world (atom 0)}
+  (let [seen (atom []) current {:trace/world (atom {})}
         context {:temperature 1.0 :until :frontier :keep-old? true}]
-    (with-redefs [rtp/swap-state! (fn [world _ f] (swap! world f))
+    (with-redefs [v2/update-in-world! (fn [w path f & args] (apply swap! w update-in path f args))
                   it/mh-step (fn [t _] (fn [resolve _] (resolve {:trace t :accepted? false})))
                   random/in-world-stream (fn [_ _ f] (f))
                   weights/sample-categorical (constantly 0)
@@ -69,10 +69,11 @@
         (is (every? #(= context (select-keys % (keys context))) @seen))))))
 
 (deftest distinct-prepared-descriptors-share-the-worlds-rng-reservation
-  (let [seen (atom []) current {:trace/world (atom 0)}]
-    (with-redefs [rtp/swap-state! (fn [world _ f] (swap! world f))
+  (let [seen (atom []) current {:trace/world (atom {})}]
+    (with-redefs [v2/update-in-world! (fn [w path f & args] (apply swap! w update-in path f args))
                   it/mh-step (fn [t opts]
-                               (swap! seen conj (:iteration opts))
+                               (when (identical? (:trace/world t) (:trace/world current))
+                                 (swap! seen conj (:iteration opts)))
                                (fn [resolve _] (resolve {:trace t :accepted? false})))]
       (let [a (transition/prepare (k/single-site-mh-kernel 2))
             b (transition/prepare (k/single-site-mh-kernel 1))]
@@ -82,17 +83,20 @@
         (is (= [0 1 2 3 4] @seen))))))
 
 (deftest chain-driver-reserves-composed-move-spans-once
-  (let [seen (atom []) current {:trace/world (atom 0)}]
-    (with-redefs [rtp/swap-state! (fn [world _ f] (swap! world f))
+  (let [seen (atom []) current {:trace/world (atom {})}]
+    (with-redefs [v2/update-in-world! (fn [w path f & args] (apply swap! w update-in path f args))
                   it/mh-step (fn [t opts]
-                               (swap! seen conj (:iteration opts))
+                               ;; only this chain's moves: a chain running
+                               ;; elsewhere in the JVM meanwhile also moves
+                               (when (identical? (:trace/world t) (:trace/world current))
+                                 (swap! seen conj (:iteration opts)))
                                (fn [resolve _] (resolve {:trace t :accepted? false})))]
       (let [opts (transition/options (k/cycle 3 [(k/single-site-mh-kernel 2)
                                                  (k/single-site-mh-kernel 1)]))]
         (is (= 3 (:iteration-stride opts)))
         (await-cps (it/mh-chain current (:iterations opts) opts))
         (is (= (range 9) @seen))
-        (is (= 9 @(:trace/world current)))))))
+        (is (= 9 (get-in @(:trace/world current) [:inference ::it/chain-moves])))))))
 
 (deftest numerical-tempering-fails-before-any-component-moves
   (let [moves (atom 0)]

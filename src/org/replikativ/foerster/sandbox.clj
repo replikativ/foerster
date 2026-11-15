@@ -211,11 +211,14 @@
     (ex-info (str/join " — caused by: " (remove nil? messages))
              (select-keys (ex-data e) [:type]))))
 
-(defn- run [model opts host next-seed]
+(defn- run
+  "A task of the posterior of `model` (a function creating a task) as data,
+  in the current world."
+  [model opts host next-seed]
   (let [native (try (core/infer model (checked opts host next-seed))
                     (catch Exception e (throw (sanitized e))))]
-    (pcps/async (try (posterior (pcps/await (async/op-of native)))
-               (catch Exception e (throw (sanitized e)))))))
+    (async/as-task (pcps/async (try (posterior (pcps/await (async/op-of native)))
+                                    (catch Exception e (throw (sanitized e))))))))
 
 (defrecord Job [task terminal done])
 
@@ -410,7 +413,7 @@
 
 (def docs
   "{ns-sym {sym [arglists docstring]}} for `namespaces`."
-  '{infer {run [([model opts]) "Run inference on `model` (a spin with sample/observe sites); a spin of the posterior as data. opts: :method (:importance :smc :mh :rmh :nuts; particle MCMC :pimh :pgibbs :pgas :ipmcmc; :pmmh with :params, the parameters' addresses, and :scale; exact :enumerate for finite discrete models, at most :max-branches assignments), its sizes (:particles; or :iterations :chains :burn; particle MCMC and :pmmh :particles per sweep and :iterations), :seed, :world-policy, :resampling, :resample-threshold, :step-size (:rmh, :nuts), :target-accept :max-depth :metric :inverse-metric :jitter (:nuts). NUTS needs a block site (model/site). Values the model returns must be plain data."]
+  '{infer {run [([model opts]) "Run inference on `model` (a function creating a task with sample/observe sites); a task of the posterior as data. opts: :method (:importance :smc :mh :rmh :nuts; particle MCMC :pimh :pgibbs :pgas :ipmcmc; :pmmh with :params, the parameters' addresses, and :scale; exact :enumerate for finite discrete models, at most :max-branches assignments), its sizes (:particles; or :iterations :chains :burn; particle MCMC and :pmmh :particles per sweep and :iterations), :seed, :world-policy, :resampling, :resample-threshold, :step-size (:rmh, :nuts), :target-accept :max-depth :metric :inverse-metric :jitter (:nuts). NUTS needs a block site (model/site). Values the model returns must be plain data."]
            start [([model opts]) "As `run`, started in the background: a job handle {:job/id …} for status, result and cancel. Use it for runs longer than one evaluation may take."]
            status [([job]) "{:status :running|:done|:failed|:cancelled}"]
            result [([job timeout-ms]) "The job's posterior, waiting at most timeout-ms; :pending if not done yet."]

@@ -73,7 +73,7 @@
      (swap! log conj :mine)
      @log)))
 
-(def ^:private methods
+(def ^:private particle-methods
   {:smc #(inference/smc-infer %1 4 (assoc %2 :resample-threshold 2.0))
    :importance #(inference/importance-sampling %1 4 %2)
    :pimh #(inference/pimh-infer %1 3 2 %2)
@@ -83,7 +83,7 @@
    :ipmcmc #(inference/ipmcmc-infer %1 3 2 (assoc %2 :num-nodes 2 :num-csmc-nodes 1))})
 
 (deftest every-method-sees-the-caller-s-state-and-its-own-writes-only
-  (doseq [[method run] methods]
+  (doseq [[method run] particle-methods]
     (in-root
      (let [log (v2/atom [:root])]
        (capturing-forks [forks]

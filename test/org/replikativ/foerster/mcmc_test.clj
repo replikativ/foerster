@@ -27,7 +27,7 @@
                                                            (k/random-walk-mh-kernel iterations {:step-size step-size})
                                                            1 {})))
                  [c lw] (first (measure/get-particles meas))
-                 mh (v2/get-in-world c [:inference :mcmc])]
+                 mh (:mcmc c)]
              {:ctx c :value (measure/get-value c) :log-weight lw
               :mh (assoc mh :acceptance-rate
                          (/ (double (:acceptance-count mh 0))
@@ -50,7 +50,7 @@
 (deftest replay-keeps-the-trace-the-size-of-the-model
   (reset! visited [])
   (let [{:keys [ctx mh]} (run-chain three-site-model 30 0.4 7)
-        trace (v2/get-in-world ctx [:inference :trace])
+        trace (:trace ctx)
         vs @visited
         step-size 0.4]
     (is (= 6 (count trace)) "three samples and three observes, however many replays")
