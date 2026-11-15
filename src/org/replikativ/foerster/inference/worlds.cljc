@@ -117,28 +117,30 @@
   a session there — savepoint SMC (`smc/smc`) or enumeration
   (`enumerate/enumerate`). `root` is a host fork of the caller's world, or
   of the inference's frozen fork inside `with-frozen-caller`, taken when
-  this is called and released when the inference ends. Engine v2: no
+  the operation starts (as host code; the caller's world is the current one
+  when this is called) and released when the inference ends. Engine v2: no
   resource authority (`:authority`, `:grant`) and no world descriptors yet."
   [model opts run]
   (when (or (:authority opts) (:grant opts))
     (throw (ex-info ":authority and :grant are not available on engine v2 yet"
                     {:type ::core/unsupported-authority})))
-  (let [root (v2/fork! (or (frozen-source opts) (v2/current-world)))]
-    (itrace/mark-canonical! root)
+  (let [source (or (frozen-source opts) (v2/current-world))]
     (pcps/async
-     (try
+     (let [root (v2/fork! source)]
+       (itrace/mark-canonical! root)
+       (try
        (pcps/await (async/op-of (run (fn []
                         ;; every particle runs the whole model: a canonical
                         ;; model's effects may be random without a sample site
                         (task (sp/savepoint smc/start-site nil)
                               (v2/await (model))))
                       root nil)))
-       (catch #?(:clj Throwable :cljs :default) e
-         (throw (if (v2/cancelled? e)
-                  e
-                  (ex-info "Inference failed during particle execution"
-                           {:type ::core/inference-failed} e))))
-       (finally (v2/release-world! root))))))
+         (catch #?(:clj Throwable :cljs :default) e
+           (throw (if (v2/cancelled? e)
+                    e
+                    (ex-info "Inference failed during particle execution"
+                             {:type ::core/inference-failed} e))))
+         (finally (v2/release-world! root)))))))
 
 (defn canonical-options
   "A savepoint driver's options in the canonical worlds `root` of `scope`:

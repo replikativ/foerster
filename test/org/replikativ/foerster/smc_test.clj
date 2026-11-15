@@ -37,9 +37,9 @@
         (is (< (Math/abs (- (m/log-marginal measure) (+ factors final))) 1e-9))))))
 
 (deftest a-long-filter-on-the-synchronous-executor-completes
-  ;; every resampling resumes the population with spread!: on an inline
-  ;; executor that nested a frame per barrier until the stack overflowed and
-  ;; the run waited forever (~100 barriers; spindel 0.1.126 fixes it)
+  ;; on an inline executor a thread losing a particle world's gate used to
+  ;; reschedule its drainer inline, recursing until the stack overflowed and
+  ;; stranding the world's work: the run waited forever (spindel v2 H2)
   (let [ys (vec (take 150 (cycle [0.1 0.4 -0.2 0.3 0.0])))
         model (fn [] (task (loop [t 0 v (sample (dist/normal 0.0 1.0) :id [:v 0])]
                              (observe (dist/normal v 1.0) (nth ys t) :id [:y t])

@@ -50,19 +50,22 @@
   forks its own world from it, so all of them see the caller's state as it
   was when inference started, whatever the caller does meanwhile. The fork
   is released after `body` ends, however it ends. `body` returns a v2 handle
-  or a CPS operation; this returns a task. Under `:fresh`, or inside such an
-  inference already, `(body opts)`. The fork is taken when this is called,
-  which must be host code (engine v2 forks a world between slices)."
+  or a CPS operation; this returns a CPS operation. Under `:fresh`, or
+  inside such an inference already, `(body opts)`. The caller's world is
+  the current one when this is called, possibly inside a body; it is forked
+  when the operation starts, as host code (engine v2 forks a world between
+  slices), and so is `body` called."
   [opts body]
   (no-authority! opts)
   (if (or (not= :fork (:world-policy opts :fresh)) (frozen-source opts))
     (body opts)
-    (let [source (v2/fork! (v2/current-world))]
-      (itrace/mark-canonical! source)
+    (let [caller (v2/current-world)]
       (pcps/async
-       (try
-         (pcps/await (async/op-of (body (assoc opts :org.replikativ.foerster.core/source source))))
-         (finally (v2/release-world! source)))))))
+       (let [source (v2/fork! caller)]
+         (itrace/mark-canonical! source)
+         (try
+           (pcps/await (async/op-of (body (assoc opts :org.replikativ.foerster.core/source source))))
+           (finally (v2/release-world! source))))))))
 
 (defn run-options
   "`opts` for a driver whose runs are `foerster.runtime.gfi` runs: inside
