@@ -11,8 +11,8 @@
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.program :as ip]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (def ^:private y 2.0)
 
@@ -20,7 +20,7 @@
   "b ~ flip(1/2); v0 ~ N(0,1) drawn from its site proposal N(3,1) when b,
   else v1 ~ N(5,1); y = 2 ~ N(v,1)."
   []
-  (spin (let [b (sample (dist/flip 0.5) :id :b)
+  (task (let [b (sample (dist/flip 0.5) :id :b)
               v (if b
                   (sample (dist/normal 0.0 1.0) :id :v0 :proposal (dist/normal 3.0 1.0))
                   (sample (dist/normal 5.0 1.0) :id :v1))]
@@ -38,10 +38,10 @@
    :involution (fn [{b :b} _] {:choices {:b (not b)} :aux nil :log-jacobian 0.0})})
 
 (defn- flip-b [{b :b}]
-  (spin (sample (dist/flip (if b 0.0 1.0)) :id :b)))
+  (fn [] (task (sample (dist/flip (if b 0.0 1.0)) :id :b))))
 
 (defn- p-b [kernel seed]
-  (let [wv (b/weighted-values (b/run-infer seed #(infer/kernel-infer (switch) kernel 2)))]
+  (let [wv (b/weighted-values (b/run-infer seed #(infer/kernel-infer (fn [] (switch)) kernel 2)))]
     (b/w-mean #(if % 1.0 0.0) wv)))
 
 (deftest programmable-moves-compose-with-chain-kernels
@@ -63,21 +63,21 @@
                            (iterate ex-cause
                                     (try (b/run-infer 123 #(ip/run {:seed 123}
                                                                    (fn [scope]
-                                                                     (spin
-                                                                      (let [p (await (ip/initialize scope (ip/trace-target (switch)) 8))
-                                                                            p (await (ip/move scope p (k/involutive-kernel 1 flip-move)))]
+                                                                     (task
+                                                                      (let [p (await-op (ip/initialize scope (ip/trace-target (fn [] (switch))) 8))
+                                                                            p (await-op (ip/move scope p (k/involutive-kernel 1 flip-move)))]
                                                                         (ip/finish scope p))))))
                                          (catch Exception e e))))))))
 
 (deftest a-refused-move-leaves-the-population-usable
   (let [result (b/run-infer 124 #(ip/run {:seed 124}
                                          (fn [scope]
-                                           (spin
-                                            (let [p (await (ip/initialize scope (ip/trace-target (switch)) 8))
-                                                  refused (try (await (ip/move scope p (k/involutive-kernel 1 flip-move)))
+                                           (task
+                                            (let [p (await-op (ip/initialize scope (ip/trace-target (fn [] (switch))) 8))
+                                                  refused (try (await-op (ip/move scope p (k/involutive-kernel 1 flip-move)))
                                                                nil
                                                                (catch Exception e (:type (ex-data e))))
-                                                  p (await (ip/move scope p (k/single-site-mh-kernel 1)))]
+                                                  p (await-op (ip/move scope p (k/single-site-mh-kernel 1)))]
                                               (assoc (ip/finish scope p) ::refused refused))))))]
     (is (= ::ip/unretaining-population-kernel (::refused result)))
     (is (= 8 (count (m/get-particles result))))))
@@ -86,5 +86,5 @@
   (let [kernel (k/proposal-mh-kernel 50 flip-b {:samples :all})
         run (fn [process-seed]
               (mapv (comp m/get-value first)
-                    (m/get-particles (b/run-infer process-seed #(infer/kernel-infer (switch) kernel 2 {:seed 7})))))]
+                    (m/get-particles (b/run-infer process-seed #(infer/kernel-infer (fn [] (switch)) kernel 2 {:seed 7})))))]
     (is (= (run 1) (run 2)))))

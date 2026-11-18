@@ -4,20 +4,18 @@
   (:require [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.moves.kernel :as k]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
-(def ^:private world (context/create-execution-context))
+(def ^:private world (v2/world))
 
-(defn- model [] (binding [ec/*execution-context* world] (spin :done)))
+(defn- model [] (task :done))
 
 (defn- refusal [f]
   (try (f) nil
        (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
 
 (deftest unknown-options-are-refused
-  (let [model (model)]
+  (let [model (fn [] (model))]
     (is (= ::infer/unknown-options
            (refusal #(infer/smc-infer model 10 {:resample-treshold 0.3}))) "misspelled")
     (is (= ::infer/unknown-options
@@ -31,7 +29,7 @@
         "a Markov chain does not resample")))
 
 (deftest canonical-world-options-need-canonical-worlds
-  (let [model (model)]
+  (let [model (fn [] (model))]
     (doseq [opts [{:authority :some-authority} {:grant {:tokens 1}} {:world-opts {}}
                   {:world-policy :fresh :grant {:tokens 1}}]]
       (is (= ::infer/fork-only-options (refusal #(infer/smc-infer model 10 opts))) (str opts)))))

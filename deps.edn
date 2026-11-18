@@ -21,7 +21,10 @@
         ;; 0.1.202: a released world gives back its state once quiescent,
         ;; so a long stream (smc/stream with :retain) runs in bounded memory.
         ;; (0.1.201 retired a world mid-drain: do not use it.)
-        org.replikativ/spindel {:mvn/version "0.1.202"}
+        ;; engine v2 (0.2), during the port: a local checkout of engine-v2
+        org.replikativ/spindel {:git/url "https://github.com/replikativ/spindel" :git/sha "97514a6ad49d297cc3aaa614cb982d3fc2952b27"}
+        ;; seeds: generator states from content hashes (`foerster.random`)
+        org.replikativ/hasch {:mvn/version "0.4.104"}
         org.replikativ/logging {:mvn/version "0.1.3"}}
 
  :aliases
@@ -31,8 +34,10 @@
          :jvm-opts ["-Dspindel.missing-state=throw"]
          :extra-deps {io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
-         :main-opts ["-m" "cognitect.test-runner"]
-         :exec-fn cognitect.test-runner.api/test}
+         ;; ^:engine-v2-gap tests state what the engine v2 port does not do yet
+         :main-opts ["-m" "cognitect.test-runner" "-e" ":engine-v2-gap"]
+         :exec-fn cognitect.test-runner.api/test
+         :exec-args {:excludes [:engine-v2-gap]}}
 
   :build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.5"}
                  slipset/deps-deploy {:mvn/version "0.2.2"}

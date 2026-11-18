@@ -6,12 +6,12 @@
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.inference.smc :as smc]
-            [org.replikativ.spindel.engine.executor :as executor]))
+            [org.replikativ.foerster.runtime.execution :as executor]))
 
 (deftest batches-keep-the-evidence-and-the-posterior
   (doseq [batch [1 8 1000]]
     (testing (str "B = " batch)
-      (let [measure (b/run-infer 61 #(smc/smc (b/conjugate-model) 1000
+      (let [measure (b/run-infer 61 #(smc/smc (fn [] (b/conjugate-model)) 1000
                                               {:batch batch :resample-threshold 1.0}))]
         (is (< (Math/abs (- (m/log-marginal measure) b/conjugate-log-evidence)) 0.25)
             (str (m/log-marginal measure) " vs " b/conjugate-log-evidence))))))
@@ -20,7 +20,7 @@
   ;; arrival order is the executor's; the marginals stay correct
   (let [exec (executor/thread-pool-executor {:threads 4})]
     (try
-      (let [measure (b/run-infer 62 #(smc/smc (apply b/hmm-model b/hmm-args) 600
+      (let [measure (b/run-infer 62 #(smc/smc (fn [] (apply b/hmm-model b/hmm-args)) 600
                                               {:batch 16 :resample-threshold 1.0 :executor exec}))
             history (:history measure)]
         (is (< (b/hmm-error (b/weighted-values measure)) 0.08))
@@ -31,6 +31,6 @@
 (deftest a-stage-closes-when-the-rest-have-finished
   ;; b = true adds an observation: particles with b = false finish before the
   ;; second stage, whose last batch must close without them
-  (let [measure (b/run-infer 63 #(smc/smc (b/varlen-model) 2000 {:batch 64 :resample-threshold 1.0}))
+  (let [measure (b/run-infer 63 #(smc/smc (fn [] (b/varlen-model)) 2000 {:batch 64 :resample-threshold 1.0}))
         p (b/w-mean #(if % 1.0 0.0) (b/weighted-values measure))]
     (is (< (Math/abs (- p b/varlen-truth)) 0.05) (str p " vs " b/varlen-truth))))

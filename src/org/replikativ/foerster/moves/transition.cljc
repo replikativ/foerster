@@ -2,7 +2,9 @@
   "Compilation and execution of Markov kernels. Site proposal policies and
   weighted population operations do not pass through this interpreter."
   (:refer-clojure :exclude [await])
-  (:require [is.simm.partial-cps.async :as pcps]
+  (:require [org.replikativ.foerster.runtime.execution :as execution]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
+            [is.simm.partial-cps.async :as pcps]
             [org.replikativ.foerster.moves.transition-context :as tc]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as m]
@@ -14,18 +16,10 @@
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.moves.involutive :as involutive]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.state-backend :as backend]
-            [org.replikativ.spindel.world.scope :as world-scope]
-            [org.replikativ.spindel.engine.core :as ec]
-            #?(:clj [org.replikativ.spindel.engine.executor :as sched])
-            [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.spin.combinators :as comb]
-            [org.replikativ.spindel.effects.await :refer [await await-finalization]])
+            [org.replikativ.spindel.v2.savepoint :as sp]
+            [org.replikativ.spindel.v2.trace :as trace]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])
   #?(:cljs (:require-macros [is.simm.partial-cps.async :as pcps])))
 
 (defn- block-gibbs-options
@@ -240,9 +234,8 @@
 (defn- reserve-span! [current size]
   ;; Share mh-chain's allocator: distinct prepared descriptors can move the
   ;; same world after rejection without replaying an earlier random stream.
-  (- (rtp/swap-state! (:trace/world current)
-                      [:inference :org.replikativ.foerster.runtime.trace/chain-moves]
-                      #(+ (or % 0) size)) size))
+  (let [path [:inference :org.replikativ.foerster.runtime.trace/chain-moves]]
+    (- (get-in (v2/update-in-world! (:trace/world current) path #(+ (or % 0) size)) path) size)))
 
 (defn step
   "Run a prepared descriptor's configured iterations. Context is the target
@@ -274,45 +267,14 @@
              (iteration-of tree current (:iteration context)
                            (select-keys context tc/keys)))}))
 
-(defn- project-posterior-context
-  "A parentless immutable context holding what the posterior needs of
-  `world`'s inference state: the world itself would retain its ancestry."
-  [world]
-  (assoc world
-         :backend (backend/create-immutable-backend
-                   {:inference (select-keys (rtp/get-state world [:inference])
-                                            [:log-weight :trace :result :mcmc])}
-                   {:source-fork-id (:fork-id world)
-                    :projection :inference-posterior})
-         :parent-ctx nil
-         :bindings {}
-         :metadata {:inference/projection true}
-         :running nil
-         :drain-active nil))
-
 (defn- canonical-session
-  "CPS: a chain's session in a world of its own, forked from `source` (the
-  inference's frozen fork of the caller's world, `:world-policy :fork`),
-  with a scope of its own that keeps no descriptor of released worlds (a
-  chain releases one per move). Closing the session discards the scope, the
-  chain's root included. Resolves [root session]."
-  [source world-opts executor seed]
-  (fn [resolve reject]
-    (let [[resolve reject] (sp/in-callers-world resolve reject)
-          scope (world-scope/create {:purpose :mcmc :retain-released? false
-                                     :fork-opts (cond-> (or world-opts {})
-                                                  executor (assoc :executor executor))})
-          give-up (fn [error]
-                    ((world-scope/discard-when-quiescent! scope)
-                     (fn [_] (reject error)) (fn [_] (reject error))))]
-      (world-scope/fork!
-       scope source nil
-       (fn [{root :child-ctx}]
-         (try
-           (itrace/mark-canonical! root)
-           (resolve [root (sp/open! root {:purpose :mcmc :seed seed :scope scope})])
-           (catch #?(:clj Throwable :cljs :default) error (give-up error))))
-       give-up))))
+  "A chain's root and session: a host fork of `source` (the inference's
+  frozen fork of the caller's world, `:world-policy :fork`). Closing the
+  session releases the worlds it made; the root is released with it."
+  [opts source seed]
+  (let [root (lt/fork opts source)]
+    (itrace/mark-canonical! root)
+    [root (sp/open! root {:seed seed})]))
 
 (defn- covers
   "A predicate (fn [trace legacy address]) of the latent sites `leaf` can
@@ -348,9 +310,9 @@
   With `source` (`:world-policy :fork`) the chain's world is a fork of it
   and the model runs from a start site, the anchor a move re-executes it
   from when no later one precedes its sites."
-  [model-task kernel executor seed source world-opts]
-  (spin-core/with-causal-descendant-egress
-    (spin
+  [model-task kernel executor seed source opts]
+  (do
+    (pcps/async
      (let [;; per chain: a block Gibbs description closes over its own state
            {:keys [iterations warming-up?] :as step-opts} (options kernel)
            step-opts (dissoc step-opts :warming-up?)
@@ -358,20 +320,18 @@
                (throw (ex-info ":burn leaves no draws: it must be below :iterations"
                                {:type :org.replikativ.foerster.core/burn-exceeds-iterations :burn (:burn kernel) :iterations iterations})))
            [root session] (if source
-                            (await (canonical-session source world-opts executor seed))
-                            (let [root (ctx/create-execution-context :executor executor)]
-                              [root (sp/open! root {:purpose :mcmc :seed seed :fork-opts {:systems :none}
-                                                    :retain-released? false})]))
+                            (canonical-session opts source seed)
+                            (let [root (lt/world opts {:executor executor})]
+                              [root (sp/open! root {:seed seed})]))
            model-task (if source
-                        (binding [ec/*execution-context* root]
-                          ;; every chain runs the whole model, from a site a
-                          ;; move can re-execute it from (`itrace/reexecute`)
-                          (spin (sp/savepoint :org.replikativ.foerster.inference.smc/start nil)
-                                (await model-task)))
+                        ;; every chain runs the whole model, from a site a
+                        ;; move can re-execute it from (`itrace/reexecute`)
+                        (fn [] (task (sp/savepoint :org.replikativ.foerster.inference.smc/start nil)
+                                     (v2/await (model-task))))
                         model-task)]
        (try
-         (let [initial (await (trace/run session model-task (itrace/policy {:init? true})
-                                         {:anchor? (if source itrace/canonical-anchor? itrace/anchor?)}))
+         (let [initial (pcps/await (async/op-of (trace/run session model-task (itrace/policy {:init? true})
+                                         {:anchor? (if source itrace/canonical-anchor? itrace/anchor?)})))
                _ (when (contains? initial :trace/error)
                    (throw (ex-info "Inference failed during model execution"
                                    {:type :org.replikativ.foerster.core/inference-failed}
@@ -393,7 +353,7 @@
                ;; random initialization); population moves never do
                initial (if (some #(let [b (block-kernel %)] (and (= :nuts (k/transition-id b)) (:jitter b true)))
                                  (leaves kernel))
-                         (await (nuts/jitter initial))
+                         (pcps/await (async/op-of (nuts/jitter initial)))
                          initial)
                samples (volatile! [])
                step-opts (cond-> step-opts
@@ -409,7 +369,7 @@
                                                    sampler-stats (assoc :sampler-stats sampler-stats))
                                                  0.0]))))))
                {final :trace moves :moves accepted :accepted}
-               (await (itrace/mh-chain initial iterations step-opts))
+               (pcps/await (async/op-of (itrace/mh-chain initial iterations step-opts)))
                _ (when (warming-up?)
                    (throw (ex-info (str "A kernel's warm-up (:burn of a NUTS or adaptive random-walk kernel) "
                                         "did not finish within the chain: the chain must run past it. In a cycle "
@@ -417,23 +377,18 @@
                                         "makes only when it picks it: raise the iterations or lower its :burn")
                                    {:type :org.replikativ.foerster.core/warm-up-unfinished
                                     :iterations iterations})))
-               world (:trace/world final)]
-           (rtp/swap-state! world [:inference]
-                            (fn [state]
-                              (assoc state
-                                     :result (:trace/result final)
-                                     :trace (itrace/legacy-trace final)
-                                     :mcmc {:completed-iterations iterations
-                                            :moves moves
-                                            :acceptance-count accepted})))
+               ]
            (if (= :all (:samples kernel))
              @samples
-             [[(project-posterior-context world) 0.0]]))
+             ;; the final state as a Sample: the chain's worlds are given back
+             [[(assoc (m/sample-particle (:trace/result final) (itrace/legacy-trace final))
+                      :mcmc {:completed-iterations iterations :moves moves :acceptance-count accepted})
+               0.0]]))
          (finally
-         ;; Closing the session cancels and joins every world of the chain.
-         ;; The root is not stopped here: `stop-context!` waits for the
-         ;; context's drains, and this body may be running inside one.
-           (await-finalization (sp/close! session))))))))
+           ;; releases every world of the chain (engine v2 finalizers do not
+           ;; await: the close is requested, not joined)
+           ((sp/close! session) (fn [_]) (fn [_]))
+           (v2/release-world! root)))))))
 
 (defn infer
   "`num-chains` chains of the Markov `kernel` on `model-task`, each in fresh
@@ -446,10 +401,10 @@
     (throw (ex-info "Markov chains under :world-policy :fork need the caller's frozen fork (foerster.core/kernel-infer)"
                     {:type :org.replikativ.foerster.core/invalid-world-policy
                      :world-policy :fork})))
-  (spin-core/with-causal-descendant-egress
-    (spin
+  (do
+    (pcps/async
      (let [own-executor (when-not (:executor opts)
-                          #?(:clj (sched/thread-pool-executor {:threads 2}) :cljs nil))
+                          #?(:clj (java.util.concurrent.Executors/newFixedThreadPool 2) :cljs nil))
            executor (or (:executor opts) own-executor)]
        (try
          (let [;; derived from :seed, else drawn here in order: the chains
@@ -457,11 +412,12 @@
                seeds (if-let [seed (:seed opts)]
                        (mapv #(sp/derive-seed seed :org.replikativ.foerster.core/chain %) (range num-chains))
                        (vec (repeatedly num-chains random/fresh-seed)))
-               chains (await (apply comb/parallel
-                                    (mapv #(run-markov-chain model-task kernel executor %
-                                                             (:org.replikativ.foerster.core/source opts)
-                                                             (:world-opts opts))
-                                          seeds)))]
+               chain-tasks (mapv #(run-markov-chain model-task kernel executor %
+                                                     (:org.replikativ.foerster.core/source opts)
+                                                     opts)
+                                 seeds)
+               chains (pcps/await (execution/parallel nil (count chain-tasks)
+                                                      (fn [i res rej] ((nth chain-tasks i) res rej))))]
            ;; the draws in chain order, each chain's count kept: the
            ;; convergence diagnostics need them by chain (`foerster.diagnostics`)
            (cond-> (assoc (m/markov-measure (into [] cat chains))
@@ -469,6 +425,6 @@
              (some? (:seed opts)) (assoc :seed (:seed opts))))
          (finally
            (when own-executor
-             #?(:clj (.close ^java.lang.AutoCloseable own-executor)
+             #?(:clj (.shutdown ^java.util.concurrent.ExecutorService own-executor)
                 :cljs nil))))))))
 

@@ -8,18 +8,18 @@
   Errors and option keys keep `foerster.core`'s keywords: they are what the
   public entry points raise and take."
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.foerster.core :as-alias core]
+  (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.core :as-alias core]
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.inference.enumerate :as enumerate]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.foerster.runtime.canonical :refer [close-canonical! canonical-recovery
-                                                               balance-op frozen-source]]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.world.scope :as world-scope]
-            [org.replikativ.spindel.engine.core :as rtc]
-            [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.effects.await :refer [await await-finalization]]))
+            [org.replikativ.foerster.runtime.canonical :refer [frozen-source with-frozen-caller]]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
+            [org.replikativ.spindel.v2.savepoint :as sp]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])
+  #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :refer [task]]
+                            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])))
 
 (defn world-policy
   "The `:world-policy` of `opts`, :fresh by default; refuses any other."
@@ -53,7 +53,7 @@
   "Refuse options `allowed` does not name, and canonical-world options under
   `:world-policy :fresh`: an option that would be ignored is a mistake."
   [opts allowed]
-  (when-let [unknown (seq (remove allowed (keys opts)))]
+  (when-let [unknown (seq (remove #(or (allowed %) (= ::lt/lifetime %)) (keys opts)))]
     (throw (ex-info (str "Unknown inference options: " (vec unknown))
                     {:type ::core/unknown-options
                      :unknown (vec unknown)
@@ -88,12 +88,13 @@
   "A spin resolving the savepoint CPS `operation`, a failure reported as
   `::core/inference-failed` with the model's error as its cause."
   [operation]
-  (spin-core/with-causal-descendant-egress
-    (spin
-     (try
-       (await operation)
-       (catch #?(:clj Throwable :cljs :default) e
-         (throw (ex-info "Inference failed during particle execution"
+  (pcps/async
+   (try
+     (pcps/await (async/op-of operation))
+     (catch #?(:clj Throwable :cljs :default) e
+       (throw (if (lt/stopping? e)
+                e
+                (ex-info "Inference failed during particle execution"
                          {:type ::core/inference-failed} e)))))))
 
 ;; -----------------------------------------------------------------------------
@@ -112,75 +113,37 @@
 ;; every world discarded before the result or error is delivered; particles
 ;; keep their worlds' descriptors.
 
-(defn with-world-descriptors
-  "`measure` whose particles carry their worlds' settled descriptors."
-  [measure descriptors]
-  (let [by-id (into {} (map (juxt :fork/id identity)) descriptors)]
-    (update measure :particles
-            (fn [particles]
-              (mapv (fn [[s w]]
-                      [(if-let [id (:world-id s)]
-                         (-> s (dissoc :world-id) (assoc :world-descriptor (get by-id id)))
-                         s)
-                       w])
-                    particles)))))
-
 (defn in-canonical-worlds
-  "A savepoint driver's run of `model-task` in canonical worlds of the
-  caller's (see above): `(run model root scope)` is a CPS operation resolving
-  the measure of `model` run in `root` by a session joining `scope` —
-  savepoint SMC (`smc/smc`) or enumeration (`enumerate/enumerate`).
-  `:world-opts` are the forks' options (`:systems`, `:rights`,
-  `:snapshots`); `:executor` the worlds' executor; `:authority` a
-  `world.scope/PResourceAuthority` and `:grant` what the inference may spend
-  of the caller's wallet. Inside `with-frozen-caller` the root is forked
-  from the inference's frozen fork instead of the caller's world, and takes
-  `::core/grant` of its wallet, or all that is left of it."
-  [model-task opts run]
-  (spin-core/with-causal-descendant-egress
-    (spin
-     (let [source (or (frozen-source opts) rtc/*execution-context*)
-           grant (if (frozen-source opts)
-                   (when (:authority opts)
-                     (if (contains? opts ::core/grant)
-                       (::core/grant opts)
-                       (await (balance-op (:authority opts) source))))
-                   (:grant opts))
-           world-opts (or (:world-opts opts) {})
-           scope (world-scope/create {:purpose :particle
-                                      :authority (:authority opts)
-                                      :fork-opts (cond-> world-opts
-                                                   (:executor opts) (assoc :executor (:executor opts)))})
-         ;; holds the scope open until the session joins it
-           lease (world-scope/begin-activity! scope :inference)
-           root (volatile! nil)
-           measure (volatile! nil)]
+  "A savepoint driver's run of `model` in canonical worlds of the caller's
+  (see above): `(run model' root scope)` is a CPS operation resolving the
+  measure of `model'` (the model behind `smc/start-site`) run in `root` by
+  a session there — savepoint SMC (`smc/smc`) or enumeration
+  (`enumerate/enumerate`). `root` is a host fork of the caller's world, or
+  of the inference's frozen fork inside `with-frozen-caller`, taken when
+  the operation starts (as host code; the caller's world is the current one
+  when this is called) and released when the inference ends. Engine v2: no
+  resource authority (`:authority`, `:grant`) and no world descriptors yet."
+  [model opts run]
+  (when (or (:authority opts) (:grant opts))
+    (throw (ex-info ":authority and :grant are not available on engine v2 yet"
+                    {:type ::core/unsupported-authority})))
+  (let [source (or (frozen-source opts) (v2/current-world))]
+    (pcps/async
+     (let [root (lt/fork opts source)]
+       (itrace/mark-canonical! root)
        (try
-         ;; the fork resolves in its source's world: resume this spin in
-         ;; the caller's, also when the source is a frozen fork
-         (vreset! root (:child-ctx (await (fn [resolve reject]
-                                            (let [[resolve reject] (sp/in-callers-world resolve reject)]
-                                              (world-scope/fork! scope source {:grant grant}
-                                                                 resolve reject))))))
-         (itrace/mark-canonical! @root)
-         (vreset! measure
-                  (await (run (binding [rtc/*execution-context* @root]
-                                ;; every particle runs the whole model: a
-                                ;; canonical model's effects may be random
-                                ;; without a sample site
-                                (spin (sp/savepoint smc/start-site nil)
-                                      (await model-task)))
-                              @root scope)))
+       (pcps/await (async/op-of (run (fn []
+                        ;; every particle runs the whole model: a canonical
+                        ;; model's effects may be random without a sample site
+                        (task (sp/savepoint smc/start-site nil)
+                              (v2/await (model))))
+                      root nil)))
          (catch #?(:clj Throwable :cljs :default) e
-           (throw (if (= spin-core/spin-cancelled (:type (ex-data e)))
+           (throw (if (lt/stopping? e)
                     e
                     (ex-info "Inference failed during particle execution"
-                             {:type ::core/inference-failed
-                              :world/recovery (canonical-recovery scope lease @root)}
-                             e))))
-         (finally
-           (await-finalization (close-canonical! scope lease @root))))
-       (with-world-descriptors @measure (world-scope/descriptors scope))))))
+                             {:type ::core/inference-failed} e))))
+         (finally (v2/release-world! root)))))))
 
 (defn canonical-options
   "A savepoint driver's options in the canonical worlds `root` of `scope`:
@@ -196,11 +159,13 @@
   "Savepoint SMC of `model-task` with `n` particles in the worlds `opts`'
   `:world-policy` names."
   [model-task n opts]
-  (case (world-policy opts)
-    :fresh (on-savepoints (smc/smc model-task n opts))
-    :fork (in-canonical-worlds model-task opts
-                               (fn [model root scope]
-                                 (smc/smc model n (canonical-options opts root scope))))))
+  (with-frozen-caller opts
+    (fn [opts]
+      (case (world-policy opts)
+        :fresh (on-savepoints (smc/smc model-task n opts))
+        :fork (in-canonical-worlds model-task opts
+                                   (fn [model root scope]
+                                     (smc/smc model n (canonical-options opts root scope))))))))
 
 (def enumeration-options
   #{:max-branches :policy :executor :seed :world-policy :world-opts :authority :grant})
@@ -213,8 +178,10 @@
   measure is delivered; its outcomes carry their worlds' descriptors."
   [model-task opts]
   (check-options! opts enumeration-options)
-  (case (world-policy opts)
-    :fresh (on-savepoints (enumerate/enumerate model-task (dissoc opts :world-policy)))
-    :fork (in-canonical-worlds model-task opts
-                               (fn [model root scope]
-                                 (enumerate/enumerate model (canonical-options opts root scope))))))
+  (with-frozen-caller opts
+    (fn [opts]
+      (case (world-policy opts)
+        :fresh (on-savepoints (enumerate/enumerate model-task (dissoc opts :world-policy)))
+        :fork (in-canonical-worlds model-task opts
+                                   (fn [model root scope]
+                                     (enumerate/enumerate model (canonical-options opts root scope))))))))

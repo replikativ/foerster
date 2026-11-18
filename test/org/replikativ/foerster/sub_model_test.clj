@@ -6,24 +6,22 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.foerster.runtime.async :refer [await-op]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- prior []
-  (spin (sample (dist/normal 0.0 1.0) :id :mu)))
+  (task (sample (dist/normal 0.0 1.0) :id :mu)))
 
 (defn- model []
-  (spin
-   (let [mu (await (prior))]
+  (task
+   (let [mu (await-op (prior))]
      (observe (dist/normal mu 1.0) 1.0 :id :y)
      mu)))
 
 (defn- posterior-mean [run]
-  (let [world (context/create-execution-context)
-        result (binding [ec/*execution-context* world]
-                 (deref (run) 60000 ::timed-out))]
+  (let [world (v2/world)
+        result (binding [v2/*world* world]
+                 (v2/value (run) 60000 ::timed-out))]
     (is (not= ::timed-out result) "inference finished")
     (when-not (= ::timed-out result)
       (:mean (infer/query result identity)))))
@@ -32,9 +30,9 @@
 (deftest sub-model-sites-belong-to-the-particle
   (random/set-seed! 7)
   (doseq [[label run]
-          [["importance sampling" #(infer/importance-sampling (model) 2000)]
-           ["SMC" #(infer/smc-infer (model) 2000)]
-           ["SMC in canonical worlds" #(infer/smc-infer (model) 500 {:world-policy :fork})]]]
+          [["importance sampling" #(infer/importance-sampling (fn [] (model)) 2000)]
+           ["SMC" #(infer/smc-infer (fn [] (model)) 2000)]
+           ["SMC in canonical worlds" #(infer/smc-infer (fn [] (model)) 500 {:world-policy :fork})]]]
     (testing label
       (let [mean (posterior-mean run)]
         (is (some? mean))

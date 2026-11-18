@@ -24,12 +24,13 @@
   being rejected, where the general path's block moves adapt scales in
   unconstrained coordinates. The chains are tasks of the run's executor."
   (:require [clojure.walk :as walk]
-            [org.replikativ.spindel.engine.executor :as sched]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
+            [org.replikativ.foerster.runtime.execution :as execution]
             [org.replikativ.foerster.analysis :as analysis]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.effects.savepoint :as sp]))
+            [org.replikativ.spindel.v2.savepoint :as sp]))
 
 (defn- symbolic-address? [a]
   (some symbol? (tree-seq coll? seq a)))
@@ -130,7 +131,7 @@
   CPS operation, an EmpiricalMeasure of the model's results with
   `:chain-lengths`; a sample's trace holds its latent values only."
   [{:keys [addresses log-density draw result]}
-   {:keys [iterations burn step-size chains seed executor] :or {burn 0 chains 4 step-size 0.1}}]
+   {:keys [iterations burn step-size chains seed executor] :or {burn 0 chains 4 step-size 0.1} :as opts}]
   (fn [resolve reject]
     (try
       (let [k (count addresses)
@@ -142,7 +143,10 @@
                       (loop [i 0 lp (double (log-density x)) out (transient [])]
                         (if (= i iterations)
                           (persistent! out)
-                          (let [j (int (* k (random/uniform01)))
+                          ;; no worlds to release: a cancelled inference
+                          ;; stops its chains here
+                          (let [_ (when (zero? (bit-and i 1023)) (lt/check! opts))
+                                j (int (* k (random/uniform01)))
                                 old (aget x j)
                                 _ (aset x j (+ old (* step-size (dist/draw (dist/normal 0.0 1.0)))))
                                 lp' (double (log-density x))
@@ -154,7 +158,7 @@
                                                   0.0])
                                       out)]
                             (recur (inc i) lp out))))))
-            own-executor (when-not executor (sched/thread-pool-executor {:threads 2}))
+            own-executor (when-not executor (java.util.concurrent.Executors/newFixedThreadPool 2))
             executor (or executor own-executor)
             results (object-array chains)
             failed (atom false)
@@ -163,7 +167,7 @@
             pending (atom (inc chains))
             done! (fn []
                     (when (zero? (swap! pending dec))
-                      (when own-executor (.close ^java.lang.AutoCloseable own-executor))
+                      (when own-executor (.shutdown ^java.util.concurrent.ExecutorService own-executor))
                       (when-not @failed
                         (let [chains (vec results)]
                           (resolve (assoc (m/markov-measure (into [] cat chains))
@@ -173,7 +177,7 @@
                     ;; yet started are skipped
                     (when (compare-and-set! failed false true) (reject t)))]
         (try
-          (sched/spread! executor chains
+          (execution/spread! executor chains
                          (fn [i]
                            (try
                              (when-not @failed

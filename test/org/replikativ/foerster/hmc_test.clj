@@ -2,7 +2,8 @@
   "HMC on block sites against analytic and quadrature posteriors, with
   pure-Clojure reference blocks (the oracles of the spindel ↔ raster block
   contract)."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :refer [run-infer weighted-values w-mean-sd]]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.moves.hmc :as hmc]
@@ -11,11 +12,9 @@
             [org.replikativ.foerster.moves.transition :as transition]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.effects :refer [sample observe]]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.savepoint :as sp]
+            [org.replikativ.spindel.v2.trace :as trace]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.dist :as dist]))
 
 ;; --- reference blocks --------------------------------------------------------
@@ -96,13 +95,13 @@
 ;; --- helpers -----------------------------------------------------------------
 
 (defn- block-model [b inputs init]
-  (fn [] (spin (sample (block/block-dist b inputs) :id :theta :init init))))
+  (fn [] (task (sample (block/block-dist b inputs) :id :theta :init init))))
 
 (defn- chain-moments
   "[[mean sd] per dimension] of an HMC chain's samples."
   [b inputs init {:keys [iterations step-size steps seed]}]
   (let [wv (weighted-values
-            (run-infer seed #(infer/kernel-infer ((block-model b inputs init))
+            (run-infer seed #(infer/kernel-infer (fn [] ((block-model b inputs init)))
                                                  (k/within-gibbs (k/hmc-kernel iterations {:step-size step-size :steps steps
                                                                                            :samples :all :burn 100}))
                                                  2 {})))
@@ -157,17 +156,16 @@
   ;; target was incomplete.
   (let [b (gaussian-block 2 false)
         {:keys [ys] :as inputs} gauss-inputs
-        root (ctx/create-execution-context)
+        root (v2/world)
         session (sp/open! root {:seed 11 :fork-opts {:systems :none}})
         flags (atom #{})
         samples (atom [])
         await-cps (fn [op] (let [p (promise)]
-                             (op #(deliver p [:ok %]) #(deliver p [:err %]))
+                             ((async/op-of op) #(deliver p [:ok %]) #(deliver p [:err %]))
                              (let [[k v] (deref p 60000 [:err (ex-info "timeout" {})])]
                                (if (= k :ok) v (throw v)))))]
     (try
-      (let [model (binding [ec/*execution-context* root]
-                    (spin (let [mu (sample (block/block-dist b inputs) :id :mu :init [0.0 0.0])]
+      (let [model (fn [] (task (let [mu (sample (block/block-dist b inputs) :id :mu :init [0.0 0.0])]
                             (loop [i 0]
                               (when (< i (count ys))
                                 (let [y (nth ys i)]
@@ -191,7 +189,7 @@
               (is (< (Math/abs (- sd s)) 0.05) (str "sd " sd " vs " s))))))
       (finally
         (await-cps (sp/close! session))
-        (ctx/stop-context! root)))))
+        (v2/release-world! root)))))
 
 ;; --- blocks under the particle methods ----------------------------------------
 
@@ -211,17 +209,17 @@
 
 (deftest particle-methods-weigh-block-draws-by-their-target
   (let [b (sampled-gaussian-block 1 true)
-        model (fn [] (spin (first (sample (block/block-dist b gauss-inputs) :id :mu))))
+        model (fn [] (task (first (sample (block/block-dist b gauss-inputs) :id :mu))))
         [[mean _]] (gauss-posterior gauss-inputs 1)]
-    (doseq [[label make] [["importance sampling" #(infer/importance-sampling (model) 4000)]
-                          ["SMC" #(infer/smc-infer (model) 4000)]]]
+    (doseq [[label make] [["importance sampling" #(infer/importance-sampling (fn [] (model)) 4000)]
+                          ["SMC" #(infer/smc-infer (fn [] (model)) 4000)]]]
       (testing label
         (let [m (first (w-mean-sd identity (weighted-values (run-infer 3 make))))]
           (is (< (Math/abs (- m mean)) 0.05) (str label ": " m " vs " mean))))))
   (testing "a block without :sample-log-density is refused, not mis-weighted"
     (let [b (sampled-gaussian-block 1 false)
-          model (fn [] (spin (first (sample (block/block-dist b gauss-inputs) :id :mu))))
-          outcome (try (run-infer 3 #(infer/importance-sampling (model) 10))
+          model (fn [] (task (first (sample (block/block-dist b gauss-inputs) :id :mu))))
+          outcome (try (run-infer 3 #(infer/importance-sampling (fn [] (model)) 10))
                        (catch Throwable e e))]
       (is (instance? Throwable outcome))
       (is (some #(= ::block/no-sample-density (:type (ex-data %)))
@@ -231,15 +229,14 @@
   ;; a block and one free latent: two moves a step, the free one (a prior
   ;; proposal with nothing observed) always accepted
   (let [b (gaussian-block 1 true)
-        root (ctx/create-execution-context)
+        root (v2/world)
         session (sp/open! root {:seed 12 :fork-opts {:systems :none}})
         await-cps (fn [op] (let [p (promise)]
-                             (op #(deliver p [:ok %]) #(deliver p [:err %]))
+                             ((async/op-of op) #(deliver p [:ok %]) #(deliver p [:err %]))
                              (let [[k v] (deref p 60000 [:err (ex-info "timeout" {})])]
                                (if (= k :ok) v (throw v)))))]
     (try
-      (let [model (binding [ec/*execution-context* root]
-                    (spin [(sample (block/block-dist b gauss-inputs) :id :mu :init [0.0])
+      (let [model (fn [] (task [(sample (block/block-dist b gauss-inputs) :id :mu :init [0.0])
                            (sample (dist/normal 0.0 1.0) :id :z)]))
             t0 (await-cps (trace/run session model (itrace/policy {:init? true}) {:anchor? itrace/anchor?}))
             {:keys [moves accepted]} (await-cps (itrace/mh-chain t0 20 {:step (hmc/within-gibbs {:step-size 0.1 :steps 8})}))]
@@ -247,7 +244,7 @@
         (is (< 20 accepted 41) (str accepted " of " moves)))
       (finally
         (await-cps (sp/close! session))
-        (ctx/stop-context! root)))))
+        (v2/release-world! root)))))
 
 (deftest a-replay-that-adds-a-site-keeps-the-chain-exact
   ;; x ~ N(0, 1) as a block; a site w ~ N(0, 0.1) exists only when x > 0.
@@ -256,11 +253,11 @@
   (let [b (block/block {:block/id :x :block/latents [{:name :x :shape [1]}]}
                        {:log-density (fn [^doubles x _] (* -0.5 (aget x 0) (aget x 0)))
                         :value+grad (fn [^doubles x _] [(* -0.5 (aget x 0) (aget x 0)) (double-array [(- (aget x 0))])])})
-        model #(spin (let [x (sample (block/block-dist b nil) :id :theta :init [0.5])]
+        model #(task (let [x (sample (block/block-dist b nil) :id :theta :init [0.5])]
                        (when (pos? (first x)) (sample (dist/normal 0.0 0.1) :id :w))
                        (first x)))
         wv (weighted-values
-            (run-infer 12 #(infer/kernel-infer (model) (k/within-gibbs (k/hmc-kernel 3000 {:step-size 0.5 :steps 4 :samples :all :burn 200})) 4 {})))
+            (run-infer 12 #(infer/kernel-infer (fn [] (model)) (k/within-gibbs (k/hmc-kernel 3000 {:step-size 0.5 :steps 4 :samples :all :burn 200})) 4 {})))
         p (reduce + (map (fn [[x w]] (if (pos? x) w 0.0)) wv))]
     (is (< (Math/abs (- p 0.5)) 0.04) (str "P(x > 0) " p))))
 
@@ -270,7 +267,7 @@
   "A Gaussian block :mu and a free latent z ~ N(0, 1) with 1 ~ N(z, 1):
   z | y ~ N(0.5, 1/2)."
   [b]
-  (fn [] (spin (let [mu (sample (block/block-dist b gauss-inputs) :id :mu :init [0.0 0.0])
+  (fn [] (task (let [mu (sample (block/block-dist b gauss-inputs) :id :mu :init [0.0 0.0])
                      z (sample (dist/normal 0.0 1.0) :id :z)]
                  (observe (dist/normal z 1.0) 1.0 :id :y)
                  [mu z]))))
@@ -287,12 +284,12 @@
   (let [b (gaussian-block 2 true)
         hmc (k/hmc-kernel 1 {:step-size 0.1 :steps 8})]
     (testing "a latent site no part of the kernel moves is refused, by name"
-      (is (= [:z] (uncovered-sites #(run-infer 31 (fn [] (infer/kernel-infer ((mixed-model b)) (k/hmc-kernel 50) 2))))))
-      (is (= [:mu] (uncovered-sites #(run-infer 31 (fn [] (infer/kernel-infer ((mixed-model b))
+      (is (= [:z] (uncovered-sites #(run-infer 31 (fn [] (infer/kernel-infer (fn [] ((mixed-model b))) (k/hmc-kernel 50) 2))))))
+      (is (= [:mu] (uncovered-sites #(run-infer 31 (fn [] (infer/kernel-infer (fn [] ((mixed-model b)))
                                                                               (k/single-site-mh-kernel 50 {:only #{:z}}) 2)))))))
     (testing "a cycle with a kernel for the other sites, restricted by :only"
       (let [wv (weighted-values
-                (run-infer 32 #(infer/kernel-infer ((mixed-model b))
+                (run-infer 32 #(infer/kernel-infer (fn [] ((mixed-model b)))
                                                    (k/cycle 1500 [hmc (k/single-site-mh-kernel 1 {:only #{:z}})]
                                                             {:samples :all :burn 200})
                                                    2)))
@@ -300,4 +297,4 @@
         (is (< (Math/abs (- (reduce + (map (fn [[v w]] (* w (second v))) wv)) 0.5)) 0.12) "z")
         (is (< (Math/abs (- (reduce + (map (fn [[v w]] (* w (nth (first v) 0))) wv)) mu0)) 0.1) "mu")))
     (testing "within-gibbs moves the other sites itself"
-      (is (nil? (uncovered-sites #(run-infer 33 (fn [] (infer/kernel-infer ((mixed-model b)) (k/within-gibbs (k/hmc-kernel 20)) 2)))))))))
+      (is (nil? (uncovered-sites #(run-infer 33 (fn [] (infer/kernel-infer (fn [] ((mixed-model b))) (k/within-gibbs (k/hmc-kernel 20)) 2)))))))))

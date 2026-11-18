@@ -3,11 +3,13 @@
   the sweep's responsibility; normalization, retention and accept/reject live
   here, shared by savepoint and canonical-world drivers."
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.foerster.measure :as m]
+  (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.effects.await :refer [await]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
+            ))
 
 (defn normalized
   "Normalize a settled sweep for pooling (`weights/from-log`'s normalized log
@@ -34,15 +36,15 @@
   [sweep iterations {:keys [seed accept-key first-iteration]
                      :or {accept-key ::accept first-iteration 0}}]
   (iterations! iterations)
-  (spin
+  (pcps/async
    (let [seed (or seed (random/fresh-seed))
-         initial (await (sweep :initial nil seed))]
+         initial (pcps/await (async/op-of (sweep :initial nil seed)))]
      (loop [current (normalized initial) log-z (m/log-marginal initial)
             i 0 samples []]
        (if (= i iterations)
          (m/markov-measure samples)
          (let [key (+ first-iteration i)
-               proposed (await (sweep key nil seed))
+               proposed (pcps/await (async/op-of (sweep key nil seed)))
                log-z' (m/log-marginal proposed)
                ratio (- log-z' log-z)
                u (random/with-stream* seed [accept-key key] random/uniform01)
@@ -63,14 +65,14 @@
   [sweep iterations {:keys [seed pick-key initial-pick first-iteration pick-offset]
                      :or {pick-key ::pick initial-pick :initial first-iteration 0 pick-offset 0}}]
   (iterations! iterations)
-  (spin
+  (pcps/async
    (let [seed (or seed (random/fresh-seed))
          pick #(pick-retained %1 seed pick-key %2)
-         initial (await (sweep :initial nil seed))]
+         initial (pcps/await (async/op-of (sweep :initial nil seed)))]
      (loop [retained (pick initial initial-pick) i 0 samples []]
        (if (= i iterations)
          (m/markov-measure samples)
          (let [key (+ first-iteration i)
-               measure (await (sweep key retained seed))]
+               measure (pcps/await (async/op-of (sweep key retained seed)))]
            (recur (pick measure (+ key pick-offset)) (inc i)
                   (into samples (normalized measure)))))))))

@@ -2,25 +2,24 @@
   "Involutive MCMC against conjugate posteriors: a random walk written as an
   involution, and a scale move whose Jacobian matters — without it the chain
   settles on the wrong posterior."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.moves.involutive :as inv]
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.effects :refer [sample observe]]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.random :as random]))
 
 (defn- await-cps [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [outcome (deref result 20000 ::timeout)]
       (when (= ::timeout outcome)
         (throw (ex-info "CPS operation timed out" {})))
       (if (= :ok (first outcome)) (second outcome) (throw (second outcome))))))
 
-(def ^:private root (context/create-execution-context))
+(def ^:private root (v2/world))
 
 (defn- chain
   "Run `n` moves from a simulated trace of `model`; the values of site `a`
@@ -39,8 +38,7 @@
 (deftest a-random-walk-is-an-involution
   ;; x ~ N(0,1), 2 ~ N(x,1)  =>  x | y ~ N(1, 1/2).  (x, u) -> (x+u, -u).
   (random/set-seed! 4)
-  (let [model (binding [ec/*execution-context* root]
-                (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+  (let [model (fn [] (task (let [x (sample (dist/normal 0.0 1.0) :id :x)]
                         (observe (dist/normal x 1.0) 2.0 :id :y)
                         x)))
         q (dist/normal 0.0 0.8)
@@ -53,10 +51,9 @@
 
 (defn- gamma-poisson []
   ;; λ ~ Gamma(2, 1), 5 ~ Poisson(λ)  =>  λ | y ~ Gamma(7, 2): mean 3.5
-  (binding [ec/*execution-context* root]
-    (spin (let [l (sample (dist/gamma 2.0 1.0) :id :l)]
+  (task (let [l (sample (dist/gamma 2.0 1.0) :id :l)]
             (observe (dist/poisson l) 5 :id :y)
-            l))))
+            l)))
 
 (defn- scale-move
   "(λ, s) -> (λ·s, 1/s), log s ~ U(-1, 1): q(s) = 1/(2s) on [e⁻¹, e].
@@ -71,11 +68,11 @@
 
 (deftest a-scale-move-needs-its-jacobian
   (random/set-seed! 6)
-  (let [[mu] (mean-var (chain (gamma-poisson) (scale-move true) 4000 500 :l))]
+  (let [[mu] (mean-var (chain gamma-poisson (scale-move true) 4000 500 :l))]
     (is (< (Math/abs (- mu 3.5)) 0.25) (str "with the Jacobian: mean " mu)))
   (testing "leaving it out targets another law"
     (random/set-seed! 6)
-    (let [[mu] (mean-var (chain (gamma-poisson) (scale-move false) 4000 500 :l))]
+    (let [[mu] (mean-var (chain gamma-poisson (scale-move false) 4000 500 :l))]
       (is (> (Math/abs (- mu 3.5)) 0.3) (str "without: mean " mu)))))
 
 (deftest the-numerical-jacobian-of-the-scale-move

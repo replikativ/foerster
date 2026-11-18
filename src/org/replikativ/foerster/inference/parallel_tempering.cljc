@@ -18,6 +18,7 @@
   log evidence (q normalized) is the stepping-stone estimate
   Σ_i log mean exp((β_{i+1} − β_i)·V) over chain i's states."
   (:require [org.replikativ.foerster.runtime.scope :as scope]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.moves.block-mh :as block-mh]
             [org.replikativ.foerster.dist :as dist]
@@ -26,7 +27,7 @@
             [org.replikativ.foerster.population.theta :as pop]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.spindel.effects.savepoint :as sp]))
+            [org.replikativ.spindel.v2.savepoint :as sp]))
 
 (def ^:private target-acceptance 0.234)
 
@@ -179,7 +180,7 @@
   estimate, which `m/log-marginal` returns; `:temperatures`, `:barrier` Λ, `:local-barrier`
   [[β r] …], `:round-trips` and `:swap-acceptance` diagnose the run."
   [model & [{:keys [chains steps executor seed canonical-source world-opts] n-rounds :rounds
-             :or {chains 10 n-rounds 10}}]]
+             :or {chains 10 n-rounds 10} :as opts}]]
   (when-not (and (int? chains) (>= chains 2))
     (throw (ex-info ":chains is at least 2" {:type ::invalid-chains :chains chains})))
   (when-not (pos-int? n-rounds)
@@ -191,7 +192,7 @@
      (fn [resolve reject]
        (let [seed (or seed (random/fresh-seed))
              {:keys [operation]} (gfi/run-policy* model (itrace/policy {:temperature 0.0})
-                                                  (cond-> {:inference-scope resources :seed (sp/derive-seed seed ::run 0)}
+                                                  (cond-> (lt/carry {:inference-scope resources :seed (sp/derive-seed seed ::run 0)} opts)
                                                     executor (assoc :executor executor)
                                                     canonical-source (assoc :canonical-source canonical-source
                                                                             :world-opts world-opts)))]

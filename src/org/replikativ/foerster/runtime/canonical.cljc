@@ -3,67 +3,41 @@
   :fork`): one frozen fork of the caller's world per inference, from which
   every run (a particle-MCMC sweep, an IPMCMC node, a BBVI iteration, a
   Markov chain, a tempered-SMC particle, an inference program) forks a world
-  and scope of its own; the scope's cleanup, its recovery capability, and
-  the wallet arithmetic of `:authority`. See doc/worlds.md."
-  (:refer-clojure :exclude [await])
-  (:require [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.world.scope :as world-scope]
-            [org.replikativ.spindel.engine.core :as rtc]
-            [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.effects.await :refer [await await-finalization]]))
+  of its own. See doc/worlds.md.
 
-(defn close-canonical!
-  "CPS: give up the inference's `lease` on `scope`, then close the session in
-  `root` (cancelling and joining its worlds, discarding the scope) — or,
-  with no session, discard the scope once quiescent, a root fork still in
-  flight included. Idempotent."
-  [scope lease root]
-  (fn [resolve reject]
-    (world-scope/end-activity! scope lease)
-    (if-let [session (some-> root sp/session)]
-      ((sp/close! session) resolve reject)
-      ((world-scope/discard-when-quiescent! scope) resolve reject))))
+  Engine v2: the frozen fork is a host fork of the caller's world (`v2/fork!`),
+  released when the inference ends. Resource authority and grants (wallets,
+  budget splitting) are not available on engine v2 yet: `:authority` and
+  `:grant` are refused."
+  (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
+            [org.replikativ.foerster.runtime.trace :as itrace]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])
+  #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :refer [task]]
+                            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])))
 
-(defn canonical-recovery
-  "What a host needs when a canonical inference failed: the worlds'
-  descriptors and the operations that finish their cleanup, should the
-  automatic one have failed. Process-local."
-  [scope lease root]
-  {:status (:status @scope)
-   :manager scope
-   :await-quiescent (world-scope/await-quiescence scope)
-   :cancel! #(world-scope/request-cancel! scope)
-   :discard! #(close-canonical! scope lease root)
-   :descriptors (world-scope/descriptors scope)})
-
-(defn fork-scope-options
-  "The world-scope options of a canonical inference's worlds."
-  [opts purpose]
-  {:purpose purpose
-   :authority (:authority opts)
-   :fork-opts (cond-> (or (:world-opts opts) {})
-                (:executor opts) (assoc :executor (:executor opts)))})
+(defn- no-authority! [opts]
+  (when (or (:authority opts) (:grant opts))
+    (throw (ex-info ":authority and :grant are not available on engine v2 yet"
+                    {:type ::unsupported-authority}))))
 
 (defn share
   "One of `k` even shares of the wallet `resources`: integer amounts rounded
-  down, as `world.scope/copy!` splits a world's budget."
+  down."
   [resources k]
   (when resources
     (into {} (map (fn [[r amount]] [r (if (integer? amount) (quot amount k) (/ amount k))]))
           resources)))
 
 (defn balance-op
-  "CPS: what is left in `world`'s wallet under `authority`, resolved in the
-  caller's world."
-  [authority world]
+  "CPS: what is left in the wallet under `authority`; nil without one (the
+  only case on engine v2)."
+  [authority _world]
   (fn [resolve reject]
-    (let [[resolve reject] (sp/in-callers-world resolve reject)]
-      (try
-        (let [left (world-scope/balance authority world)]
-          (if (or (nil? left) (map? left)) (resolve left) (left resolve reject)))
-        (catch #?(:clj Throwable :cljs :default) e (reject e))))))
+    (if authority
+      (reject (ex-info ":authority is not available on engine v2 yet" {:type ::unsupported-authority}))
+      (resolve nil))))
 
 (defn frozen-source
   "The frozen fork of the caller's world a multi-run inference runs every
@@ -72,56 +46,41 @@
   (:org.replikativ.foerster.core/source opts))
 
 (defn with-frozen-caller
-  "Under `:world-policy :fork`, `(body opts')` with `opts'` naming one frozen
-  fork of the caller's world, made once for the whole inference: every run
-  of a method that runs several (a particle-MCMC sweep, a BBVI iteration, an
-  IPMCMC node, a Markov chain) forks its own world from it, so all of them
-  see the caller's state as it was when inference started, whatever the
-  caller does meanwhile, and the inference draws `:grant` from the caller's
-  wallet once. The fork is owned by a scope of its own, discarded (its
-  wallet given back) after `body` ends, however it ends. `body` returns a
-  spin. Under `:fresh`, or inside such an inference already, `(body opts)`."
+  "The entry of every public inference method: `(body opts')`, run when the
+  operation starts, with `opts'` naming the inference's lifetime
+  (`foerster.runtime.lifetime`): cancelling the task awaiting the
+  operation releases every root world the inference created, and the
+  lifetime is finished when `body` ends, however it ends.
+
+  Under `:world-policy :fork`, `opts'` also names one frozen fork of the
+  caller's world, made once for the whole inference: every run forks its
+  own world from it, so all of them see the caller's state as it was when
+  inference started, whatever the caller does meanwhile. The fork is
+  released after `body` ends. The caller's world is the current one when
+  this is called, possibly inside a body; it is forked when the operation
+  starts, as host code (engine v2 forks a world between slices).
+
+  Inside an inference already (`opts` name a lifetime), `(body opts)`:
+  the methods a driver runs share its lifetime and frozen fork. `body`
+  returns a v2 handle or a CPS operation; this returns a CPS operation."
   [opts body]
-  (if (or (not= :fork (:world-policy opts :fresh)) (frozen-source opts))
+  (no-authority! opts)
+  (if (lt/of opts)
     (body opts)
-    (spin-core/with-causal-descendant-egress
-      (spin
-       (let [caller rtc/*execution-context*
-             scope (world-scope/create (fork-scope-options opts :inference))
-             lease (world-scope/begin-activity! scope :inference)
-             source (volatile! nil)]
+    (let [caller (v2/current-world)
+          fork? (and (= :fork (:world-policy opts :fresh)) (not (frozen-source opts)))]
+      (pcps/async
+       (let [l (lt/create)
+             _ (async/on-cancel! #(lt/cancel! l))
+             opts (lt/with opts l)
+             source (when fork? (lt/fork opts caller))]
+         (when source (itrace/mark-canonical! source))
          (try
-           (vreset! source (:child-ctx (await (fn [resolve reject]
-                                                (let [[resolve reject] (sp/in-callers-world resolve reject)]
-                                                  (world-scope/fork! scope caller {:grant (:grant opts)}
-                                                                     resolve reject))))))
-           ;; The runs fork the source; a plain fork does not check the
-           ;; grades of the world's systems, a copy does (JVM). So a probe,
-           ;; a fork of the source copied once, in a scope of its own
-           ;; without authority (it spends nothing) and discarded at once,
-           ;; refuses a world holding a system that may not be copied
-           ;; before any model runs, as for SMC's particles.
-           #?(:clj (let [probes (world-scope/create (dissoc (fork-scope-options opts :inference) :authority))
-                         in-caller (fn [operation]
-                                     (fn [resolve reject]
-                                       (let [[resolve reject] (sp/in-callers-world resolve reject)]
-                                         (operation resolve reject))))]
-                     (try
-                       (let [probe (:child-ctx (await (in-caller #(world-scope/fork! probes @source nil %1 %2))))]
-                         (await (in-caller #(world-scope/copy! probes probe 1 %1 %2))))
-                       (finally
-                         (await-finalization (in-caller (world-scope/discard-when-quiescent! probes)))))))
-           (itrace/mark-canonical! @source)
-           (await (body (assoc opts :org.replikativ.foerster.core/source @source)))
-           (catch #?(:clj Throwable :cljs :default) e
-             (throw (if (#{spin-core/spin-cancelled :org.replikativ.foerster.core/inference-failed} (:type (ex-data e)))
-                      e
-                      (ex-info "Inference failed during particle execution"
-                               {:type :org.replikativ.foerster.core/inference-failed
-                                :world/recovery (canonical-recovery scope lease nil)}
-                               e))))
+           (pcps/await (async/op-of (body (cond-> opts
+                                            source (assoc :org.replikativ.foerster.core/source source)))))
            (finally
-             (await-finalization (close-canonical! scope lease nil)))))))))
+             (lt/finish! l)
+             (when source (v2/release-world! source)))))))))
 
 (defn run-options
   "`opts` for a driver whose runs are `foerster.runtime.gfi` runs: inside

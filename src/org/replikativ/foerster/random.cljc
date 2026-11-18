@@ -25,10 +25,9 @@
   numbers on the JVM and in JavaScript."
   (:require #?(:cljs [clojure.string :as str])
             [clojure.walk :as walk]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.engine.core :as rtc]
-            [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.engine.hash :as h]))
+            [org.replikativ.spindel.v2.core :as v2]
+            [org.replikativ.spindel.v2.savepoint :as sp]
+            [hasch.fast :as hf]))
 
 ;; -----------------------------------------------------------------------------
 ;; xoshiro128** (Blackman & Vigna) on unsigned 32-bit words
@@ -83,7 +82,7 @@
 (defn- state-of
   "A generator state from any value: its content hash, as four words."
   [x]
-  (let [uuid (h/content-hash [::stream (canonical x)])
+  (let [uuid (hf/sha256-uuid [::stream (canonical x)])
         words #?(:clj (let [hi (.getMostSignificantBits ^java.util.UUID uuid)
                             lo (.getLeastSignificantBits ^java.util.UUID uuid)]
                         [(u32 (unsigned-bit-shift-right hi 32)) (u32 hi)
@@ -135,15 +134,15 @@
   fork carries its parent's entry until it draws: a seed of its own makes a
   new generator."
   []
-  (when-let [world rtc/*execution-context*]
+  (when-let [world (v2/current-world)]
     (when-let [seed (sp/seed world)]
-      (let [{s :seed g :generator} (rtp/get-state world [:random/free])]
+      (let [{s :seed g :generator} (v2/get-in-world world [:random/free])]
         (if (= s seed)
           g
-          (do (rtp/swap-state! world [:random/free]
+          (do (v2/update-in-world! world [:random/free]
                                (fn [{s :seed :as cur}]
                                  (if (= s seed) cur {:seed seed :generator (generator [seed ::free])})))
-              (:generator (rtp/get-state world [:random/free]))))))))
+              (:generator (v2/get-in-world world [:random/free]))))))))
 
 (defn current
   "The generator draws come from now: the keyed stream bound, else the

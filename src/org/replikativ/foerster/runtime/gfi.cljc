@@ -12,9 +12,9 @@
     regenerate(t, s)  w = log p(t')/p(t) + log q(t | t')/q(t' | t)
 
   so importance sampling is `generate`, and MH with a selection is
-  `regenerate` accepted on its weight. A model is a spin whose sample sites
-  are named with `:id` (or addressed structurally, see `addressing/site-address!`);
-  constraints are keyed by those addresses.
+  `regenerate` accepted on its weight. A model is a function creating a task
+  (`(fn [] (task …))`) whose sample sites are named with `:id` (or addressed
+  structurally, `[frame key]`); constraints are keyed by those addresses.
 
   Every operation returns a CPS operation `(fn [resolve reject])`.
   `simulate`, `generate` and `assess` run in a root world and savepoint session
@@ -25,15 +25,11 @@
   the other back with `spindel.trace/release!`."
   (:refer-clojure :exclude [update await])
   (:require [org.replikativ.foerster.runtime.scope :as scope]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.world.scope :as world-scope]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.spindel.select :as sel]
-            [org.replikativ.spindel.trace :as trace]
+            [org.replikativ.spindel.v2.trace :as trace]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.random :as random]))
 
@@ -59,56 +55,24 @@
 
 (defn- canonical-run*
   "`run*` in a fork of `source`, a frozen fork of the caller's world
-  (`:world-policy :fork`): the run's root is forked from it into a world
-  scope of its own (`:world-opts`, `:executor`), which its session joins and
-  closing it discards. The model runs whole, from a start site its moves can
-  re-execute it from (`itrace/canonical-anchor?`). The session exists once
-  the fork resolves: `:session` is nil, and the run is released through
-  `:inference-scope`, or by closing the trace's session."
-  [model policy source {:keys [executor inference-scope world-opts] :as opts}]
-  (let [scope (world-scope/create {:purpose :gfi :retain-released? false
-                                   :fork-opts (cond-> (or world-opts {})
-                                                executor (assoc :executor executor))})
-        state (atom {:session nil :released? false})
-        release (fn [_]
-                  (fn [resolve reject]
-                    (let [{:keys [session]} (swap! state assoc :released? true)]
-                      (if session
-                        ((sp/close! session) resolve reject)
-                        ((world-scope/discard-when-quiescent! scope) resolve reject)))))
-        session-opts (merge {:purpose :gfi :seed (random/fresh-seed)}
-                            (dissoc opts :executor :inference-scope :world-opts :canonical-source
-                                    :fork-opts :retain-released?)
-                            {:scope scope})]
-    (when inference-scope
-      (scope/acquire! inference-scope (constantly state) release))
-    {:session nil
-     :operation
-     (fn [resolve reject]
-       (let [[resolve reject] (sp/in-callers-world resolve reject)
-             give-up (fn [error]
-                       ((world-scope/discard-when-quiescent! scope)
-                        (fn [_] (reject error)) (fn [_] (reject error))))]
-         (world-scope/fork!
-          scope source nil
-          (fn [{root :child-ctx}]
-            (if (:released? @state)
-              (give-up (ex-info "The run was released before it started" {:type ::released}))
-              (try
-                (itrace/mark-canonical! root)
-                (let [session (sp/open! root session-opts)
-                      after (swap! state #(if (:released? %) % (assoc % :session session)))]
-                  (if (:released? after)
-                    ((sp/close! session)
-                     (fn [_] (reject (ex-info "The run was released before it started" {:type ::released})))
-                     reject)
-                    (deliver-run session
-                                 (binding [ec/*execution-context* root]
-                                   (spin (sp/savepoint :org.replikativ.foerster.inference.smc/start nil)
-                                         (await model)))
-                                 policy itrace/canonical-anchor? resolve reject)))
-                (catch #?(:clj Throwable :cljs :default) error (give-up error)))))
-          give-up)))}))
+  (`:world-policy :fork`): the run's root is a host fork of it. The model
+  runs whole, from a start site its moves can re-execute it from
+  (`itrace/canonical-anchor?`)."
+  [model policy source {:keys [inference-scope] :as opts}]
+  (let [root (lt/fork opts source)
+        _ (itrace/mark-canonical! root)
+        allocate #(sp/open! root (merge {:seed (random/fresh-seed)}
+                                        (dissoc opts :executor :inference-scope :world-opts :canonical-source
+                                                :fork-opts :retain-released? :purpose)))
+        session (if inference-scope
+                  (scope/acquire! inference-scope allocate sp/close!)
+                  (allocate))]
+    {:session session
+     :operation (fn [resolve reject]
+                  (deliver-run session
+                               (fn [] (task (sp/savepoint :org.replikativ.foerster.inference.smc/start nil)
+                                            (v2/await (model))))
+                               policy itrace/canonical-anchor? resolve reject))}))
 
 (declare run-fresh*)
 
@@ -127,14 +91,9 @@
 
 (defn- run-fresh*
   [model policy {:keys [executor inference-scope] :as opts}]
-  (let [root (if executor
-               (ctx/create-execution-context :executor executor)
-               (ctx/create-execution-context))
-        allocate #(sp/open! root (merge {:purpose :gfi
-                                         :seed (random/fresh-seed)
-                                         :fork-opts {:systems :none}
-                                         :retain-released? false}
-                                        (dissoc opts :executor :inference-scope)))
+  (let [root (lt/world opts (when executor {:executor executor}))
+        allocate #(sp/open! root (merge {:seed (random/fresh-seed)}
+                                        (dissoc opts :executor :inference-scope :purpose :fork-opts :retain-released?)))
         session (if inference-scope
                   (scope/acquire! inference-scope allocate sp/close!)
                   (allocate))]
@@ -216,7 +175,7 @@
                reject)))
 
 (defn simulate
-  "Run `model` (a spin) drawing every sample site from its prior. Resolves the
+  "Run `model` (a function creating a task) drawing every sample site from its prior. Resolves the
   trace. Options as for `run`: `:executor` and session options."
   ([model] (simulate model nil))
   ([model opts]
@@ -398,7 +357,7 @@
 (defn mh-proposal
   "One Metropolis-Hastings move with a custom proposal: `proposal` is a
   function `(fn [choices & args])` of the current choices ({address value})
-  returning a spin whose sample sites are named by the MODEL addresses they
+  returning a model (a function creating a task) whose sample sites are named by the MODEL addresses they
   propose — any number of them jointly, correlated as the proposal program
   likes (Gen's `metropolis_hastings(trace, proposal, args)`).
 
@@ -414,7 +373,7 @@
   [trace proposal & args]
   (fn [resolve reject]
     (let [world (:trace/world trace)
-          move (rtp/swap-state! world [:inference ::proposals] (fnil inc 0))
+          move (get-in (v2/update-in-world! world [:inference ::proposals] (fnil inc 0)) [:inference ::proposals])
           seed-of (fn [role] (sp/derive-seed (sp/seed world) ::proposal [move role]))]
       ((simulate (apply proposal (itrace/choices trace) args) {:seed (seed-of :forward)})
        (fn [fwd]

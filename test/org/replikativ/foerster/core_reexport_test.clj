@@ -1,19 +1,19 @@
 (ns org.replikativ.foerster.core-reexport-test
-  "The modelling primitives work when required from foerster.core and spin
-  from spindel.core, the one-namespace-per-library form the docs show."
+  "The modelling primitives work when required from foerster.core and task
+  from spindel's v2 core, the one-namespace-per-library form the docs show."
   (:require [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.core :as infer :refer [sample observe factor]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
-            [org.replikativ.spindel.core :as sp]))
+            [org.replikativ.spindel.v2.core :refer [task]]))
 
 (defn- dice
   "Two dice, a hard constraint (the sum is 7) and a soft one (a noisy reading
   of 7): the first die's posterior is uniform over 1..6."
   []
-  (sp/spin
+  (task
    (let [a (sample (dist/uniform-discrete 1 7) :id :a)
          b (sample (dist/uniform-discrete 1 7) :id :b)]
      (factor (if (= 7 (+ a b)) 0.0 ##-Inf))
@@ -21,7 +21,7 @@
      a)))
 
 (deftest re-exported-effects-are-effects
-  (let [measure (b/run-infer 5 #(infer/infer (dice) {:method :enumerate}))
+  (let [measure (b/run-infer 5 #(infer/infer (fn [] (dice)) {:method :enumerate}))
         ps (filter (comp #(> % ##-Inf) second) (m/get-particles measure))
         ws (weights/normalize-log-weights (mapv second ps))
         mean (reduce + (map (fn [[p _] w] (* w (m/get-value p))) ps ws))]

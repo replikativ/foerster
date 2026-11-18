@@ -2,8 +2,9 @@
   "A seeded run draws the same numbers however its particles and chains are
   scheduled: every draw made in a world reads a stream keyed by the world's
   seed and what is drawn."
-  (:require [clojure.string :as str]
-            [org.replikativ.spindel.engine.hash :as hash]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.string :as str]
+            [hasch.fast :as hf]
             [clojure.walk :as walk]
             [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.benchmark-test :refer [run-infer weighted-values]]
@@ -12,17 +13,15 @@
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.moves.involutive :as inv]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.effects :refer [sample observe]]
-            [org.replikativ.spindel.engine.executor :as executor]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.foerster.runtime.execution :as executor]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.dist :as dist]))
 
 (defn- model []
-  (spin
+  (task
    (let [x (sample (dist/normal 0 1))]
      (observe (dist/normal x 1) 2.0)
      (let [z (sample (dist/normal 0 1))]
@@ -65,7 +64,7 @@
       (finally (.close ^java.lang.AutoCloseable exec)))))
 
 (deftest parallel-chains-are-reproducible
-  (let [make (fn [exec] (infer/kernel-infer (model)
+  (let [make (fn [exec] (infer/kernel-infer (fn [] (model))
                                             (k/random-walk-mh-kernel 300 {:step-size 0.5 :samples :all :burn 50})
                                             4 {:executor exec}))
         [a b c] (runs 3 13 make)]
@@ -74,7 +73,7 @@
 
 (deftest a-seed-option-seeds-the-chains
   ;; :seed, not the process generator: the process seed (run-infer's) varies
-  (let [make (fn [seed] (fn [exec] (infer/kernel-infer (model)
+  (let [make (fn [seed] (fn [exec] (infer/kernel-infer (fn [] (model))
                                                        (k/random-walk-mh-kernel 200 {:step-size 0.5 :samples :all :burn 50})
                                                        3 {:executor exec :seed seed})))
         a (first (runs 1 13 (make 5)))
@@ -83,7 +82,7 @@
     (is (not= a (first (runs 1 13 (make 6)))))))
 
 (deftest parallel-particles-are-reproducible
-  (let [make (fn [exec] (smc/smc (model) 200 {:executor exec}))
+  (let [make (fn [exec] (smc/smc (fn [] (model)) 200 {:executor exec}))
         [a b c] (runs 3 21 make)]
     (is (= a b c))
     (is (not= a (first (runs 1 22 make))))))
@@ -91,12 +90,12 @@
 (deftest parallel-ipmcmc-is-reproducible
   ;; its nodes are SMC runs in parallel: each has its own seed and draws its
   ;; resampling from its own streams
-  (let [make (fn [exec] (infer/ipmcmc-infer (model) 20 6 {:num-nodes 4 :executor exec}))
+  (let [make (fn [exec] (infer/ipmcmc-infer (fn [] (model)) 20 6 {:num-nodes 4 :executor exec}))
         [a b c] (runs 3 41 make)]
     (is (= a b c))))
 
 (deftest parallel-pimh-is-reproducible
-  (let [make (fn [exec] (smc/pimh (model) 20 10 {:executor exec}))
+  (let [make (fn [exec] (smc/pimh (fn [] (model)) 20 10 {:executor exec}))
         [a b] (runs 2 31 make)]
     (is (= a b))))
 
@@ -106,12 +105,12 @@
 
 (defn- await-cps [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [[tag v] (deref result 20000 [:error (ex-info "timed out" {})])]
       (if (= :ok tag) v (throw v)))))
 
 (defn- named-model []
-  (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+  (task (let [x (sample (dist/normal 0.0 1.0) :id :x)]
           (observe (dist/normal x 1.0) 2.0 :id :y)
           x)))
 
@@ -120,8 +119,8 @@
   `seed`; with `interleave?` a process draw precedes every move."
   [seed n step interleave?]
   (random/set-seed! seed)
-  (let [root (context/create-execution-context)
-        model (binding [ec/*execution-context* root] (named-model))]
+  (let [root (v2/world)
+        model named-model]
     (loop [t (await-cps (gfi/simulate model)) i 0 xs []]
       (if (= i n)
         (do (await-cps (gfi/close! t)) xs)
@@ -146,9 +145,8 @@
 (deftest abduction-draws-from-the-factual-world
   (let [noise (fn [interleave?]
                 (random/set-seed! 9)
-                (let [root (context/create-execution-context)
-                      model (binding [ec/*execution-context* root]
-                              (spin (sample (dist/flip 0.3) :id :c)))
+                (let [root (v2/world)
+                      model (fn [] (task (sample (dist/flip 0.3) :id :c)))
                       t (await-cps (gfi/simulate model))]
                   (when interleave? (random/uniform01))
                   (let [[n] (cf/noise-of t)]
@@ -164,7 +162,7 @@
                                (str (long v)) v))
                      seed)
           _ (is (= canonical (#'org.replikativ.foerster.random/canonical seed)))
-          uuid (hash/content-hash
+          uuid (hf/sha256-uuid
                 [:org.replikativ.foerster.random/stream
                  canonical])
           hex (str/replace (str uuid) "-" "")

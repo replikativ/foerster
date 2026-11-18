@@ -10,7 +10,7 @@
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.effects :refer [sample]]
             [org.replikativ.foerster.measure :as m]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (def ^:private golf
   {:x [2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20]
@@ -47,11 +47,11 @@
   {:sample (fn [_] [(dist/draw (dist/normal 0.0 1.0)) (dist/draw (dist/normal 0.0 1.0))])
    :sample-log-density (fn [th _] (let [[a b] (vec th)] (prior-lp a b)))})
 
-(defn- model [blk] (spin (let [[a b] (sample (block/block-dist blk golf) :id :theta :init [0.0 0.0])]
+(defn- model [blk] (task (let [[a b] (sample (block/block-dist blk golf) :id :theta :init [0.0 0.0])]
                            {:a a :b b})))
 
 (deftest random-walk-mh-moves-a-block-on-its-own-density
-  (let [measure (b/run-infer 7 #(infer/infer (model (golf-block prior-sampled))
+  (let [measure (b/run-infer 7 #(infer/infer (fn [] (model (golf-block prior-sampled)))
                                              {:method :rmh :iterations 3000 :burn 1000 :chains 4
                                               :step-size 0.02}))
         a (d/summary measure :a)]
@@ -60,7 +60,7 @@
     (is (< (Math/abs (- (:mean (d/summary measure :b)) (:b exact))) 0.005))))
 
 (deftest tempered-smc-tempers-a-block-from-its-draws-to-its-target
-  (let [measure (b/run-infer 11 #(infer/infer (model (golf-block prior-sampled))
+  (let [measure (b/run-infer 11 #(infer/infer (fn [] (model (golf-block prior-sampled)))
                                               {:method :tempered :particles 2000}))]
     (testing "the evidence of the block's target"
       (is (< (Math/abs (- (m/log-marginal measure) (:log-evidence exact))) 0.5)
@@ -69,7 +69,7 @@
       (is (< (Math/abs (- (:mean (d/summary measure :a)) (:a exact))) (* 0.25 (:a-sd exact)))))))
 
 (deftest a-block-without-a-draw-density-cannot-be-tempered
-  (let [error (try (b/run-infer 3 #(infer/infer (model (golf-block (dissoc prior-sampled :sample-log-density)))
+  (let [error (try (b/run-infer 3 #(infer/infer (fn [] (model (golf-block (dissoc prior-sampled :sample-log-density))))
                                                 {:method :tempered :particles 20}))
                    nil
                    (catch Exception e e))]
@@ -87,9 +87,9 @@
                                                                     [(* -0.5 d d) (double-array [(- d)])]))}))
         a-block (gaussian :a (constantly 0.0))
         b-block (gaussian :b :a)
-        model #(spin (let [[a] (sample (block/block-dist a-block nil) :id :a :init [0.0])]
+        model #(task (let [[a] (sample (block/block-dist a-block nil) :id :a :init [0.0])]
                        (sample (block/block-dist b-block {:a a}) :id :b :init [0.0])))
-        e (try (b/run-infer 61 #(infer/infer (model) {:method :rmh :iterations 5 :chains 1}))
+        e (try (b/run-infer 61 #(infer/infer (fn [] (model)) {:method :rmh :iterations 5 :chains 1}))
                nil
                (catch Exception e
                  (loop [e e] (cond (nil? e) nil

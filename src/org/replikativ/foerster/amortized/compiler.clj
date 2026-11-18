@@ -4,7 +4,8 @@
   connectivity, not discovered causal edges. Fixed instances only; general
   simulator-boundary tasks remain available for opaque/dynamic internals."
   (:refer-clojure :exclude [compile await])
-  (:require [clojure.set :as set]
+  (:require [is.simm.partial-cps.async :as pcps]
+            [clojure.set :as set]
             [clojure.repl :as repl]
             [clojure.walk :as walk]
             [org.replikativ.foerster.analysis :as analysis]
@@ -12,8 +13,8 @@
             [org.replikativ.foerster.causal.counterfactual :as cf]
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.runtime.trace :as trace]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]))
 
 (defmacro model
   "Write ordinary simulator code; this wrapper records source for analysis.
@@ -88,7 +89,7 @@
 
 (defn- reconstruction [factory sites names]
   (fn [draw evidence {:keys [seed]}]
-    (spin
+    (pcps/async
      (let [values (merge draw evidence) cursor (atom 0)
            base (trace/policy)
            policy (fn [sp old]
@@ -102,14 +103,14 @@
                         ((trace/policy {:constraints {(:address site) (get values name)}})
                          (assoc-in sp [:savepoint/payload :observed?] false) old))
                       (base sp old)))
-           t (await (gfi/run-policy (factory) policy {:seed seed}))
+           t (pcps/await (async/op-of (gfi/run-policy factory policy {:seed seed})))
            result (try
                     (let [factual (project sites names t)]
                       (when-not (every? (fn [[name value]] (= value (get values name))) factual)
                         (throw (ex-info "Simulator changed a supplied factual assignment; use a free-coordinate causal adapter" {}))))
                     (cf/abduct-trace t 0.0)
-                    (catch Throwable e (await (gfi/close! t)) (throw e)))]
-       (await (gfi/close! t))
+                    (catch Throwable e (pcps/await (async/op-of (gfi/close! t))) (throw e)))]
+       (pcps/await (async/op-of (gfi/close! t)))
        result))))
 
 (defn compile

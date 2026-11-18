@@ -16,23 +16,21 @@
   reject the specific wrong ratio it is there for."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.proposal :as proposal]
-            [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.trace :as trace]
+            [org.replikativ.spindel.v2.trace :as trace]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.measure :as measure]
             [org.replikativ.foerster.effects :refer [sample observe]]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.effects.await :as aw]
-            [org.replikativ.spindel.engine.core :as rtc]
-            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             [org.replikativ.foerster.dist :as dist]))
 
 (defn- await-cps [operation timeout-ms]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [outcome (deref result timeout-ms ::timeout)]
       (when (= ::timeout outcome)
         (throw (ex-info "CPS operation timed out" {})))
@@ -43,12 +41,12 @@
   `burn-in`."
   [model-fn step-opts steps burn-in seed]
   (random/set-seed! (long seed))
-  (let [root (ctx/create-execution-context)
+  (let [root (v2/world)
         session (sp/open! root {:seed (random/fresh-seed) :fork-opts {:systems :none} :retain-released? false})
         seen (atom [])]
     (try
       (let [initial (await-cps (trace/run session
-                                          (binding [rtc/*execution-context* root] (model-fn))
+                                          model-fn
                                           (itrace/policy)
                                           {:anchor? itrace/anchor?})
                                20000)]
@@ -60,7 +58,7 @@
         (subvec @seen burn-in))
       (finally
         (await-cps (sp/close! session) 20000)
-        (ctx/close-context! root)))))
+        (v2/release-world! root)))))
 
 (defn- stats [xs]
   (let [n (count xs)
@@ -76,7 +74,7 @@
 ;;   x ~ N(0,1), 2 | x ~ N(x,1)   =>  x | y ~ N(1, 1/2)
 ;;   w ~ N(0,1), -2 | w ~ N(w,1)  =>  w | y ~ N(-1, 1/2)
 (defn- interleaved-model []
-  (spin
+  (task
    (let [x (sample (dist/normal 0.0 1.0))]
      (observe (dist/normal x 1.0) 2.0)
      (let [w (sample (dist/normal 0.0 1.0))]
@@ -110,7 +108,7 @@
 ;; A chain: x ~ N(0,1), z | x ~ N(x,1), 3 | z ~ N(z,1).
 ;;   y | x ~ N(x,2)  =>  x | y ~ N(1, 2/3);   z | y ~ N(2, 2/3)
 (defn- chain-model []
-  (spin
+  (task
    (let [x (sample (dist/normal 0.0 1.0))
          z (sample (dist/normal x 1.0))]
      (observe (dist/normal z 1.0) 3.0)
@@ -132,7 +130,7 @@
 ;;                  !b: u ~ N(0,1), 1 ~ N(u,1)   evidence N(1; 0, 2) = 0.2197
 ;;   P(b | y) = 0.3989 / (0.3989 + 0.2197) = 0.645
 (defn- branching-model []
-  (spin
+  (task
    (let [b (sample (dist/flip 0.5))]
      (if b
        (observe (dist/normal 1.0 1.0) 1.0)
@@ -154,7 +152,7 @@
 ;; not; a redraw INTO the overlap cannot be undone (the way back would keep
 ;; it), so it must be refused.
 (defn- overlapping-model []
-  (spin
+  (task
    (let [s (sample (dist/flip 0.5))
          x (sample (if s (dist/uniform 0.0 3.0) (dist/uniform 2.0 5.0)))]
      (observe (dist/normal x 1.0) 1.0)
@@ -171,12 +169,12 @@
                           ["random-walk" (k/random-walk-mh-kernel 120 {:step-size 0.8})]]]
     (testing label
       (random/set-seed! 5)
-      (let [root (ctx/create-execution-context)]
+      (let [root (v2/world)]
         (try
-          (binding [rtc/*execution-context* root]
-            (let [meas @(spin (aw/await (infer/kernel-infer (interleaved-model) kernel 60 {})))
+          (binding [v2/*world* root]
+            (let [meas @(task (await-op (infer/kernel-infer (fn [] (interleaved-model)) kernel 60 {})))
                   finals (map (comp measure/get-value first) (measure/get-particles meas))
                   x (stats (map first finals))]
               (is (= 60 (count finals)))
               (is (< (Math/abs (- (:mean x) 1.0)) 0.3) (str "x mean " (:mean x)))))
-          (finally (ctx/close-context! root)))))))
+          (finally (v2/release-world! root)))))))

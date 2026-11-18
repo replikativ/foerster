@@ -7,12 +7,8 @@
   A choose site is a savepoint when its world handles `:inference/choose`
   (inference: `foerster.inference.smc`, `foerster.runtime.trace`); otherwise it is forward
   simulation."
-  (:require [org.replikativ.spindel.engine.core :as rtc]
-            [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.engine.effects :as eff]
-            [org.replikativ.spindel.engine.addressing :as addressing]
-            [org.replikativ.spindel.effects.savepoint :as sp]
+  (:require [org.replikativ.spindel.v2.core :as v2]
+            [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.foerster.dist :as dist])
   ;; the spin macro knows sample/observe/factor only once this namespace has
   ;; registered them on the JVM, where ClojureScript's macros expand
@@ -40,7 +36,7 @@
     ;; With initial value (the first state of a Markov chain)
     (choose (normal 0 1) :init 0.5)"
   [& _]
-  (throw (ex-info "choose called outside of spin context (should be CPS-transformed)" {})))
+  (throw (ex-info "choose called outside of a task body" {})))
 
 (defn sample
   "Sample from a distribution (convenience wrapper around choose).
@@ -69,60 +65,43 @@
 ;; Choose Effect Handler
 ;; =============================================================================
 
-(defn- forward-choose-fn
+(defn- forward-choose
   "A choose site outside inference: forward simulation. A site is addressed
-  as under inference (`addressing/site-address+path!`) and takes its
-  intervention (`intervene!`); otherwise an observed site takes its value and
-  scores it into the world's weight, and a latent site a fresh draw from its
-  distribution."
-  [_runtime args resolve _reject]
-  (let [{:keys [source options source-loc]} args
-        {:keys [id observe]} options
-        ctx rtc/*execution-context*
-        [address] (addressing/site-address+path! ctx "sp" :inference/choose source-loc id)
-        interventions (rtp/get-state ctx [:inference :interventions])]
+  as under inference and takes its intervention (`intervene!`); otherwise an
+  observed site takes its value and scores it into the world's weight, and a
+  latent site a fresh draw from its distribution."
+  [source options address]
+  (let [w (v2/current-world)
+        {:keys [observe]} options
+        interventions (v2/get-in-world w [:inference :interventions])]
     (cond
       ;; Pearl's do-operator: the value is fixed, nothing is scored
-      (contains? interventions address)
-      (spin-core/resume resolve (get interventions address))
+      (contains? interventions address) [:value (get interventions address)]
 
       ;; observe can be boolean false, or nil (an outcome of a categorical)
       (contains? options :observe)
-      (do (rtp/swap-state! ctx [:inference :log-weight]
-                           (fn [w] (+ (or w 0.0) (dist/logpdf source observe))))
-          (spin-core/resume resolve observe))
+      (do (v2/update-in-world! w [:inference :log-weight]
+                               (fn [lw] (+ (or lw 0.0) (dist/logpdf source observe))))
+          [:value observe])
 
-      :else
-      (spin-core/resume resolve (dist/draw source)))))
+      :else [:value (dist/draw source)])))
 
-(defn- choose-handler-fn
+(defn- choose-op
   "A choose site is a savepoint when its world handles `:inference/choose`: it
   is published, and a trace policy decides and scores it (`foerster.runtime.trace`).
-  Otherwise it is forward simulation."
-  [runtime args resolve reject]
-  (let [ctx rtc/*execution-context*]
-    (if (sp/handled? ctx :inference/choose)
-      (let [{:keys [source options spin-id source-loc]} args
-            {:keys [id observe]} options]
-        (sp/publish! ctx
-                     {:site :inference/choose
-                      :payload (cond-> {:dist source
-                                        :observed? (contains? options :observe)
-                                        :value observe
-                                        :options (dissoc options :id :observe)}
-                                 ;; where the site is written: matches it to
-                                 ;; its static site (`foerster.analysis`)
-                                 (map? source-loc) (assoc :loc [(:ns source-loc) (:line source-loc) (:column source-loc)]))
-                      :opts (when id {:id id})
-                      :spin-id spin-id
-                      :source-loc source-loc}
-                     resolve reject))
-      (forward-choose-fn runtime args resolve reject))))
-
-;; Wrap handler function with async-effect to create PEffectHandler
-(def choose-handler
-  "PEffectHandler implementation for choose effect."
-  (eff/async-effect choose-handler-fn))
+  Otherwise it is forward simulation. `:site` (the call site, as v2 hashes
+  it) matches it to its static site (`foerster.analysis`)."
+  [source options ctx]
+  (let [address (sp/address (:id options) ctx)]
+    (if (sp/handled? (v2/current-world) :inference/choose)
+      (sp/publish-op :inference/choose
+                     {:dist source
+                      :observed? (contains? options :observe)
+                      :value (:observe options)
+                      :options (dissoc options :id :observe)
+                      :site (:site ctx)}
+                     address)
+      (forward-choose source options address))))
 
 ;; =============================================================================
 ;; Deterministic sites
@@ -141,26 +120,12 @@
 
   Must only be called inside a spin; outside, this throws."
   [& _]
-  (throw (ex-info "deterministic called outside of spin context (should be CPS-transformed)" {})))
+  (throw (ex-info "deterministic called outside of a task body" {})))
 
-(defn- deterministic-handler-fn
-  [_runtime args resolve reject]
-  (let [ctx rtc/*execution-context*
-        {:keys [value options spin-id source-loc]} args]
-    (if (sp/handled? ctx :inference/deterministic)
-      (sp/publish! ctx {:site :inference/deterministic
-                        :payload {:value value}
-                        :opts (when-let [id (:id options)] {:id id})
-                        :spin-id spin-id
-                        :source-loc source-loc}
-                   resolve reject)
-      (spin-core/resume resolve value))))
-
-(def deterministic-handler
-  (eff/async-effect deterministic-handler-fn))
-
-(defn deterministic-adapter [[value & opts]]
-  {:value value :options (apply hash-map opts)})
+(defn- deterministic-op [value options ctx]
+  (if (sp/handled? (v2/current-world) :inference/deterministic)
+    (sp/publish-op :inference/deterministic {:value value} (sp/address (:id options) ctx))
+    [:value value]))
 
 ;; =============================================================================
 ;; Interventions
@@ -177,8 +142,8 @@
     (let [outcome (choose (normal treatment 1))]
       outcome)"
   [address value]
-  (rtp/swap-state! rtc/*execution-context* [:inference :interventions]
-                   (fn [int] (assoc (or int {}) address value)))
+  (v2/update-in-world! (v2/current-world) [:inference :interventions]
+                       (fn [int] (assoc (or int {}) address value)))
   nil)
 
 ;; =============================================================================
@@ -205,29 +170,6 @@
                       {:type ::invalid-site-options :unknown (vec unknown) :allowed site-options})))
     options))
 
-(defn choose-adapter
-  "Adapter for choose effect: (choose dist & opts) -> {source, options}"
-  [args]
-  (let [[source & opts] args]
-    {:source source
-     :options (site-options! opts)}))
-
-(defn sample-adapter
-  "Adapter for sample effect: (sample dist & opts) -> {source, options}"
-  [args]
-  ;; Same as choose adapter - sample is just choose without :observe
-  (let [[source & opts] args]
-    {:source source
-     :options (site-options! opts)}))
-
-(defn observe-adapter
-  "Adapter for observe effect: (observe dist value & opts) -> {source, options with :observe}"
-  [args]
-  ;; observe has different syntax: (observe dist value & opts)
-  (let [[source value & opts] args]
-    {:source source
-     :options (assoc (site-options! opts) :observe value)}))
-
 (defn factor
   "Multiply the weight of this execution by exp(`log-weight`): a score that is
   not the density of a value (a soft constraint, a reward, a likelihood that
@@ -240,66 +182,37 @@
 
   Must only be called inside a spin; outside, this throws."
   [& _]
-  (throw (ex-info "factor called outside of spin context (should be CPS-transformed)" {})))
+  (throw (ex-info "factor called outside of a task body" {})))
 
-(defn- factor-handler-fn
-  [_runtime args resolve reject]
-  (let [ctx rtc/*execution-context*
-        {:keys [log-weight barrier spin-id source-loc]} args]
-    (if (sp/handled? ctx :inference/factor)
-      (sp/publish! ctx {:site :inference/factor
-                        :payload (cond-> {:log-weight log-weight}
-                                   barrier (assoc :barrier true)
-                                   (map? source-loc) (assoc :loc [(:ns source-loc) (:line source-loc) (:column source-loc)]))
-                        :spin-id spin-id
-                        :source-loc source-loc}
-                   resolve reject)
-      (do (rtp/swap-state! ctx [:inference :log-weight]
-                           (fn [w] (+ (or w 0.0) log-weight)))
-          (spin-core/resume resolve nil)))))
+(defn- factor-op [log-weight barrier ctx]
+  (let [w (v2/current-world)]
+    (if (sp/handled? w :inference/factor)
+      (sp/publish-op :inference/factor
+                     (cond-> {:log-weight log-weight :site (:site ctx)} barrier (assoc :barrier true))
+                     (sp/address nil ctx))
+      (do (v2/update-in-world! w [:inference :log-weight] (fn [lw] (+ (or lw 0.0) log-weight)))
+          [:value nil]))))
 
-(def factor-handler
-  (eff/async-effect factor-handler-fn))
-
-(defn factor-adapter [[log-weight & opts]]
-  (let [{:keys [barrier]} (apply hash-map opts)]
-    {:log-weight log-weight :barrier (boolean barrier)}))
+(def handlers
+  "The v2 effect handlers `(fn [args ctx] op)` of the probabilistic effects,
+  by name; a namespace that re-exports an effect registers its own symbol
+  with the same handler (`foerster.core`)."
+  {'choose (fn [[source & opts] ctx] (choose-op source (site-options! opts) ctx))
+   'sample (fn [[source & opts] ctx] (choose-op source (site-options! opts) ctx))
+   'observe (fn [[source value & opts] ctx]
+              (choose-op source (assoc (site-options! opts) :observe value) ctx))
+   'factor (fn [[log-weight & opts] ctx]
+             (factor-op log-weight (boolean (:barrier (apply hash-map opts))) ctx))
+   'deterministic (fn [[value & opts] ctx] (deterministic-op value (apply hash-map opts) ctx))})
 
 (defn register-probabilistic-effects!
-  "Register probabilistic effects with spindel effect system.
-
-  Registers choose, sample, and observe effects.
-  This should be called at library initialization time."
-  []
-  ;; Register unified choose effect
-  ;; NOTE: We use dispatched path (no 4th arg) so adapter is called
-  ;; Direct handler path bypasses adapter and expects different signature
-  (eff/register-effect-by-symbol!
-   'org.replikativ.foerster.effects/choose
-   choose-handler  ; PEffectHandler instance
-   choose-adapter)
-
-  ;; Register sample (convenience wrapper) - same as choose
-  (eff/register-effect-by-symbol!
-   'org.replikativ.foerster.effects/sample
-   choose-handler
-   sample-adapter)
-
-  (eff/register-effect-by-symbol!
-   'org.replikativ.foerster.effects/factor
-   factor-handler
-   factor-adapter)
-
-  (eff/register-effect-by-symbol!
-   'org.replikativ.foerster.effects/deterministic
-   deterministic-handler
-   deterministic-adapter)
-
-  ;; Register observe (different syntax: observe dist value)
-  (eff/register-effect-by-symbol!
-   'org.replikativ.foerster.effects/observe
-   choose-handler
-   observe-adapter))
+  "Registers choose, sample, observe, factor and deterministic in namespace
+  `ns-name` (default this one) as v2 effects of task bodies
+  (`v2/register-effect!`). Bodies compiled before this do not see them."
+  ([] (register-probabilistic-effects! "org.replikativ.foerster.effects"))
+  ([ns-name]
+   (doseq [[n h] handlers]
+     (v2/register-effect! (symbol ns-name (name n)) h))))
 
 ;; Auto-register on namespace load
 (register-probabilistic-effects!)

@@ -3,7 +3,8 @@
   a linear-Gaussian twin is exact, a confounded one is exact whatever the
   posterior over the confounder, and the probability of necessity of a binary
   model matches its analytic value."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.causal.counterfactual :as cf]
             [org.replikativ.foerster.model.mechanism :as mech]
             [org.replikativ.foerster.measure :as m]
@@ -11,24 +12,20 @@
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.causal.attribution :as attr]
             [org.replikativ.foerster.effects :refer [sample observe deterministic]]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.random :as random]))
 
 (defn- await-cps [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [outcome (deref result 60000 ::timeout)]
       (when (= ::timeout outcome)
         (throw (ex-info "CPS operation timed out" {})))
       (if (= :ok (first outcome)) (second outcome) (throw (second outcome))))))
 
-(def ^:private root (context/create-execution-context))
-
 (defmacro ^:private model [& body]
-  `(binding [ec/*execution-context* root] (spin ~@body)))
+  `(task ~@body))
 
 (defn- close? [a b] (< (Math/abs (- a b)) 1e-9))
 
@@ -46,9 +43,9 @@
 (deftest a-linear-gaussian-twin-is-exact
   ;; X = Ux, Y = 2X + Uy. Seen X = 1, Y = 3 (so Uy = 1); had X been 2, Y = 5.
   (let [[pair] (await-cps (cf/counterfactual
-                           (model (let [x (sample (dist/normal 0.0 1.0) :id :x)
+                           (fn [] (model (let [x (sample (dist/normal 0.0 1.0) :id :x)
                                         y (sample (dist/normal (* 2.0 x) 1.0) :id :y)]
-                                    {:x x :y y}))
+                                    {:x x :y y})))
                            {:evidence {:x 1.0 :y 3.0} :interventions {:x {:do 2.0}}}))]
     (is (= {:x 1.0 :y 3.0} (:factual pair)))
     (is (close? 5.0 (:y (:counterfactual pair))))
@@ -59,10 +56,10 @@
   ;; over Z is uncertain, but Y - X = Z + Uy is known: Y' = 2 + 1.5 = 3.5.
   (random/set-seed! 2)
   (let [pairs (await-cps (cf/counterfactual
-                          (model (let [z (sample (dist/normal 0.0 1.0) :id :z)
+                          (fn [] (model (let [z (sample (dist/normal 0.0 1.0) :id :z)
                                        x (sample (dist/normal z 1.0) :id :x)
                                        y (sample (dist/normal (+ x z) 1.0) :id :y)]
-                                   {:z z :x x :y y}))
+                                   {:z z :x x :y y})))
                           {:evidence {:x 1.0 :y 2.5} :interventions {:x {:do 2.0}} :particles 50}))]
     (is (< 1 (count (distinct (map (comp :z :factual) pairs)))) "Z is sampled, not fixed")
     (is (every? #(close? 3.5 (:y (:counterfactual %))) pairs))
@@ -73,9 +70,9 @@
   ;; Y = [U < .3] with U | Y=true, X=true ~ U(0,1): P(Y' = false) = .7.
   (random/set-seed! 3)
   (let [pairs (await-cps (cf/counterfactual
-                          (model (let [x (sample (dist/flip 0.5) :id :x)
+                          (fn [] (model (let [x (sample (dist/flip 0.5) :id :x)
                                        y (sample (dist/flip (if x 1.0 0.3)) :id :y)]
-                                   {:x x :y y}))
+                                   {:x x :y y})))
                           {:evidence {:x true :y true} :interventions {:x {:do false}} :particles 1500}))
         ws (weights/normalize-log-weights (mapv :weight pairs))
         pn (reduce + (map (fn [p w] (if (:y (:counterfactual p)) 0.0 w)) pairs ws))]
@@ -83,8 +80,8 @@
 
 (deftest a-site-only-the-counterfactual-reaches-is-reported
   (let [[pair] (await-cps (cf/counterfactual
-                           (model (let [b (sample (dist/flip 0.5) :id :b)]
-                                    (if b (sample (dist/normal 0.0 1.0) :id :u) :none)))
+                           (fn [] (model (let [b (sample (dist/flip 0.5) :id :b)]
+                                    (if b (sample (dist/normal 0.0 1.0) :id :u) :none))))
                            {:evidence {:b false} :interventions {:b {:do true}}}))]
     (is (= :none (:factual pair)))
     (is (number? (:counterfactual pair)))
@@ -95,8 +92,8 @@
   ;; rejects with the program's error instead of answering
   (let [boom (fn [x] (when (= 2.0 x) (throw (ex-info "boom" {:x x}))) x)
         outcome (try (await-cps (cf/counterfactual
-                                 (model (let [x (sample (dist/normal 0.0 1.0) :id :x)]
-                                          (boom x)))
+                                 (fn [] (model (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+                                          (boom x))))
                                  {:evidence {:x 1.0} :interventions {:x {:do 2.0}}}))
                      (catch Exception e e))]
     (is (instance? Exception outcome))
@@ -106,10 +103,10 @@
 (deftest reusable-abduction-and-nested-worlds
   ;; X -> M -> Y plus X -> Y. Both intermediate and outcome noise must
   ;; survive interventions; natural direct effect fixes M from world x=0.
-  (let [program (model (let [x (sample (dist/normal 0 1) :id :x)
+  (let [program (fn [] (model (let [x (sample (dist/normal 0 1) :id :x)
                              z (sample (dist/normal x 1) :id :z)
                              y (sample (dist/normal (+ x z) 1) :id :y)]
-                         {:x x :z z :y y}))
+                         {:x x :z z :y y})))
         {t :trace} (await-cps (gfi/generate program {:x 1.0 :z 3.0 :y 7.0}))]
     (try
       (let [a (cf/abduct-trace t 0.0)
@@ -126,8 +123,8 @@
       (finally (await-cps (gfi/close! t))))))
 
 (deftest shifts-and-deterministic-interventions
-  (let [program (model (let [x (sample (dist/normal 2 3) :id :x)
-                             z (deterministic (* 2 x) :id :z)] [x z]))
+  (let [program (fn [] (model (let [x (sample (dist/normal 2 3) :id :x)
+                             z (deterministic (* 2 x) :id :z)] [x z])))
         {t :trace} (await-cps (gfi/generate program {:x 8.0}))]
     (try
       (let [a (cf/abduct-trace t)
@@ -139,7 +136,7 @@
 
 (deftest incomplete-observed-coupling-is-refused-or-predicted
   (let [law (reify dist/Distribution (-draw [_] 7.0) (-logpdf [_ _] 0.0))
-        program (model (observe law 99.0 :id :y))
+        program (fn [] (model (observe law 99.0 :id :y)))
         a {:factual 99.0 :noise {} :unsupported [:y] :weight 0.0}]
     (is (thrown? Exception (await-cps (cf/predict program a {}))))
     (let [r (await-cps (cf/predict program a {} {:strict? false}))]
@@ -161,7 +158,7 @@
     (is (= [1.0 3.0] (mapv #(get-in % [:noise :x]) draws)))))
 
 (deftest unified-query-accepts-posteriors-and-cross-world-events
-  (let [program (model (sample (dist/normal 0 1) :id :x))
+  (let [program (fn [] (model (sample (dist/normal 0 1) :id :x)))
         particle #(m/sample-particle % {:x {:value % :distribution (dist/normal 0 1)}})
         p (m/empirical [[(particle 1.0) (Math/log 0.25)] [(particle 3.0) (Math/log 0.75)]])
         r (await-cps (cf/query program {:posterior p :worlds [[:shifted {:x {:shift 2.0}}]]
@@ -170,7 +167,7 @@
     (is (= 5.0 (get-in r [0 :worlds :shifted])))
     (is (close? 3.0 (cf/expectation r #(get-in % [:worlds :factual])))))
   (is (thrown? Exception
-               (await-cps (cf/query (model (sample (dist/flip 0.5) :id :x))
+               (await-cps (cf/query (fn [] (model (sample (dist/flip 0.5) :id :x)))
                                     {:evidence {:x true} :particles 0})))))
 
 (deftest structural-laws-can-be-extended-and-categorical-abduction-is-supported
@@ -182,8 +179,8 @@
   (is (= [2 3] (dist/support (mech/shifted (dist/bernoulli 0.5) 2)))))
 
 (deftest noise-attribution-and-joint-repairs
-  (let [program (model (let [x (sample (dist/normal 0 1) :id :x)
-                             y (sample (dist/normal 0 1) :id :y)] (+ x y)))
+  (let [program (fn [] (model (let [x (sample (dist/normal 0 1) :id :x)
+                             y (sample (dist/normal 0 1) :id :y)] (+ x y))))
         a {:factual 5.0 :noise {:x 2.0 :y 3.0} :unsupported [] :weight 0.0}
         report (await-cps (attr/attribute-noise program a [{:x 0.0 :y 0.0}]
                                                 {:nodes [:x :y] :score identity}))

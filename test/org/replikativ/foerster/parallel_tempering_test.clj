@@ -12,7 +12,7 @@
             [org.replikativ.foerster.inference.parallel-tempering :as pt]
             [org.replikativ.foerster.population.theta :as pop]
             [org.replikativ.foerster.inference.tempering :as tempering]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- lnorm [x mu s] (dist/logpdf (dist/normal mu s) x))
 
@@ -36,7 +36,7 @@
                                                  [f (double-array (map (fn [i] (/ (- (lp (update th i + h)) (lp th)) h))
                                                                        (range (count th))))]))}
                                 reference))]
-    (spin (let [[a b] (sample (block/block-dist blk nil) :id :theta :init [0.0 0.0])]
+    (task (let [[a b] (sample (block/block-dist blk nil) :id :theta :init [0.0 0.0])]
             {:a a :b b}))))
 
 (deftest a-seed-fixes-the-run
@@ -44,17 +44,17 @@
         values (fn [process-seed make]
                  (mapv (comp m/get-value first) (m/get-particles (b/run-infer process-seed make))))]
     (testing "parallel tempering"
-      (let [run #(pt/parallel-tempering (model) {:chains 4 :rounds 4 :seed %})]
+      (let [run #(pt/parallel-tempering (fn [] (model)) {:chains 4 :rounds 4 :seed %})]
         (is (= (values 1 #(run 7)) (values 2 #(run 7))))
         (is (not= (values 1 #(run 7)) (values 1 #(run 8))))))
     (testing "tempered SMC on a block"
-      (let [run #(tempering/tempered (model) 16 {:seed %})]
+      (let [run #(tempering/tempered (fn [] (model)) 16 {:seed %})]
         (is (= (values 1 #(run 7)) (values 2 #(run 7))))
         (is (not= (values 1 #(run 7)) (values 1 #(run 8))))))))
 
 (deftest gaussian-posterior-and-evidence
   (let [res (b/run-infer 5 #(pt/parallel-tempering
-                             (block-model (fn [[a b]] (+ (lnorm a 1.0 0.3) (lnorm b -0.5 0.3))))
+                             (fn [] (block-model (fn [[a b]] (+ (lnorm a 1.0 0.3) (lnorm b -0.5 0.3)))))
                              {:chains 8 :rounds 11}))
         a (d/summary res :a)]
     (is (< (Math/abs (- (:mean a) 1.0)) 0.05))
@@ -72,10 +72,10 @@
   ;; a ~ 0.3·N(−4, 0.4²) + 0.7·N(4, 0.4²): a single random-walk chain stays
   ;; in the mode it starts in; the tempered chains carry states between them
   (let [res (b/run-infer 9 #(pt/parallel-tempering
-                             (block-model (fn [[a b]]
+                             (fn [] (block-model (fn [[a b]]
                                             (+ (weights/log-sum-exp [(+ (Math/log 0.3) (lnorm a -4.0 0.4))
                                                                      (+ (Math/log 0.7) (lnorm a 4.0 0.4))])
-                                               (lnorm b 0.0 0.4))))
+                                               (lnorm b 0.0 0.4)))))
                              {:chains 12 :rounds 11}))
         right (/ (count (filter #(pos? (:a (:result %))) (m/get-contexts res)))
                  (double (count (m/get-particles res))))]
@@ -90,9 +90,9 @@
                         (pt/parallel-tempering nil {:rounds 0})))
   (testing "a model that is more than one block"
     (let [e (try (b/run-infer 3 #(pt/parallel-tempering
-                                  (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+                                  (fn [] (task (let [x (sample (dist/normal 0.0 1.0) :id :x)]
                                           (observe (dist/normal x 1.0) 0.5 :id :y)
-                                          x))))
+                                          x)))))
                  nil
                  (catch Exception e e))]
       (is (= ::pt/not-one-block (:type (ex-data (or (ex-cause e) e))))))))
@@ -112,15 +112,15 @@
                                 reference))
         ;; the first run is the template, which must get past the block
         model (fn [] (let [runs (atom 0)]
-                       (spin (let [[a _] (sample (block/block-dist blk nil) :id :theta :init [0.5 0.0])]
+                       (task (let [[a _] (sample (block/block-dist blk nil) :id :theta :init [0.5 0.0])]
                                (when (and (< 1 (swap! runs inc)) (neg? a))
                                  (throw (ex-info "negative" {})))
                                a))))
         failure (fn [run] (let [e (try (b/run-infer 3 run) nil (catch Exception e e))]
                             (some #(:type (ex-data %)) (take-while some? (iterate ex-cause e)))))]
-    (is (= ::pop/model-failed (failure #(pt/parallel-tempering (model) {:chains 4 :rounds 4}))))
+    (is (= ::pop/model-failed (failure #(pt/parallel-tempering (fn [] (model)) {:chains 4 :rounds 4}))))
     (testing "tempered SMC's θ path writes back the same way"
-      (is (= ::pop/model-failed (failure #(tempering/tempered (model) 64)))))))
+      (is (= ::pop/model-failed (failure #(tempering/tempered (fn [] (model)) 64)))))))
 
 (deftest round-trips-start-at-the-reference
   ;; a replica first seen at the target and then at the reference has not
@@ -133,7 +133,7 @@
 (deftest the-contracts-say-what-the-outputs-are
   (let [model #(block-model (fn [[a b]] (+ (lnorm a 1.0 0.3) (lnorm b -0.5 0.3))))]
     (testing "parallel tempering: one Markov chain, with a stepping-stone estimate"
-      (let [res (b/run-infer 6 #(pt/parallel-tempering (model) {:chains 6 :rounds 8}))
+      (let [res (b/run-infer 6 #(pt/parallel-tempering (fn [] (model)) {:chains 6 :rounds 8}))
             contract (:inference-contract res)]
         (is (= :markov-chain (:semantics contract)))
         (is (= {:status :estimate :estimator :stepping-stone} (:normalizer contract)))
@@ -141,7 +141,7 @@
         (is (< (Math/abs (- (m/log-marginal res) log-z)) 0.5))
         (is (contains? (d/summary res :a) :ess-bulk) "the chain diagnostics apply")))
     (testing "tempered SMC: a weighted population whose moves adapt to it"
-      (let [res (b/run-infer 7 #(tempering/tempered (model) 64 {:seed 3}))]
+      (let [res (b/run-infer 7 #(tempering/tempered (fn [] (model)) 64 {:seed 3}))]
         (is (= :weighted-population (get-in res [:inference-contract :semantics])))
         (is (= :population (get-in res [:inference-contract :adaptation])))))
     (testing "a plain chain has no evidence"

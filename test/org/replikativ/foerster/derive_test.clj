@@ -37,11 +37,11 @@
   (let [exact (reduce + (map #(weights/log-sum-exp (component-logs %)) ys))
         plan (derive/plan (a/graph-of mixture))]
     (doseq [n [1 7]]
-      (let [measure (b/run-infer 3 #(smc/smc (mixture ys) n {:enumerate plan}))]
+      (let [measure (b/run-infer 3 #(smc/smc (fn [] (mixture ys)) n {:enumerate plan}))]
         (is (< (Math/abs (- exact (m/log-marginal measure))) 1e-9)
             (str (m/log-marginal measure) " vs " exact))))
     (testing "each z_i is an exact draw from its conditional"
-      (let [measure (b/run-infer 4 #(smc/smc (mixture ys) 3000 {:enumerate plan}))
+      (let [measure (b/run-infer 4 #(smc/smc (fn [] (mixture ys)) 3000 {:enumerate plan}))
             zs (map (comp first m/get-value) (m/get-contexts measure))
             freq (frequencies zs)
             post (weights/normalize-log-weights (vec (component-logs (first ys))))]
@@ -49,8 +49,8 @@
           (is (< (Math/abs (- (nth post k) (/ (get freq k 0) 3000.0))) 0.03)
               (str "z_0 = " k)))))
     (testing "seeded runs repeat"
-      (is (= (map m/get-value (m/get-contexts (b/run-infer 5 #(smc/smc (mixture ys) 20 {:enumerate plan}))))
-             (map m/get-value (m/get-contexts (b/run-infer 5 #(smc/smc (mixture ys) 20 {:enumerate plan})))))))))
+      (is (= (map m/get-value (m/get-contexts (b/run-infer 5 #(smc/smc (fn [] (mixture ys)) 20 {:enumerate plan}))))
+             (map m/get-value (m/get-contexts (b/run-infer 5 #(smc/smc (fn [] (mixture ys)) 20 {:enumerate plan})))))))))
 
 (def ^:private branching
   (a/model []
@@ -63,7 +63,7 @@
 (deftest a-branch-decided-by-the-summed-out-site
   (let [exact (weights/log-sum-exp [(+ (Math/log 0.3) (dist/logpdf (dist/normal 1.0 1.0) 0.5))
                                     (+ (Math/log 0.7) (dist/logpdf (dist/normal -1.0 2.0) 0.5))])
-        measure (b/run-infer 6 #(smc/smc (branching) 5 {:enumerate (derive/plan (a/graph-of branching))}))]
+        measure (b/run-infer 6 #(smc/smc (fn [] (branching)) 5 {:enumerate (derive/plan (a/graph-of branching))}))]
     (is (< (Math/abs (- exact (m/log-marginal measure))) 1e-9))))
 
 (def ^:private one-impossible
@@ -73,13 +73,13 @@
              z)))
 
 (deftest an-impossible-value-is-never-drawn
-  (let [measure (b/run-infer 7 #(smc/smc (one-impossible) 50 {:enumerate (derive/plan (a/graph-of one-impossible))}))]
+  (let [measure (b/run-infer 7 #(smc/smc (fn [] (one-impossible)) 50 {:enumerate (derive/plan (a/graph-of one-impossible))}))]
     (is (< (Math/abs (- (Math/log 0.5) (m/log-marginal measure))) 1e-9))
     (is (every? zero? (map m/get-value (m/get-contexts measure))))))
 
 (deftest refused-with-options-it-does-not-support
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #":enumerate is not supported with :batch"
-                        (b/run-infer 8 #(smc/smc (branching) 5 {:enumerate {} :batch 2})))))
+                        (b/run-infer 8 #(smc/smc (fn [] (branching)) 5 {:enumerate {} :batch 2})))))
 
 (deftest what-is-not-enumerated
   (testing "a chain: z is read in the next iteration"

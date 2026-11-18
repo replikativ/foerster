@@ -2,8 +2,8 @@
   "Target, replay and ownership context shared by numerical and trace moves."
   (:refer-clojure :exclude [keys])
   (:require [org.replikativ.foerster.runtime.trace :as it]
-            [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.effects.savepoint :as sp]))
+            [org.replikativ.spindel.v2.trace :as trace]
+            [org.replikativ.spindel.v2.savepoint :as sp]))
 
 (def keys
   #{:temperature :policy-options :constraints :until :anchor?

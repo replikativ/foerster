@@ -7,13 +7,13 @@
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- sticky-hmm
   "x₁ ~ flip(½), x_t stays x_{t−1} with probability 0.8; y_t ~ flip(x_t ?
   0.9 : 0.1), observed 1 0 1 1."
   []
-  (spin
+  (task
    (loop [t 0 prev nil xs []]
      (if (= t 4)
        xs
@@ -48,8 +48,8 @@
   ;; nodes (P(x₂) +0.044, +0.077) and 0.007–0.043 over 15 seeds with matched
   ;; ones (P(x₂) −0.040…+0.026). The review's 3-step HMM separates the two
   ;; only beyond ~20000 iterations.
-  (let [exact (law (b/run-infer 1 #(infer/infer (sticky-hmm) {:method :enumerate})))
-        chain (law (b/run-infer 3 #(infer/ipmcmc-infer (sticky-hmm) 2 2000
+  (let [exact (law (b/run-infer 1 #(infer/infer (fn [] (sticky-hmm)) {:method :enumerate})))
+        chain (law (b/run-infer 3 #(infer/ipmcmc-infer (fn [] (sticky-hmm)) 2 2000
                                                        {:num-nodes 4 :num-csmc-nodes 2 :seed 3})))]
     (is (< (Math/abs (- (marginal exact 1) 0.5248918890412404)) 1e-12) "the reference")
     (is (< (total-variation chain exact) 0.065) (str "TV " (total-variation chain exact)))

@@ -2,7 +2,31 @@
   "Shared execution of independent CPS operations. Fail-fast rejection does
   not cancel/join children; their owning inference scope supplies that lifetime."
   (:require [is.simm.partial-cps.runtime :as cps-runtime]
-            [org.replikativ.spindel.engine.executor :as ex]))
+            [org.replikativ.spindel.v2.host :as hs]))
+
+(defn synchronous-executor
+  "An executor running each task at once on the calling thread (JVM): the
+  worlds and particles on it run one after another, repeatably."
+  []
+  #?(:clj (reify java.util.concurrent.Executor
+            (execute [_ r] (.run ^Runnable r)))
+     :cljs nil))
+
+(defn thread-pool-executor
+  "A fixed pool of `:threads` threads (JVM)."
+  [{:keys [threads] :or {threads 2}}]
+  #?(:clj (java.util.concurrent.Executors/newFixedThreadPool (int threads))
+     :cljs nil))
+
+(defn spread!
+  "Runs `(f i)` for i below `n`, over the threads of `executor` (spindel's
+  default executor when nil) on the JVM; one after another in ClojureScript.
+  Each particle is a world of its own, so its resume runs on whichever thread
+  takes it (engine v2: one slice at a time per world, parallel across worlds)."
+  [executor n f]
+  #?(:clj (let [^java.util.concurrent.Executor e (or executor (hs/executor))]
+            (dotimes [i n] (.execute e ^Runnable (fn [] (f i)))))
+     :cljs (dotimes [i n] (f i))))
 
 (defn parallel
   "Run (start i resolve reject), preserving index order. Reject on first error,
@@ -36,5 +60,5 @@
                              (when (cps-runtime/thunk? result)
                                (recur (cps-runtime/force-thunk result))))
                            (catch #?(:clj Throwable :cljs :default) e (fail e))))))]
-        (if executor (ex/spread! executor n launch)
+        (if executor (spread! executor n launch)
             (dotimes [i n] (launch i)))))))

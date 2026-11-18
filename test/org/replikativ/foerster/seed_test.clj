@@ -8,16 +8,16 @@
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- model []
-  (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+  (task (let [x (sample (dist/normal 0.0 1.0) :id :x)]
           (observe (dist/normal x 1.0) 0.5 :id :y)
           x)))
 
 (defn- values [opts process-seed]
   (mapv (comp m/get-value first)
-        (m/get-particles (b/run-infer process-seed #(infer/infer (model) opts)))))
+        (m/get-particles (b/run-infer process-seed #(infer/infer (fn [] (model)) opts)))))
 
 (deftest seeded-sweeps-draw-afresh
   (doseq [opts [{:method :pimh :particles 5 :iterations 4 :seed 99}
@@ -36,9 +36,9 @@
 
 (deftest impossible-and-empty-runs-say-so
   (testing "a population whose particles are all impossible has no posterior"
-    (let [measure (b/run-infer 3 #(infer/infer (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+    (let [measure (b/run-infer 3 #(infer/infer (fn [] (task (let [x (sample (dist/normal 0.0 1.0) :id :x)]
                                                        (observe (dist/uniform 5.0 6.0) x :id :y)
-                                                       x))
+                                                       x)))
                                                {:method :smc :particles 20}))]
       (is (= ##-Inf (m/log-marginal measure)))
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"probability zero"
@@ -52,9 +52,9 @@
                   {:method :pgas :particles 5 :iterations 3}
                   {:method :ipmcmc :particles 5 :iterations 2 :num-nodes 4}]]
       (testing [(:method opts) wp]
-        (let [measure (b/run-infer 3 #(infer/infer (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+        (let [measure (b/run-infer 3 #(infer/infer (fn [] (task (let [x (sample (dist/normal 0.0 1.0) :id :x)]
                                                            (observe (dist/uniform 5.0 6.0) x :id :y)
-                                                           x))
+                                                           x)))
                                                    (assoc opts :world-policy wp)))]
           (is (nil? (m/log-marginal measure)) "pooled chains do not estimate evidence")
           (is (every? #(= ##-Inf (second %)) (m/get-particles measure))
@@ -62,7 +62,7 @@
           (is (thrown-with-msg? clojure.lang.ExceptionInfo #"probability zero"
                                 (m/measure-stats measure m/get-value)))))))
   (testing "no particles, no measure"
-    (is (thrown? Throwable (b/run-infer 4 #(infer/infer (model) {:method :smc :particles 0}))))
+    (is (thrown? Throwable (b/run-infer 4 #(infer/infer (fn [] (model)) {:method :smc :particles 0}))))
     (is (thrown? AssertionError (m/empirical [])))
     (is (thrown? clojure.lang.ExceptionInfo (weights/normalize-log-weights [0.0 ##NaN]))))
   (testing "infinite weights share the mass"
@@ -70,4 +70,4 @@
 
 (deftest a-burn-that-leaves-no-draws-is-refused
   (is (thrown-with-msg? Throwable #":burn leaves no draws"
-                        (b/run-infer 5 #(infer/infer (model) {:method :mh :iterations 10 :burn 10})))))
+                        (b/run-infer 5 #(infer/infer (fn [] (model)) {:method :mh :iterations 10 :burn 10})))))

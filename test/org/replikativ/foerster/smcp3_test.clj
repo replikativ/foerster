@@ -14,15 +14,13 @@
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.moves.pair :as pair]
             [org.replikativ.foerster.moves.transport :as transport]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (def ^:private ys
   (let [r (java.util.Random. 3)] (vec (repeatedly 30 #(+ 0.7 (.nextGaussian r))))))
 
 (defn- static-model []
-  (spin (let [mu (sample (dist/normal 0.0 1.0) :id :mu)]
+  (task (let [mu (sample (dist/normal 0.0 1.0) :id :mu)]
           (loop [i 0]
             (when (< i (count ys))
               (observe (dist/normal mu 1.0) (nth ys i) :id [:y i])
@@ -48,7 +46,7 @@
    :backward (fn [_ u'] (dist/logpdf step u'))})
 
 (deftest move-reweight-keeps-the-posterior-and-the-evidence
-  (let [measure (b/run-infer 31 #(smc/smc (static-model) 400
+  (let [measure (b/run-infer 31 #(smc/smc (fn [] (static-model)) 400
                                           {:anchors #{:mu} :smcp3 random-walk-kernel}))
         [mu sd] (b/w-mean-sd identity (b/weighted-values measure))]
     (is (< (Math/abs (- mu (first truth))) 0.05) (str mu " vs " truth))
@@ -75,7 +73,7 @@
    :backward (fn [_ [q mu]] (dist/logpdf q mu))})
 
 (deftest an-exact-data-driven-kernel
-  (let [measure (b/run-infer 32 #(smc/smc (static-model) 400
+  (let [measure (b/run-infer 32 #(smc/smc (fn [] (static-model)) 400
                                           {:anchors #{:mu} :smcp3 exact-kernel :resample-threshold 1.0}))
         [mu sd] (b/w-mean-sd identity (b/weighted-values measure))]
     (is (< (Math/abs (- (m/log-marginal measure) log-evidence)) 0.3)
@@ -87,7 +85,7 @@
 (def ^:private walk-ys [0.8 1.9 1.2 3.0 2.5 2.2 3.4])
 
 (defn- random-walk []
-  (spin (loop [t 0 x (sample (dist/normal 0.0 1.0) :id [:x 0])]
+  (task (loop [t 0 x (sample (dist/normal 0.0 1.0) :id [:x 0])]
           (observe (dist/normal x 1.0) (nth walk-ys t) :id [:y t])
           (if (= t (dec (count walk-ys)))
             x
@@ -113,7 +111,7 @@
    :backward (fn [_ u'] (if (number? u') (dist/logpdf step u') 0.0))})
 
 (deftest a-kernel-may-revise-the-past
-  (let [measure (b/run-infer 33 #(smc/smc (random-walk) 2000
+  (let [measure (b/run-infer 33 #(smc/smc (fn [] (random-walk)) 2000
                                           {:anchors {:lag 2} :smcp3 revise-previous}))
         [mean var ll] kalman
         [mu sd] (b/w-mean-sd identity (b/weighted-values measure))]
@@ -122,8 +120,8 @@
     (is (< (Math/abs (- (m/log-marginal measure) ll)) 0.15) (str (m/log-marginal measure) " vs " ll))))
 
 (deftest options-are-checked
-  (let [root (context/create-execution-context)
-        model (binding [ec/*execution-context* root] (static-model))
+  (let [root (v2/world)
+        model static-model
         refusal (fn [opts] (try ((smc/smc model 10 opts) (fn [_]) (fn [_])) nil
                                 (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))]
     (is (= ::smc/smcp3-without-anchors (refusal {:smcp3 random-walk-kernel})))
@@ -143,7 +141,7 @@
   ;; L ≠ K makes the estimate noisy (over 12 seeds the log error spread
   ;; from −1.3 to +0.4); ignoring a stay's densities overestimated it by
   ;; about 0.3 per observation, +9 here
-  (let [measure (b/run-infer 34 #(smc/smc (static-model) 300 {:anchors #{:mu} :smcp3 stay-or-walk}))]
+  (let [measure (b/run-infer 34 #(smc/smc (fn [] (static-model)) 300 {:anchors #{:mu} :smcp3 stay-or-walk}))]
     (is (< (Math/abs (- (m/log-marginal measure) log-evidence)) 1.5)
         (str (m/log-marginal measure) " vs " log-evidence))))
 
@@ -151,7 +149,7 @@
   (let [kernel {:forward (fn [_ _] {:updates {[:y 0] 0.0} :log-q 0.0 :reverse nil :log-jacobian 0.0})
                 :backward (fn [_ _] 0.0)}]
     (is (thrown-with-msg? Exception #"observed or constrained"
-                          (b/run-infer 35 #(smc/smc (static-model) 10 {:anchors :all :smcp3 kernel}))))))
+                          (b/run-infer 35 #(smc/smc (fn [] (static-model)) 10 {:anchors :all :smcp3 kernel}))))))
 
 ;; --- one shape for moves with auxiliary randomness ---------------------------
 
@@ -162,14 +160,14 @@
    :involution (fn [{mu :mu} u] {:choices {:mu (+ mu u)} :aux (- u) :log-jacobian 0.0})})
 
 (deftest an-involutive-move-is-an-smcp3-step-and-an-mcmc-move
-  (let [as-map (b/run-infer 31 #(smc/smc (static-model) 400 {:anchors #{:mu} :smcp3 random-walk-kernel}))
-        as-pair (b/run-infer 31 #(smc/smc (static-model) 400 {:anchors #{:mu}
+  (let [as-map (b/run-infer 31 #(smc/smc (fn [] (static-model)) 400 {:anchors #{:mu} :smcp3 random-walk-kernel}))
+        as-pair (b/run-infer 31 #(smc/smc (fn [] (static-model)) 400 {:anchors #{:mu}
                                                               :smcp3 (pair/from-involution random-walk-involution)}))]
     (is (= (mapv second (m/get-particles as-map)) (mapv second (m/get-particles as-pair)))
         "the pair draws as the map kernel does: the same weights")
     (is (= (mapv (comp m/get-value first) (m/get-particles as-map))
            (mapv (comp m/get-value first) (m/get-particles as-pair)))))
-  (let [chains (b/run-infer 32 #(infer/kernel-infer (static-model)
+  (let [chains (b/run-infer 32 #(infer/kernel-infer (fn [] (static-model))
                                                     (k/involutive-kernel 3000 (assoc random-walk-involution
                                                                                      :propose (fn [_] (let [u (dist/draw (dist/normal 0.0 0.3))]
                                                                                                         {:aux u :log-q (dist/logpdf (dist/normal 0.0 0.3) u)}))
@@ -180,7 +178,7 @@
     (is (< (Math/abs (- mu (first truth))) 0.06) (str mu " vs " truth))))
 
 (deftest pairs-are-checked-where-they-are-taken
-  (let [refusal (fn [opts] (try (b/run-infer 35 #(smc/smc (static-model) 10 opts)) nil
+  (let [refusal (fn [opts] (try (b/run-infer 35 #(smc/smc (fn [] (static-model)) 10 opts)) nil
                                 (catch Throwable e (some #(:type (ex-data %)) (take-while some? (iterate ex-cause e))))))]
     (is (= ::pair/invalid-pair (refusal {:anchors #{:mu} :smcp3 {:forward (:forward random-walk-kernel)}}))))
   (is (= (transport/kernel {:id :a} {:id :b} (:forward random-walk-kernel) (:backward random-walk-kernel))

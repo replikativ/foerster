@@ -1,5 +1,6 @@
 (ns org.replikativ.foerster.transition-context-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is]]
             [org.replikativ.foerster.benchmark-test :as b]
             [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.core :as infer]
@@ -11,13 +12,12 @@
             [org.replikativ.foerster.runtime.trace :as it]
             [org.replikativ.foerster.moves.transition :as transition]
             [org.replikativ.foerster.moves.transition-context :as tc]
-            [org.replikativ.spindel.trace :as trace]
-            [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.trace :as trace]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- await-cps [op]
   (let [p (promise)]
-    (op #(deliver p [:ok %]) #(deliver p [:err %]))
+    ((async/op-of op) #(deliver p [:ok %]) #(deliver p [:err %]))
     (let [[kind value] (deref p 30000 [:err (ex-info "timeout" {})])]
       (if (= :ok kind) value (throw value)))))
 
@@ -26,8 +26,8 @@
         context {:temperature 1.0 :constraints {:y 1} :policy-options {:interventions {:z 0}}
                  :until :frontier :keep-old? true :shared-anchors? true}
         visits (atom [])
-        current {:trace/world (atom 0)}]
-    (with-redefs [rtp/swap-state! (fn [world _ f] (swap! world f))
+        current {:trace/world (atom {})}]
+    (with-redefs [v2/update-in-world! (fn [w path f & args] (apply swap! w update-in path f args))
                   it/mh-step (fn [t _] (fn [resolve _] (resolve {:trace t :accepted? false})))
                   nuts/within-gibbs (fn [_]
                                       (swap! made inc)
@@ -49,9 +49,9 @@
         (is (= 1010 (count @visits)))))))
 
 (deftest nested-mixtures-preserve-component-counters-and-context
-  (let [seen (atom []) current {:trace/world (atom 0)}
+  (let [seen (atom []) current {:trace/world (atom {})}
         context {:temperature 1.0 :until :frontier :keep-old? true}]
-    (with-redefs [rtp/swap-state! (fn [world _ f] (swap! world f))
+    (with-redefs [v2/update-in-world! (fn [w path f & args] (apply swap! w update-in path f args))
                   it/mh-step (fn [t _] (fn [resolve _] (resolve {:trace t :accepted? false})))
                   random/in-world-stream (fn [_ _ f] (f))
                   weights/sample-categorical (constantly 0)
@@ -69,10 +69,11 @@
         (is (every? #(= context (select-keys % (keys context))) @seen))))))
 
 (deftest distinct-prepared-descriptors-share-the-worlds-rng-reservation
-  (let [seen (atom []) current {:trace/world (atom 0)}]
-    (with-redefs [rtp/swap-state! (fn [world _ f] (swap! world f))
+  (let [seen (atom []) current {:trace/world (atom {})}]
+    (with-redefs [v2/update-in-world! (fn [w path f & args] (apply swap! w update-in path f args))
                   it/mh-step (fn [t opts]
-                               (swap! seen conj (:iteration opts))
+                               (when (identical? (:trace/world t) (:trace/world current))
+                                 (swap! seen conj (:iteration opts)))
                                (fn [resolve _] (resolve {:trace t :accepted? false})))]
       (let [a (transition/prepare (k/single-site-mh-kernel 2))
             b (transition/prepare (k/single-site-mh-kernel 1))]
@@ -82,17 +83,20 @@
         (is (= [0 1 2 3 4] @seen))))))
 
 (deftest chain-driver-reserves-composed-move-spans-once
-  (let [seen (atom []) current {:trace/world (atom 0)}]
-    (with-redefs [rtp/swap-state! (fn [world _ f] (swap! world f))
+  (let [seen (atom []) current {:trace/world (atom {})}]
+    (with-redefs [v2/update-in-world! (fn [w path f & args] (apply swap! w update-in path f args))
                   it/mh-step (fn [t opts]
-                               (swap! seen conj (:iteration opts))
+                               ;; only this chain's moves: a chain running
+                               ;; elsewhere in the JVM meanwhile also moves
+                               (when (identical? (:trace/world t) (:trace/world current))
+                                 (swap! seen conj (:iteration opts)))
                                (fn [resolve _] (resolve {:trace t :accepted? false})))]
       (let [opts (transition/options (k/cycle 3 [(k/single-site-mh-kernel 2)
                                                  (k/single-site-mh-kernel 1)]))]
         (is (= 3 (:iteration-stride opts)))
         (await-cps (it/mh-chain current (:iterations opts) opts))
         (is (= (range 9) @seen))
-        (is (= 9 @(:trace/world current)))))))
+        (is (= 9 (get-in @(:trace/world current) [:inference ::it/chain-moves])))))))
 
 (deftest numerical-tempering-fails-before-any-component-moves
   (let [moves (atom 0)]
@@ -128,7 +132,7 @@
                                     (apply adapt state i args))}
       #(b/run-infer 893 (fn []
                           (infer/kernel-infer
-                           (spin (sample (block/block-dist gaussian nil) :id :x :init [0.2]))
+                           (fn [] (task (sample (block/block-dist gaussian nil) :id :x :init [0.2])))
                            (k/cycle 11 [(k/single-site-mh-kernel 100)
                                         (k/within-gibbs (k/nuts-kernel 1 {:burn 10}))]) 1))))
     (is (= (range 10) @seen))))

@@ -14,7 +14,7 @@
             [org.replikativ.foerster.effects :refer [observe sample]]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (defn- test-chains
   "`m` AR(1) chains of `n` draws (coefficient `rho`), the second shifted by
@@ -65,7 +65,7 @@
     (is (< ms 3000) (str ms " ms for 12000 draws"))))
 
 (defn- gaussian []
-  (spin
+  (task
    (let [mu (sample (dist/normal 0.0 1.0) :id :mu)]
      (observe (dist/normal mu 0.5) 1.0 :id :y1)
      (observe (dist/normal mu 0.5) 0.6 :id :y2)
@@ -76,7 +76,7 @@
 (def ^:private post-sd (/ 1.0 3.0))
 
 (deftest kernel-infer-keeps-its-chains
-  (let [measure (b/run-infer 81 #(infer/infer (gaussian) {:method :rmh :iterations 1500 :chains 4
+  (let [measure (b/run-infer 81 #(infer/infer (fn [] (gaussian)) {:method :rmh :iterations 1500 :chains 4
                                                           :burn 300 :step-size 0.6}))
         s (d/summary measure :mu)]
     (is (= [1200 1200 1200 1200] (:chain-lengths measure)))
@@ -86,17 +86,17 @@
     (is (< (Math/abs (- (:mean s) post-mean)) (* 4 (:mcse s))) (str s))
     (testing "a chain started far off is flagged before it mixes"
       (let [short (b/run-infer 82 #(infer/kernel-infer
-                                    (spin (let [mu (sample (dist/normal 0.0 1.0) :id :mu :init 8.0)]
+                                    (fn [] (task (let [mu (sample (dist/normal 0.0 1.0) :id :mu :init 8.0)]
                                             (observe (dist/normal mu 0.5) 1.0 :id :y1)
-                                            mu))
+                                            mu)))
                                     (k/random-walk-mh-kernel 40 {:samples :all :step-size 0.05})
                                     4))]
         (is (> (:rhat (d/summary short :mu)) 1.01))))))
 
 (deftest posterior-predictive-draws
   ;; y_new | data ~ N(post-mean, √(post-sd² + 0.5²))
-  (let [measure (b/run-infer 83 #(infer/infer (gaussian) {:method :smc :particles 2000}))
-        draws (b/run-infer 84 #(infer/predictive (gaussian) measure 3000))
+  (let [measure (b/run-infer 83 #(infer/infer (fn [] (gaussian)) {:method :smc :particles 2000}))
+        draws (b/run-infer 84 #(infer/predictive (fn [] (gaussian)) measure 3000))
         ys (map (comp :y1 :observations) draws)
         mu (/ (reduce + ys) (count ys))
         sd (Math/sqrt (/ (reduce + (map #(let [e (- % mu)] (* e e)) ys)) (count ys)))]
@@ -106,7 +106,7 @@
     (is (not= 1.0 (first ys)) "the observed site drew afresh")))
 
 (deftest pointwise-log-likelihoods
-  (let [measure (b/run-infer 85 #(infer/infer (gaussian) {:method :importance :particles 50}))
+  (let [measure (b/run-infer 85 #(infer/infer (fn [] (gaussian)) {:method :importance :particles 50}))
         ll (d/pointwise-log-likelihood measure)]
     (is (= 50 (count ll)))
     (is (every? #(= #{:y1 :y2} (set (keys %))) ll))
@@ -123,10 +123,11 @@
                 {:method :mh :iterations 1500 :chains 4 :burn 300}
                 {:method :pmmh :particles 50 :iterations 400 :params #{:mu} :scale 0.5 :burn 50}]]
     (testing (name (:method opts))
-      (let [measure (b/run-infer 86 #(infer/infer (gaussian) opts))
+      (let [measure (b/run-infer 86 #(infer/infer (fn [] (gaussian)) opts))
             {:keys [mean]} (d/summary measure identity)]
         (is (< (Math/abs (- mean post-mean)) 0.12) (str (:method opts) " " mean)))))
-  (is (thrown? clojure.lang.ExceptionInfo (infer/infer (gaussian) {:method :nuts}))))
+  (is (thrown? Throwable (infer/infer (fn [] (gaussian)) {:method :nuts}))
+      "a chain method needs :iterations"))
 
 (deftest new-distributions
   (random/set-seed! 87)
@@ -179,7 +180,7 @@
     (is (close? 13.777432895187951 (:p-waic w)))))
 
 (defn- located [mu-prior]
-  (spin
+  (task
    (let [mu (sample mu-prior :id :mu)]
      (loop [i 0]
        (when (< i 6)
@@ -188,7 +189,7 @@
      mu)))
 
 (deftest loo-compares-models
-  (let [fit #(b/run-infer 87 (fn [] (infer/infer (located %) {:method :mh :iterations 2000 :chains 2 :burn 200})))
+  (let [fit #(b/run-infer 87 (fn [] (infer/infer (fn [] (located %)) {:method :mh :iterations 2000 :chains 2 :burn 200})))
         free (fit (dist/normal 0.0 3.0))
         pinned (fit (dist/normal 3.0 0.05))
         l (d/loo free)
@@ -201,7 +202,7 @@
     (is (zero? (:elpd-diff best)))
     (is (> (:elpd-diff worse) (* 2 (:dse worse))))))
 (defn- line [xs ys]
-  (spin
+  (task
    (let [a (sample (dist/normal 0.0 5.0) :id :a)
          b (sample (dist/normal 0.0 5.0) :id :b)]
      (loop [i 0]
@@ -212,11 +213,11 @@
 
 (deftest predictive-on-new-inputs-and-under-interventions
   (let [xs [0.0 1.0 2.0 3.0 4.0] ys [1.1 2.9 5.2 6.9 9.1]
-        measure (b/run-infer 88 #(infer/infer (line xs ys) {:method :mh :iterations 3000 :chains 2 :burn 500}))
+        measure (b/run-infer 88 #(infer/infer (fn [] (line xs ys)) {:method :mh :iterations 3000 :chains 2 :burn 500}))
         mean-of (fn [draws address] (let [vs (map #(get-in % [:observations address]) draws)]
                                       (/ (reduce + vs) (count vs))))
-        new (b/run-infer 89 #(infer/predictive (line [10.0] [0.0]) measure 2000))
-        done (b/run-infer 90 #(infer/predictive (line [10.0] [0.0]) measure 2000 {:interventions {:b 0.0}}))]
+        new (b/run-infer 89 #(infer/predictive (fn [] (line [10.0] [0.0])) measure 2000))
+        done (b/run-infer 90 #(infer/predictive (fn [] (line [10.0] [0.0])) measure 2000 {:interventions {:b 0.0}}))]
     (testing "a new input is predicted from the posterior, not its placeholder data"
       (is (= #{[:y 0]} (set (keys (:observations (first new))))))
       ;; seed-to-seed SD over 12 seeds: 0.35 (single-site MH on correlated a, b);
@@ -250,10 +251,10 @@
                    block/with-numeric-gradient)))
 
 (deftest a-block-shows-its-observations
-  (let [model #(spin (first (sample (block/block-dist mean-block {:ys block-ys}) :id :theta :init [0.0])))
-        measure (b/run-infer 91 #(infer/infer (model) {:method :nuts :iterations 600 :burn 200 :chains 2}))
+  (let [model #(task (first (sample (block/block-dist mean-block {:ys block-ys}) :id :theta :init [0.0])))
+        measure (b/run-infer 91 #(infer/infer (fn [] (model)) {:method :nuts :iterations 600 :burn 200 :chains 2}))
         ll (d/pointwise-log-likelihood measure)
-        draws (b/run-infer 92 #(infer/predictive (model) measure 500))
+        draws (b/run-infer 92 #(infer/predictive (fn [] (model)) measure 500))
         ys (map #(get-in % [:observations [:theta 0]]) draws)
         post-mean (/ (reduce + block-ys) (+ (count block-ys) (/ 1.0 9.0)))]
     (is (= (set (map #(vector :theta %) (range 5))) (set (keys (first ll)))))
@@ -262,8 +263,8 @@
     (is (< (Math/abs (- (/ (reduce + ys) (count ys)) post-mean)) 0.2))))
 
 (deftest arviz-groups
-  (let [measure (b/run-infer 93 #(infer/infer (located (dist/normal 0.0 3.0)) {:method :mh :iterations 30 :chains 2 :burn 10}))
-        pp (b/run-infer 94 #(infer/predictive (located (dist/normal 0.0 3.0)) measure 7))
+  (let [measure (b/run-infer 93 #(infer/infer (fn [] (located (dist/normal 0.0 3.0))) {:method :mh :iterations 30 :chains 2 :burn 10}))
+        pp (b/run-infer 94 #(infer/predictive (fn [] (located (dist/normal 0.0 3.0))) measure 7))
         data (arviz/inference-data measure {:predictive pp})]
     (is (= #{"posterior" "log_likelihood" "observed_data" "posterior_predictive"} (set (keys data))))
     (is (= [2 20] [(count (get-in data ["posterior" "mu"])) (count (first (get-in data ["posterior" "mu"])))]))

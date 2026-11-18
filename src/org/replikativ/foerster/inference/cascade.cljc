@@ -23,20 +23,21 @@
   branching draws come from each particle's world stream, but the running
   means depend on arrival order, so runs on a multi-threaded executor are not
   reproducible from their seed."
-  (:require [org.replikativ.foerster.measure :as m]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
+            [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.runtime.trace :as itrace]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.trace :as trace]
+            [org.replikativ.spindel.v2.savepoint :as sp]
+            [org.replikativ.spindel.v2.core :as v2]
+            [org.replikativ.spindel.v2.trace :as trace]
             [replikativ.logging :as log]))
 
-(defn- weight-of [world] (or (rtp/get-state world [:inference :log-weight]) 0.0))
-(defn- multiplicity [world] (or (rtp/get-state world [:inference :multiplicity]) 1.0))
-(defn- stage-of [world] (or (rtp/get-state world [:inference :barriers]) 0))
+(defn- weight-of [world] (or (v2/get-in-world world [:inference :log-weight]) 0.0))
+(defn- multiplicity [world] (or (v2/get-in-world world [:inference :multiplicity]) 1.0))
+(defn- stage-of [world] (or (v2/get-in-world world [:inference :barriers]) 0))
 
 (defn- forks
   "Fork `sp` `k` times; resolves the children."
@@ -48,9 +49,9 @@
             remaining (atom k)
             failed? (atom false)]
         (dotimes [i k]
-          ((sp/fork sp)
+          ((async/now sp/fork sp)
            (fn [child]
-             (aset out i child)
+             (aset out i (itrace/inherit-decision! sp child))
              (when (zero? (swap! remaining dec)) (resolve (vec out))))
            (fn [e] (when (compare-and-set! failed? false true) (reject e)))))))))
 
@@ -76,10 +77,10 @@
     (when (< cap n)
       (throw (ex-info ":cap must allow the initial particles" {:type ::invalid-cap :cap cap :n n})))
     (fn [resolve reject]
-      (let [[resolve reject] (sp/in-callers-world resolve reject)
+      (let [[resolve reject] [resolve reject]
             seed (or (:seed opts) (random/fresh-seed))
             policy (or policy (itrace/policy))
-            root (if executor (ctx/create-execution-context :executor executor) (ctx/create-execution-context))
+            root (lt/world opts (when executor {:executor executor}))
             session (sp/open! root {:purpose :cascade
                                     :seed seed
                                     :fork-opts {:systems :none}
@@ -180,12 +181,12 @@
                                                                (update :collapsed + (- extra forked))))))
                             forked (- (:alive after) (:alive before))
                             collapsed (- extra forked)]
-                        (rtp/swap-state! world [:inference :log-weight] (constantly log-weight))
+                        (v2/update-in-world! world [:inference :log-weight] (constantly log-weight))
                         ((forks sp forked)
                          (fn [children]
                            ;; the particle carries the copies that found no room
                            (when (pos? collapsed)
-                             (rtp/swap-state! world [:inference :multiplicity] (constantly (* mult (inc collapsed)))))
+                             (v2/update-in-world! world [:inference :multiplicity] (constantly (* mult (inc collapsed)))))
                            (enqueue! (mapv (fn [s] #(sp/resume s value)) (cons sp children)))
                            (stopped!))
                          fail!)))))
@@ -206,7 +207,7 @@
                    (fn [children]
                      (sp/abandon first-sp)
                      (doseq [child children]
-                       (rtp/swap-state! (:savepoint/world child) [:inference :particle?] (constantly true)))
+                       (v2/update-in-world! (:savepoint/world child) [:inference :particle?] (constantly true)))
                      (enqueue! (mapv (fn [child] #(run-site! child)) children)))
                    fail!))]
           (try
@@ -214,22 +215,23 @@
              root
              {sp/any-site
               (fn [s]
-                (if (rtp/get-state (:savepoint/world s) [:inference :particle?])
+                (if (v2/get-in-world (:savepoint/world s) [:inference :particle?])
                   (run-site! s)
                   (spawn! s)))
               sp/result-site
               (fn [{world :savepoint/world result :savepoint/payload}]
-                (if (rtp/get-state world [:inference :particle?])
+                (if (v2/get-in-world world [:inference :particle?])
                   (let [w (+ (weight-of world) (Math/log (multiplicity world)))]
                     (swap! state update :done conj
-                           [(m/sample-particle result (itrace/legacy-trace (rtp/get-state world [:savepoint/trace]))) w])
+                           [(m/sample-particle result (itrace/legacy-trace (v2/get-in-world world [:savepoint/trace]))) w])
                     (sp/release-world! session world)
                     (ended!)
                     (stopped!))
                   ;; a program without savepoints: one deterministic run
                   (finish! resolve (m/empirical [[(m/sample-particle result {}) 0.0]]))))
               sp/error-site (fn [{error :savepoint/payload}] (fail! error))
-              sp/abandoned-site (fn [_] nil)})
+              ;; given back by its owner: the inference was cancelled
+              sp/abandoned-site (fn [e] (when (lt/released-end? e) (fail! (:savepoint/payload e))))})
             (sp/start! session model)
             (catch #?(:clj Throwable :cljs :default) e
               (log/error :cascade/start-failed {:error e})

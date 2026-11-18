@@ -12,14 +12,16 @@
   states) lives with the models: finetune-rstr's typed-decision records take
   a state and the probability of success as a soft target.
 
-    (learn/draws (await (infer/smc-infer (steer/model …) 64)) 256)"
+    (learn/draws (pcps/await (async/op-of (infer/smc-infer (steer/model …) 64))) 256)"
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.foerster.core :as infer]
+  (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.core :as infer]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.spin.cps :refer [spin]])
-  #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])
+  #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]])))
 
 (defn trajectory
   "A particle's steered trajectory: {:states [s₀ s₁ …] :reward r}, the states
@@ -55,7 +57,7 @@
 (defn maximize-evidence
   "Fit a model's parameters by maximum marginal likelihood (empirical Bayes;
   what Gen's `train!` does for a model's parameters): `model-fn` maps a
-  parameter map {name value} to a spin, and the parameters climb the
+  parameter map {name value} to a task, and the parameters climb the
   evidence log Ẑ(θ) that `infer-opts` (a particle method of `infer/infer`)
   estimates. The gradient is central differences of step `:h`, both sides
   run with the same seed (common random numbers), so their difference is
@@ -67,19 +69,19 @@
   inferences per step for d parameters: for many parameters, or a guide
   network, train with gradients in finetune-rstr / raster instead."
   [model-fn params infer-opts & [{:keys [steps rate h seed] :or {steps 100 rate 0.05 h 0.02}}]]
-  (spin
+  (pcps/async
    (let [names (vec (keys params))
          base-seed (or seed 1)]
      (loop [t 1 theta params m (zipmap names (repeat 0.0)) v (zipmap names (repeat 0.0)) history []]
        (if (> t steps)
          {:params theta :history history}
          (let [opts (assoc infer-opts :seed (+ (* 1000003 base-seed) t))
-               lz (m/log-marginal (await (infer/infer (model-fn theta) opts)))
+               lz (m/log-marginal (pcps/await (infer/infer-op #(model-fn theta) opts)))
                grad (loop [[k & more] names g {}]
                       (if-not k
                         g
-                        (let [up (m/log-marginal (await (infer/infer (model-fn (update theta k + h)) opts)))
-                              down (m/log-marginal (await (infer/infer (model-fn (update theta k - h)) opts)))]
+                        (let [up (m/log-marginal (pcps/await (infer/infer-op #(model-fn (update theta k + h)) opts)))
+                              down (m/log-marginal (pcps/await (infer/infer-op #(model-fn (update theta k - h)) opts)))]
                           (recur more (assoc g k (/ (- up down) (* 2.0 h)))))))
                ;; Adam (Kingma & Ba 2015), ascending
                m (into {} (map (fn [k] [k (+ (* 0.9 (m k)) (* 0.1 (grad k)))]) names))

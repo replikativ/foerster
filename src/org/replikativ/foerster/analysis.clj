@@ -40,8 +40,8 @@
   prints both."
   (:require [clojure.set :as set]
             [clojure.string :as str]
-            ;; `model` expands to a spin
-            [org.replikativ.spindel.spin.cps]))
+            ;; `model` expands to a task
+            [org.replikativ.spindel.v2.core]))
 
 ;; -----------------------------------------------------------------------------
 ;; What the walk recognizes
@@ -57,7 +57,7 @@
     org.replikativ.foerster.core/factor :factor})
 
 (def ^:private spin-macros
-  '#{org.replikativ.spindel.spin.cps/spin})
+  '#{org.replikativ.spindel.v2.core/task org.replikativ.spindel.v2.core/spin})
 
 (def ^:private dist-ns "org.replikativ.foerster.dist")
 
@@ -204,8 +204,9 @@
                              :else [:loc (:line (meta form)) (:column (meta form))])
               :structural? (nil? id-form)
               ;; where it is written, as a site's runtime payload has it
+              ;; (`:site`: engine v2's call-site hash of ns, line and column)
               :loc (when (:line (meta form))
-                     [(str (ns-name (:ns st))) (:line (meta form)) (:column (meta form))])
+                     (bit-and 0x3fffffff (hash [(str (ns-name (:ns st))) (:line (meta form)) (:column (meta form))])))
               :dist (cond-> {:args arg-values}
                       ctor (assoc :ctor ctor)
                       (not ctor) (assoc :expr dist-form))
@@ -494,27 +495,37 @@
   `(quote ~(analyze-form (if (next body) (cons 'do body) (first body))
                          {:ns *ns* :locals (keys &env)})))
 
-(defonce ^:private applications
-  ;; spin -> [model args], weakly: what `applied` answers
-  (java.util.Collections/synchronizedMap (java.util.WeakHashMap.)))
+(def ^:dynamic *probe*
+  "Bound by `applied`: a `model` called under it records [model args] here
+  instead of making a task."
+  nil)
 
 (defn applied
-  "[model args] for a spin a `model` made, or nil."
-  [s]
-  (.get ^java.util.Map applications s))
+  "[model args] when the model thunk `thunk` applies a `model`, or nil. The
+  thunk is called once under a probe, in a world of its own released
+  afterwards: a `model` makes no task then; any other task is given up."
+  [thunk]
+  (let [probe (volatile! nil)
+        w (org.replikativ.spindel.v2.core/world)]
+    (try
+      (binding [org.replikativ.spindel.v2.core/*world* w
+                *probe* probe]
+        (thunk))
+      (finally (org.replikativ.spindel.v2.core/release-world! w)))
+    @probe))
 
 (defmacro model
-  "`(fn args (spin body…))`, carrying the site graph of `body` as metadata
-  (`graph-of`): a model whose structure inference can read. The spins it
-  makes remember it and their arguments (`applied`)."
+  "`(fn args (task body…))`, carrying the site graph of `body` as metadata
+  (`graph-of`): a model whose structure inference can read. Called under
+  `applied`'s probe it records itself and its arguments instead."
   [args & body]
   (let [g (analyze-form (cons 'do body) {:ns *ns* :locals (concat (keys &env) (flatten args))})]
     `(let [self# (promise)
-           make# (fn ~args (org.replikativ.spindel.spin.cps/spin ~@body))
+           make# (fn ~args (org.replikativ.spindel.v2.core/task ~@body))
            f# (with-meta (fn [& xs#]
-                           (let [s# (apply make# xs#)]
-                             (.put ^java.util.Map @#'applications s# [@self# (vec xs#)])
-                             s#))
+                           (if-let [probe# *probe*]
+                             (vreset! probe# [@self# (vec xs#)])
+                             (apply make# xs#)))
                 {::graph '~g
                  ::source {:ns '~(ns-name *ns*) :params '~args :body '~body}})]
        (deliver self# f#)

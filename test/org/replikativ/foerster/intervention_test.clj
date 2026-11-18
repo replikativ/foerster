@@ -4,22 +4,20 @@
   The model is confounded: Z ~ N(0,1), X ~ N(Z,1), Y ~ N(X+Z,1). Seeing X = 1
   says something about Z (E[Y | X=1] = 1.5); setting X = 1 does not
   (E[Y | do(X=1)] = 1)."
-  (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.effects.savepoint :as sp]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is testing]]
+            [org.replikativ.spindel.v2.savepoint :as sp]
             [org.replikativ.foerster.random :as random]
             [org.replikativ.spindel.select :as sel]
-            [org.replikativ.spindel.trace :as trace]
+            [org.replikativ.spindel.v2.trace :as trace]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.effects :refer [sample]]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.dist :as dist]))
 
 (deftest policy-interventions-precede-live-world-interventions
-  (let [world (context/create-execution-context)
+  (let [world (v2/world)
         opts {:interventions {:x {:do 1.0}}}
         policy (itrace/policy opts)
         site (fn [address]
@@ -27,15 +25,15 @@
                 :savepoint/address address
                 :savepoint/payload {:dist (dist/normal 0.0 1.0)}})]
     (is (= opts (itrace/policy-options policy)))
-    (rtp/swap-state! world [:inference :interventions] (constantly {:x 2.0 :y 3.0}))
+    (v2/update-in-world! world [:inference :interventions] (constantly {:x 2.0 :y 3.0}))
     (is (= 1.0 (:value (policy (site :x) nil))))
     (is (= 3.0 (:value (policy (site :y) nil))))
-    (rtp/swap-state! world [:inference :interventions] #(assoc % :y 4.0))
+    (v2/update-in-world! world [:inference :interventions] #(assoc % :y 4.0))
     (is (= 4.0 (:value (policy (site :y) nil))))))
 
 (defn- await-cps [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [outcome (deref result 20000 ::timeout)]
       (when (= ::timeout outcome)
         (throw (ex-info "CPS operation timed out" {})))
@@ -44,15 +42,15 @@
 (defn- run
   "One run of `(make)` under `policy-opts`; returns [result log-weight trace]."
   [make policy-opts]
-  (let [root (context/create-execution-context)
+  (let [root (v2/world)
         session (sp/open! root {:seed (random/fresh-seed) :fork-opts {:systems :none} :retain-released? false})
-        t (await-cps (trace/run session (binding [ec/*execution-context* root] (make))
+        t (await-cps (trace/run session make
                                 (itrace/policy policy-opts)))]
     (await-cps (sp/close! session))
     [(:trace/result t) (itrace/log-weight t) t]))
 
 (defn- scm []
-  (spin
+  (task
    (let [z (sample (dist/normal 0.0 1.0) :id :z)
          x (sample (dist/normal z 1.0) :id :x)
          y (sample (dist/normal (+ x z) 1.0) :id :y)]
@@ -101,7 +99,7 @@
 
 (deftest interventions-select-by-path
   (let [units (fn []
-                (spin
+                (task
                  (loop [i 0 acc []]
                    (if (= i 3)
                      acc

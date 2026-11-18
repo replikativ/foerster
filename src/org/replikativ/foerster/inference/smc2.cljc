@@ -22,6 +22,7 @@
   simulation of the program (`foerster.runtime.gfi/simulate`). Correlated PMMH, which
   needs SMC driven by explicit noise, is not provided."
   (:require [org.replikativ.foerster.runtime.execution :as execution]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.foerster.runtime.scope :as scope]
             [org.replikativ.foerster.runtime.cursor :as cursor]
             [org.replikativ.foerster.weights :as weights]
@@ -33,8 +34,8 @@
             [org.replikativ.foerster.contract :as contract]
             [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.foerster.dist :as dist]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.engine.protocols :as rtp]))
+            [org.replikativ.spindel.v2.savepoint :as sp]
+            [org.replikativ.spindel.v2.core :as v2]))
 
 (defn- then [operation f]
   (fn [resolve reject]
@@ -45,7 +46,7 @@
 (defn- prior-draw
   "θ from the program's own prior: a simulation's values at `params`."
   [model params opts & [parameter-prefix?]]
-  (then (gfi/simulate model (select-keys opts [:executor :inference-scope :canonical-source :world-opts]))
+  (then (gfi/simulate model (select-keys opts [:executor :inference-scope :canonical-source :world-opts ::lt/lifetime]))
         (fn [t resolve reject]
           (let [choices (itrace/choices t)
                 missing (remove #(contains? choices %) params)
@@ -88,7 +89,7 @@
     (fn [savepoint old-entry]
       (when (and (= itrace/choose-site (:savepoint/site savepoint))
                  (not (contains? params (:savepoint/address savepoint))))
-        (let [entries (:trace/entries (rtp/get-state (:savepoint/world savepoint) [:savepoint/trace]))
+        (let [entries (:trace/entries (v2/get-in-world (:savepoint/world savepoint) [:savepoint/trace]))
               missing (remove #(= itrace/choose-site (:site (get entries %))) params)]
           (when (seq missing)
             (throw (ex-info "SMC² parameters must precede every inner sample site"

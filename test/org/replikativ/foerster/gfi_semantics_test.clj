@@ -3,32 +3,31 @@
   kept values that leave their support, the densities of sites a replay draws
   afresh or drops, constrained sites across replays, and constraints the run
   never reaches. Each is checked against an exact answer."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.proposal :as proposal]
             [org.replikativ.foerster.runtime.gfi :as gfi]
             [org.replikativ.foerster.moves.involutive :as inv]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.effects :refer [sample observe]]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.random :as random]))
 
 (defn- await-cps [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [outcome (deref result 60000 ::timeout)]
       (when (= ::timeout outcome)
         (throw (ex-info "CPS operation timed out" {})))
       (if (= :ok (first outcome)) (second outcome) (throw (second outcome))))))
 
 (defmacro ^:private with-root [[root] & body]
-  `(let [~root (context/create-execution-context)]
+  `(let [~root (v2/world)]
      (try
        ~@body
        (finally
-         (context/close-context! ~root)))))
+         (v2/release-world! ~root)))))
 
 (defn- lp [d v] (dist/logpdf d v))
 
@@ -41,30 +40,27 @@
   "x ~ Exp(1), z | x ~ U(0, x): no data, so the target is the prior,
   E[x] = 1 and E[z] = 1/2. Moving x below z leaves z outside its support."
   [root]
-  (binding [ec/*execution-context* root]
-    (spin (let [x (sample (dist/exponential 1.0) :id :x)
+  (task (let [x (sample (dist/exponential 1.0) :id :x)
                 z (sample (dist/uniform 0.0 x) :id :z)]
-            [x z]))))
+            [x z])))
 
 (defn- hierarchical
   "x ~ N(0,1), z | x ~ N(x,1), y = 2 | z ~ N(z,1)."
   [root]
-  (binding [ec/*execution-context* root]
-    (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)
+  (task (let [x (sample (dist/normal 0.0 1.0) :id :x)
                 z (sample (dist/normal x 1.0) :id :z)]
             (observe (dist/normal z 1.0) 2.0 :id :y)
-            x))))
+            x)))
 
 (defn- switch
   "Which latent exists depends on b."
   [root]
-  (binding [ec/*execution-context* root]
-    (spin (let [b (sample (dist/flip 0.5) :id :b)
+  (task (let [b (sample (dist/flip 0.5) :id :b)
                 v (if b
                     (sample (dist/normal 0.0 1.0) :id :v0)
                     (sample (dist/normal 5.0 1.0) :id :v1))]
             (observe (dist/normal v 1.0) 5.0 :id :y)
-            b))))
+            b)))
 
 (def ^:private y-switch 2.0)
 
@@ -72,13 +68,12 @@
   "b ~ flip(1/2); v0 ~ N(0,1) drawn from its site proposal N(3,1) when b,
   else v1 ~ N(5,1); y = 2 ~ N(v,1). P(b | y) = N(2;0,√2) / (N(2;0,√2) + N(2;5,√2))."
   [root]
-  (binding [ec/*execution-context* root]
-    (spin (let [b (sample (dist/flip 0.5) :id :b)
+  (task (let [b (sample (dist/flip 0.5) :id :b)
                 v (if b
                     (sample (dist/normal 0.0 1.0) :id :v0 :proposal (dist/normal 3.0 1.0))
                     (sample (dist/normal 5.0 1.0) :id :v1))]
             (observe (dist/normal v 1.0) y-switch :id :y)
-            b))))
+            b)))
 
 (def ^:private exact-p-b
   (let [a (Math/exp (lp (dist/normal 0.0 (Math/sqrt 2.0)) y-switch))
@@ -99,7 +94,7 @@
   "Alternate `flip-step` with a random walk on v; the fraction of b = true
   after burn-in."
   [root flip-step n]
-  (loop [t (await-cps (gfi/simulate (switch-with-proposal root))) i 0 bs []]
+  (loop [t (await-cps (gfi/simulate (fn [] (switch-with-proposal root)))) i 0 bs []]
     (if (= i n)
       (do (await-cps (gfi/close! t)) (mean bs))
       (let [t1 (:trace (await-cps (flip-step t i)))
@@ -111,7 +106,7 @@
 
 (deftest update-keeps-a-value-outside-its-new-support
   (with-root [root]
-    (let [{t :trace} (await-cps (gfi/generate (nested-support root) {:x 2.0 :z 1.5}))
+    (let [{t :trace} (await-cps (gfi/generate (fn [] (nested-support root)) {:x 2.0 :z 1.5}))
           {t' :trace w :weight d :discard} (await-cps (gfi/update t {:x 1.0}))]
       (testing "Gen's update keeps z: the new trace has density zero"
         (is (= 1.5 (get (itrace/choices t') :z)))
@@ -126,9 +121,8 @@
   (random/set-seed! 5)
   (with-root [root]
     (let [proposal (fn [_choices]
-                     (binding [ec/*execution-context* root]
-                       (spin (sample (dist/exponential 1.0) :id :x))))
-          samples (loop [t (await-cps (gfi/simulate (nested-support root))) i 0 acc []]
+                     (fn [] (task (sample (dist/exponential 1.0) :id :x))))
+          samples (loop [t (await-cps (gfi/simulate (fn [] (nested-support root)))) i 0 acc []]
                     (if (= i 4000)
                       (do (await-cps (gfi/close! t)) acc)
                       (let [t1 (:trace (await-cps (gfi/mh-proposal t proposal)))
@@ -161,15 +155,14 @@
   (random/set-seed! 13)
   (with-root [root]
     (let [flip-b (fn [{b :b}]
-                   (binding [ec/*execution-context* root]
-                     (spin (sample (dist/flip (if b 0.0 1.0)) :id :b))))
+                   (fn [] (task (sample (dist/flip (if b 0.0 1.0)) :id :b))))
           p (p-b-chain root (fn [t _] (gfi/mh-proposal t flip-b)) 12000)]
       (is (< (Math/abs (- p exact-p-b)) 0.04)
           (str "P(b) " p " exact " exact-p-b)))))
 
 (deftest involutive-moves-can-check-the-involution
   (with-root [root]
-    (let [t (await-cps (gfi/simulate (switch-with-proposal root)))
+    (let [t (await-cps (gfi/simulate (fn [] (switch-with-proposal root))))
           not-an-involution {:propose (fn [_] {:aux 1.0 :log-q 0.0})
                              :log-q (fn [_ _] 0.0)
                              :involution (fn [{b :b} u] {:choices {:b (not b)} :aux (inc u) :log-jacobian 0.0})}]
@@ -184,13 +177,13 @@
 (deftest constrained-sites-stay-constrained-across-replays
   (with-root [root]
     (testing "update"
-      (let [{t :trace} (await-cps (gfi/generate (hierarchical root) {:x 0.5 :z 1.5}))
+      (let [{t :trace} (await-cps (gfi/generate (fn [] (hierarchical root)) {:x 0.5 :z 1.5}))
             {t' :trace} (await-cps (gfi/update t {:x -0.5}))]
         (is (= [] (itrace/latent-addresses t')))
         (is (:constrained? (:note (get-in t' [:trace/entries :z]))))
         (await-cps (gfi/close! t))))
     (testing "an MH move upstream of a constrained site"
-      (let [{t :trace} (await-cps (gfi/generate (hierarchical root) {:z 1.5}))
+      (let [{t :trace} (await-cps (gfi/generate (fn [] (hierarchical root)) {:z 1.5}))
             {t' :trace} (await-cps (gfi/regenerate t #{:x}))]
         (is (= [:x] (itrace/latent-addresses t')))
         (is (= 1.5 (get (itrace/choices t') :z)))
@@ -203,14 +196,14 @@
   (with-root [root]
     (testing "generate"
       (is (= :org.replikativ.foerster.runtime.gfi/unvisited-constraints
-             (:type (ex-data (try (await-cps (gfi/generate (switch root) {:b true :v1 3.0}))
+             (:type (ex-data (try (await-cps (gfi/generate (fn [] (switch root)) {:b true :v1 3.0}))
                                   (catch Exception e e))))))
-      (let [{t :trace} (await-cps (gfi/generate (switch root) {:b true :v1 3.0}
+      (let [{t :trace} (await-cps (gfi/generate (fn [] (switch root)) {:b true :v1 3.0}
                                                 {:allow-unvisited? true}))]
         (is (not (contains? (itrace/choices t) :v1)))
         (await-cps (gfi/close! t))))
     (testing "update"
-      (let [{t :trace} (await-cps (gfi/generate (switch root) {:b true :v0 0.3}))]
+      (let [{t :trace} (await-cps (gfi/generate (fn [] (switch root)) {:b true :v0 0.3}))]
         (is (= :org.replikativ.foerster.runtime.gfi/unvisited-constraints
                (:type (ex-data (try (await-cps (gfi/update t {:v1 3.0}))
                                     (catch Exception e e))))))
@@ -226,7 +219,7 @@
 
 (deftest updated-latent-sites-stay-latent
   (with-root [root]
-    (let [t (await-cps (gfi/simulate (hierarchical root)))
+    (let [t (await-cps (gfi/simulate (fn [] (hierarchical root))))
           {t' :trace w :weight} (await-cps (gfi/update t {:x 1.0}))
           z (get (itrace/choices t) :z)]
       (is (= #{:x :z} (set (itrace/latent-addresses t'))) "a new value is not new conditioning")
@@ -242,7 +235,7 @@
   (random/set-seed! 21)
   (with-root [root]
     (let [t (loop [i 0]
-              (let [t (await-cps (gfi/simulate (nested-support root)))
+              (let [t (await-cps (gfi/simulate (fn [] (nested-support root))))
                     [_ z] (:trace/result t)]
                 (if (or (> z 1.0) (> i 500)) t (do (await-cps (gfi/close! t)) (recur (inc i))))))
           z (get (itrace/choices t) :z)
@@ -255,8 +248,7 @@
 
 (deftest update-reports-a-failing-replay
   (with-root [root]
-    (let [model (binding [ec/*execution-context* root]
-                  (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)]
+    (let [model (fn [] (task (let [x (sample (dist/normal 0.0 1.0) :id :x)]
                           (when (> x 5.0) (throw (ex-info "too large" {})))
                           (sample (dist/normal x 1.0) :id :z))))
           t (await-cps (gfi/simulate model))
@@ -269,8 +261,7 @@
   ;; z ~ U(x, x + 1/2): shifting x by 2 redraws z from its new support; the
   ;; reverse redraws it back, so the ratio is the prior ratio of x alone
   (with-root [root]
-    (let [model (binding [ec/*execution-context* root]
-                  (spin (let [x (sample (dist/normal 0.0 1.0) :id :x)
+    (let [model (fn [] (task (let [x (sample (dist/normal 0.0 1.0) :id :x)
                               z (sample (dist/uniform x (+ x 0.5)) :id :z)]
                           [x z])))
           shift {:propose (fn [_] {:aux 2.0 :log-q 0.0})
@@ -285,7 +276,7 @@
 
 (deftest the-involution-check-accepts-full-choice-maps
   (with-root [root]
-    (let [t (await-cps (gfi/simulate (switch-with-proposal root)))
+    (let [t (await-cps (gfi/simulate (fn [] (switch-with-proposal root))))
           full {:propose (fn [_] {:aux nil :log-q 0.0})
                 :log-q (fn [_ _] 0.0)
                 :involution (fn [x _] {:choices (update x :b not) :aux nil :log-jacobian 0.0})}]
@@ -294,7 +285,7 @@
 
 (deftest involutions-cannot-change-observations
   (with-root [root]
-    (let [t (await-cps (gfi/simulate (hierarchical root)))
+    (let [t (await-cps (gfi/simulate (fn [] (hierarchical root))))
           move {:propose (fn [_] {:aux nil :log-q 0.0})
                 :log-q (fn [_ _] 0.0)
                 :involution (fn [_ _] {:choices {:y 0.0} :aux nil :log-jacobian 0.0})}]
@@ -306,10 +297,9 @@
   ;; two runs from the same seeded trace propose the same moves, whatever the
   ;; process generator has drawn in between
   (with-root [root]
-    (let [proposal (fn [_] (binding [ec/*execution-context* root]
-                             (spin (sample (dist/normal 0.0 1.0) :id :x))))
+    (let [proposal (fn [_] (fn [] (task (sample (dist/normal 0.0 1.0) :id :x))))
           run (fn [noise]
-                (let [{t :trace} (await-cps (gfi/generate (hierarchical root) {} {:seed 9}))]
+                (let [{t :trace} (await-cps (gfi/generate (fn [] (hierarchical root)) {} {:seed 9}))]
                   (dotimes [_ noise] (random/fresh-seed))
                   (let [xs (loop [t t i 0 acc []]
                              (if (= i 20) acc

@@ -21,11 +21,11 @@
   dropped. A site the replay reaches afresh without the involution setting
   it is drawn from its prior, and one it no longer reaches and that is not
   `:removed` is dropped, both scored as in single-site MH."
-  (:require [org.replikativ.spindel.trace :as trace]
+  (:require [org.replikativ.spindel.v2.trace :as trace]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.moves.transport :as transport]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.engine.protocols :as rtp]))
+            [org.replikativ.spindel.v2.core :as v2]))
 
 (defn- entry-map [t]
   (into {} (map (juxt :address identity)) (itrace/entries t)))
@@ -115,7 +115,7 @@
       (let [x (itrace/choices trace)
             world (:trace/world trace)
             ;; every move from this state draws its own auxiliary variable
-            move (rtp/swap-state! world [:inference ::moves] (fnil inc 0))
+            move (get-in (v2/update-in-world! world [:inference ::moves] (fnil inc 0)) [:inference ::moves])
             {u :aux lq-fwd :log-q} (random/in-world-stream world [::aux move] #(propose x))
             {x' :choices u' :aux lj :log-jacobian removed :removed}
             (transport/require-jacobian! (involution x u) "An involution")

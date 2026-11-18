@@ -9,20 +9,20 @@
             [org.replikativ.foerster.random :as random]
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.inference.steer :as steer]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]))
 
 (def ^:private lambda 0.8)
 
 (defn- process []
   (steer/model {:init 0
-                :step (fn [heads] (spin (+ heads (if (< (random/uniform01) 0.5) 1 0))))
+                :step (fn [heads] (task (+ heads (if (< (random/uniform01) 0.5) 1 0))))
                 :done? (constantly false)
                 :max-steps 5
                 ;; no twist: the weights carry the whole tilt until the end
                 :reward (fn [heads] (* lambda heads))}))
 
 (deftest trajectories-carry-states-rewards-and-weights
-  (let [measure (b/run-infer 51 #(smc/smc (process) 200 {:resample-threshold 0.0}))
+  (let [measure (b/run-infer 51 #(smc/smc (fn [] (process)) 200 {:resample-threshold 0.0}))
         ts (learn/trajectories measure)]
     (is (= 200 (count ts)))
     (is (every? #(= 5 (count (:states %))) ts))
@@ -33,7 +33,7 @@
 
 (deftest draws-follow-the-target
   ;; unweighted draws from the tilted law: mean heads 5·e^λ/(1+e^λ)
-  (let [measure (b/run-infer 52 #(smc/smc (process) 2000 {:resample-threshold 0.0}))
+  (let [measure (b/run-infer 52 #(smc/smc (fn [] (process)) 2000 {:resample-threshold 0.0}))
         ;; resampled on a stream of its own: the process generator is shared
         ;; with whatever else draws in this JVM
         ds (random/with-stream* 52 ::draws #(learn/draws measure 4000))
@@ -43,18 +43,18 @@
     (is (< (Math/abs (- mean exact)) 0.1) (str mean " vs " exact))))
 
 (deftest a-trajectory-keeps-what-is-recorded
-  (let [measure (b/run-infer 53 #(smc/smc (steer/model {:init {:heads 0 :cache (range 100)}
-                                                        :step (fn [s] (spin (update s :heads + (if (< (random/uniform01) 0.5) 1 0))))
+  (let [measure (b/run-infer 53 #(smc/smc (fn [] (steer/model {:init {:heads 0 :cache (range 100)}
+                                                        :step (fn [s] (task (update s :heads + (if (< (random/uniform01) 0.5) 1 0))))
                                                         :done? (constantly false)
                                                         :max-steps 3
-                                                        :record :heads})
+                                                        :record :heads}))
                                           20 {}))]
     (is (every? #(every? number? (:states %)) (learn/trajectories measure)))))
 
 (defn- noisy-mean
   "mu ~ N(0, 1), y ~ N(mu, σ) with σ = exp(:log-sigma) a parameter."
   [{:keys [log-sigma]}]
-  (spin
+  (task
    (let [mu (sample (dist/normal 0.0 1.0) :id :mu)
          s (Math/exp log-sigma)]
      (loop [[y & more] [0.5 2.1 -0.3 1.7 1.2 0.9 2.6 -0.8] i 0]

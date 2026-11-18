@@ -19,7 +19,8 @@
   `posterior` projects a measure to values, weights and its chain
   structure. Seeds are per run (`:seed`); the process generator is not
   exposed."
-  (:require [org.replikativ.foerster.block :as block]
+  (:require [is.simm.partial-cps.async :as pcps]
+            [org.replikativ.foerster.block :as block]
             [org.replikativ.foerster.core :as core]
             [org.replikativ.foerster.diagnostics :as diag]
             [org.replikativ.foerster.dist :as dist]
@@ -27,12 +28,9 @@
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.inference.optimize :as opt]
             [org.replikativ.foerster.random :as random]
-            [org.replikativ.spindel.effects.savepoint :as savepoint]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.spin.sync :as sync]
+            [org.replikativ.spindel.v2.savepoint :as savepoint]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
+            [org.replikativ.foerster.runtime.async :as async :refer [await-op]]
             [clojure.string :as str]
             [clojure.walk :as walk]))
 
@@ -213,17 +211,20 @@
     (ex-info (str/join " — caused by: " (remove nil? messages))
              (select-keys (ex-data e) [:type]))))
 
-(defn- run [model opts host next-seed]
+(defn- run
+  "A task of the posterior of `model` (a function creating a task) as data,
+  in the current world."
+  [model opts host next-seed]
   (let [native (try (core/infer model (checked opts host next-seed))
                     (catch Exception e (throw (sanitized e))))]
-    (spin (try (posterior (await native))
-               (catch Exception e (throw (sanitized e)))))))
+    (async/as-task (pcps/async (try (posterior (pcps/await (async/op-of native)))
+                                    (catch Exception e (throw (sanitized e))))))))
 
-(defrecord Job [spin context terminal done])
+(defrecord Job [task terminal done])
 
 (defn- finish!
   "The job's one terminal transition; false if it already had one. A
-  finished job keeps only its outcome in `jobs`, not its spin or context."
+  finished job keeps only its outcome in `jobs`, not its task."
   [^Job job jobs id outcome]
   (when (compare-and-set! (:terminal job) nil outcome)
     (deliver (:done job) outcome)
@@ -235,11 +236,13 @@
   until forgotten."
   [model opts {:keys [on-start] :as host} next-seed jobs]
   (let [s (run model opts host next-seed)
-        job (->Job s ec/*execution-context* (atom nil) (promise))
+        job (->Job s (atom nil) (promise))
         id (random-uuid)]
     (swap! jobs assoc id job)
-    (sync/spawn! s {:on-success #(finish! job jobs id {:status :done :value %})
-                    :on-error #(finish! job jobs id {:status :failed :error (ex-message %)})})
+    (v2/observe! s (fn [v err?]
+                     (if err?
+                       (finish! job jobs id {:status :failed :error (ex-message v)})
+                       (finish! job jobs id {:status :done :value v}))))
     (when on-start (on-start job))
     {:job/id id}))
 
@@ -262,13 +265,11 @@
       :cancelled (throw (ex-info "Inference was cancelled" {:type ::cancelled})))))
 
 (defn- cancel
-  "Stop the job, in the context it was started in; a finished job stays
-  as it finished."
+  "Stop the job; a finished job stays as it finished."
   [job jobs id]
-  (let [s (:spin job) context (:context job)]
+  (let [t (:task job)]
     (when (finish! job jobs id {:status :cancelled})
-      (binding [ec/*execution-context* context]
-        (spin-core/cancel-spin! s))))
+      (v2/cancel-task! t)))
   nil)
 
 (defn cancel-job!
@@ -412,7 +413,7 @@
 
 (def docs
   "{ns-sym {sym [arglists docstring]}} for `namespaces`."
-  '{infer {run [([model opts]) "Run inference on `model` (a spin with sample/observe sites); a spin of the posterior as data. opts: :method (:importance :smc :mh :rmh :nuts; particle MCMC :pimh :pgibbs :pgas :ipmcmc; :pmmh with :params, the parameters' addresses, and :scale; exact :enumerate for finite discrete models, at most :max-branches assignments), its sizes (:particles; or :iterations :chains :burn; particle MCMC and :pmmh :particles per sweep and :iterations), :seed, :world-policy, :resampling, :resample-threshold, :step-size (:rmh, :nuts), :target-accept :max-depth :metric :inverse-metric :jitter (:nuts). NUTS needs a block site (model/site). Values the model returns must be plain data."]
+  '{infer {run [([model opts]) "Run inference on `model` (a function creating a task with sample/observe sites); a task of the posterior as data. opts: :method (:importance :smc :mh :rmh :nuts; particle MCMC :pimh :pgibbs :pgas :ipmcmc; :pmmh with :params, the parameters' addresses, and :scale; exact :enumerate for finite discrete models, at most :max-branches assignments), its sizes (:particles; or :iterations :chains :burn; particle MCMC and :pmmh :particles per sweep and :iterations), :seed, :world-policy, :resampling, :resample-threshold, :step-size (:rmh, :nuts), :target-accept :max-depth :metric :inverse-metric :jitter (:nuts). NUTS needs a block site (model/site). Values the model returns must be plain data."]
            start [([model opts]) "As `run`, started in the background: a job handle {:job/id …} for status, result and cancel. Use it for runs longer than one evaluation may take."]
            status [([job]) "{:status :running|:done|:failed|:cancelled}"]
            result [([job timeout-ms]) "The job's posterior, waiting at most timeout-ms; :pending if not done yet."]

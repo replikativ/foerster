@@ -22,6 +22,7 @@
   resample-move instead (`foerster.inference.smc`, `:anchors` on the static
   parameters)."
   (:require [org.replikativ.foerster.runtime.scope :as scope]
+            [org.replikativ.foerster.runtime.lifetime :as lt]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.contract :as contract]
             [org.replikativ.foerster.dist :as dist]
@@ -36,8 +37,7 @@
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.moves.kernel :as k]
             [org.replikativ.foerster.moves.transition :as transition]
-            [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.engine.protocols :as rtp]))
+            [org.replikativ.spindel.v2.savepoint :as sp]))
 
 (defn- log-likelihood
   "Σ untempered log-likelihood of `t`'s observations and factors."
@@ -120,8 +120,7 @@
                  (fn [{t' :trace accepted? :accepted?}]
                    ;; the accepted world need not keep the one it replayed
                    ;; from alive as a source of reused spins
-                   (when accepted?
-                     (rtp/swap-state! (:trace/world t') [:engine/reuse-source] (constantly nil)))
+                   (when accepted?)
                    (single-site t' step (inc j) n states (if accepted? (conj seen t') seen)
                                 (if accepted? (inc accepted) accepted) (inc total)))
                  reject)))
@@ -134,8 +133,7 @@
                                            :key [key step] :keep-old? true})
                  (fn [{t' :trace n-accepted :accepted}]
                    (let [moved? (pos? n-accepted)]
-                     (when moved?
-                       (rtp/swap-state! (:trace/world t') [:engine/reuse-source] (constantly nil)))
+                     (when moved?)
                      (block-moves t' step more states (if moved? (conj seen t') seen)
                                   (if moved? (inc accepted) accepted) (inc total))))
                  reject)))
@@ -160,7 +158,6 @@
                     (when accepted?
                       ;; the accepted world need not keep the one it replayed
                       ;; from alive as a source of reused spins
-                      (rtp/swap-state! (:trace/world t') [:engine/reuse-source] (constantly nil))
                       (vswap! seen conj t')))]
         (letfn [(go [t s states]
                     (if (= s steps)
@@ -241,7 +238,7 @@
   `m/log-marginal` estimates the evidence; `:temperatures` holds the
   schedule and `:rejuvenation` the moves made and accepted."
   [model n & [{:keys [ess-target moves kernel scale waste-free max-steps executor seed canonical-source world-opts]
-               :or {ess-target 0.5 scale 2.38 max-steps 1000}}]]
+               :or {ess-target 0.5 scale 2.38 max-steps 1000} :as opts}]]
   (when-not (and (number? ess-target) (< 0.0 ess-target 1.0))
     (throw (ex-info ":ess-target must lie in (0, 1)" {:type ::invalid-ess-target :ess-target ess-target})))
   (when-not (or (nil? moves) (nat-int? moves))
@@ -259,7 +256,7 @@
              runs (atom -1)
              run! (fn []
                     (let [r (gfi/run-policy* model (itrace/policy {:temperature 0.0})
-                                             (cond-> {:inference-scope resources :seed (sp/derive-seed seed ::run (swap! runs inc))}
+                                             (cond-> (lt/carry {:inference-scope resources :seed (sp/derive-seed seed ::run (swap! runs inc))} opts)
                                                executor (assoc :executor executor)
                                                canonical-source (assoc :canonical-source canonical-source
                                                                        :world-opts world-opts)))]

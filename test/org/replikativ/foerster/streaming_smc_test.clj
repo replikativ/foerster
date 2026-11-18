@@ -3,23 +3,22 @@
   observed as y_t ~ N(x_t, 1), its observations pushed one at a time. After
   each push the particle filter's x_t must match the Kalman filtering
   distribution, and its evidence the Kalman marginal likelihood."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [org.replikativ.foerster.runtime.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [org.replikativ.foerster.inference.smc :as smc]
             [org.replikativ.foerster.inference.particle-mcmc :as pmcmc]
             [org.replikativ.foerster.runtime.trace :as itrace]
             [org.replikativ.foerster.measure :as m]
             [org.replikativ.foerster.weights :as weights]
             [org.replikativ.foerster.effects :refer [sample]]
-            [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.engine.executor :as executor]
-            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.foerster.runtime.execution :as executor]
+            [org.replikativ.spindel.v2.core :as v2 :refer [task]]
             [org.replikativ.foerster.dist :as dist]
             [org.replikativ.foerster.random :as random]))
 
 (defn- await-cps [operation]
   (let [result (promise)]
-    (operation #(deliver result [:ok %]) #(deliver result [:error %]))
+    ((async/op-of operation) #(deliver result [:ok %]) #(deliver result [:error %]))
     (let [outcome (deref result 60000 ::timeout)]
       (when (= ::timeout outcome)
         (throw (ex-info "CPS operation timed out" {})))
@@ -28,13 +27,12 @@
 (def ^:private ys [0.8 1.9 1.2 3.0 2.5])
 
 (defn- random-walk [root]
-  (binding [ec/*execution-context* root]
-    (spin
+  (task
      (loop [t 0 x (sample (dist/normal 0.0 1.0) :id [:x 0])]
        (sample (dist/normal x 1.0) :id [:y t] :stream true)
        (if (= t (dec (count ys)))
          x
-         (recur (inc t) (sample (dist/normal x 1.0) :id [:x (inc t)])))))))
+         (recur (inc t) (sample (dist/normal x 1.0) :id [:x (inc t)]))))))
 
 (defn- kalman
   "[mean var log-likelihood] of the filtering distribution after each y."
@@ -58,9 +56,9 @@
 
 (deftest online-smc-tracks-the-kalman-filter
   (random/set-seed! 5)
-  (let [root (context/create-execution-context)
+  (let [root (v2/world)
         truth (kalman ys)
-        first-step (await-cps (smc/stream (random-walk root) 3000
+        first-step (await-cps (smc/stream (fn [] (random-walk root)) 3000
                                           {:executor (executor/thread-pool-executor {:threads 1})}))]
     (is (not (:done? first-step)) "waiting for the first observation")
     (loop [step first-step t 0]
@@ -77,16 +75,16 @@
           (recur step' (inc t)))))))
 
 (deftest batch-smc-refuses-stream-sites
-  (let [root (context/create-execution-context)]
+  (let [root (v2/world)]
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"stream sites"
-                          (await-cps (smc/smc (random-walk root) 10))))))
+                          (await-cps (smc/smc (fn [] (random-walk root)) 10))))))
 
 (deftest a-population-forks-into-independent-copies
   (random/set-seed! 7)
-  (let [root (context/create-execution-context)
+  (let [root (v2/world)
         truth (kalman ys)
         push (fn [step y] (await-cps ((:push step) y)))
-        start (await-cps (smc/stream (random-walk root) 2000
+        start (await-cps (smc/stream (fn [] (random-walk root)) 2000
                                      {:executor (executor/thread-pool-executor {:threads 1})}))
         shared (reduce push start (take 2 ys))
         copy (await-cps ((:fork shared)))
@@ -105,8 +103,8 @@
     ((:close forked))))
 
 (deftest a-population-with-anchors-offers-no-fork
-  (let [root (context/create-execution-context)
-        step (await-cps (smc/stream (random-walk root) 20 {:anchors :all}))]
+  (let [root (v2/world)
+        step (await-cps (smc/stream (fn [] (random-walk root)) 20 {:anchors :all}))]
     (is (nil? (:fork step)))
     ((:close step))))
 
@@ -114,8 +112,8 @@
   ;; do(y_0 = 0): the stream site takes the intervened value and scores
   ;; nothing, as an observed site does under the same policy; scoring the
   ;; pushed 5.0 instead would give log N(5; 0, √2) ≈ −7.5
-  (let [root (context/create-execution-context)
-        step (await-cps (smc/stream (random-walk root) 50
+  (let [root (v2/world)
+        step (await-cps (smc/stream (fn [] (random-walk root)) 50
                                     {:policy (itrace/policy {:interventions {[:y 0] {:do 0.0}}})}))
         step' (await-cps ((:push step) 5.0))]
     (is (= 0.0 (m/log-marginal (:measure step'))))
@@ -124,32 +122,31 @@
 (deftest a-pushed-value-is-tempered-as-an-observation
   ;; under temperature 1/2 the pushed y = 5 counts N(5; x, 1)^(1/2):
   ;; log Z = −¼ log 2π + ½ log 4π + log N(5; 0, √3) ≈ −4.829
-  (let [root (context/create-execution-context)
+  (let [root (v2/world)
         exact (+ (* -0.25 (Math/log (* 2 Math/PI))) (* 0.5 (Math/log (* 4 Math/PI)))
                  (dist/logpdf (dist/normal 0.0 (Math/sqrt 3.0)) 5.0))
-        step (await-cps (smc/stream (random-walk root) 4000 {:policy (itrace/policy {:temperature 0.5})}))
+        step (await-cps (smc/stream (fn [] (random-walk root)) 4000 {:policy (itrace/policy {:temperature 0.5})}))
         step' (await-cps ((:push step) 5.0))]
     (is (< (Math/abs (- (m/log-marginal (:measure step')) exact)) 0.1)
         (str "log Z " (m/log-marginal (:measure step')) " exact " exact))
     ((:close step'))))
 
 (defn- endless-walk [root]
-  (binding [ec/*execution-context* root]
-    (spin
+  (task
      (loop [t 0 x (sample (dist/normal 0.0 1.0) :id [:x 0])]
        (sample (dist/normal x 1.0) :id [:y t] :stream true)
-       (recur (inc t) (sample (dist/normal x 1.0) :id [:x (inc t)]))))))
+       (recur (inc t) (sample (dist/normal x 1.0) :id [:x (inc t)])))))
 
 (deftest a-push-does-not-convert-the-history
   ;; The step measure is built at every push. Converting every particle's
   ;; whole trace there made a push cost O(particles x steps so far): a
   ;; consumer reading the latest site must convert nothing.
-  (let [root (context/create-execution-context)
+  (let [root (v2/world)
         conversions (atom 0)
         convert itrace/legacy-trace
         pushes 30]
     (with-redefs [itrace/legacy-trace (fn [t] (swap! conversions inc) (convert t))]
-      (loop [step (await-cps (smc/stream (endless-walk root) 20
+      (loop [step (await-cps (smc/stream (fn [] (endless-walk root)) 20
                                          {:seed 3 :executor (executor/thread-pool-executor {:threads 1})}))
              t 0]
         (if (< t pushes)
@@ -172,8 +169,8 @@
   "[x-means trace-keys] after each of `pushes` pushes: the weighted mean of
   x_t, and the keys of the first particle's trace."
   [opts pushes]
-  (let [root (context/create-execution-context)]
-    (loop [step (await-cps (smc/stream (endless-walk root) 20
+  (let [root (v2/world)]
+    (loop [step (await-cps (smc/stream (fn [] (endless-walk root)) 20
                                        (merge {:seed 7 :executor (executor/thread-pool-executor {:threads 1})} opts)))
            t 0 acc []]
       (if (= t pushes)
@@ -187,8 +184,8 @@
 
 (deftest stream-values-read-as-observed
   (let [[[_ ks]] (run-stream {} 1)
-        root (context/create-execution-context)
-        step (await-cps (smc/stream (endless-walk root) 5 {:seed 1}))
+        root (v2/world)
+        step (await-cps (smc/stream (fn [] (endless-walk root)) 5 {:seed 1}))
         step' (await-cps ((:push step) 0.5))
         tr (m/get-trace (ffirst (m/get-particles (:measure step'))))]
     ((:close step'))
@@ -214,13 +211,13 @@
   (doseq [opts [{:retain :filtering :anchors true}
                 {:retain {:last 2} :retained {}}]]
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #":retain is not supported"
-                          (await-cps (smc/stream (endless-walk (context/create-execution-context)) 4 opts)))))
+                          (await-cps (smc/stream (fn [] (endless-walk (v2/world))) 4 opts)))))
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #":retain is :all"
-                        (await-cps (smc/stream (endless-walk (context/create-execution-context)) 4 {:retain {:last 0}})))))
+                        (await-cps (smc/stream (fn [] (endless-walk (v2/world))) 4 {:retain {:last 0}})))))
 
 (deftest a-windowed-population-forks
-  (let [root (context/create-execution-context)
-        step (await-cps (smc/stream (endless-walk root) 10 {:seed 2 :retain :filtering}))
+  (let [root (v2/world)
+        step (await-cps (smc/stream (fn [] (endless-walk root)) 10 {:seed 2 :retain :filtering}))
         step (reduce (fn [s y] (await-cps ((:push s) y))) step [0.1 0.2 0.3])
         copy (await-cps ((:fork step)))
         copy' (await-cps ((:push copy) 0.4))
